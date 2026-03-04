@@ -1,7 +1,7 @@
-[Uploading README.md…]()
+
 # IceCream 关节协作机械臂项目
 
-
+![alt text](https://github.com/Edsion665/icecream_arm/blob/main/icecream.jpg?raw=true)
 
 Dariy-Prince团队自研的 **5 自由度关节协作机械臂** 项目。
 
