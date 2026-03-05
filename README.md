@@ -3,7 +3,7 @@
 
 ![alt text](https://github.com/Edsion665/icecream_arm/blob/main/icecream.jpg?raw=true)
 
-Dariy-Prince团队自研的 **5 自由度关节协作机械臂** 项目。
+Dairy-Prince团队自研的 **5 自由度关节协作机械臂** 项目。
 
 甜品家族一号成员冰淇淋！
 
