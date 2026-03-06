@@ -321,5 +321,143 @@ git merge develop
 git push origin main
 ```
 
-以上流程即可作为 `icecream_arm` 仓库的标准 Git 使用规范，在多人协作和长期维护中尽量遵守此约定，可以显著减少合并冲突和分支混乱的问题。
+---
 
+## 11. 使用 SSH+443 永久免密码推送 GitHub
+
+部分网络环境会屏蔽 `github.com:22` 端口，但允许通过 `ssh.github.com:443` 访问 SSH。  
+推荐为 **所有 GitHub 仓库** 配置一次 SSH，之后基本不再需要输入账号密码。
+
+### 11.1 测试 SSH 连接（走 443 端口）
+
+```bash
+ssh -T -p 443 git@ssh.github.com
+```
+
+- 如果看到类似输出：
+  - `Hi Edsion665! You've successfully authenticated, but GitHub does not provide shell access.`  
+  说明 SSH key 已配置成功，可以通过 443 端口访问 GitHub。
+
+### 11.2 在 `~/.ssh/config` 中做一次性全局配置（推荐）
+
+在当前用户下创建/编辑 SSH 配置文件：
+
+```bash
+nano ~/.ssh/config
+```
+
+增加如下内容（如已有 `Host github.com` 段落，可按此修改）：
+
+```text
+Host github.com
+    HostName ssh.github.com
+    Port 443
+    User git
+    IdentityFile ~/.ssh/id_ed25519   # 或你的私钥路径，如 ~/.ssh/id_rsa
+```
+
+含义：
+
+- 以后访问 `git@github.com:...` 时，实际会连到 `ssh.github.com:443`；
+- 不再依赖被屏蔽的 22 端口；
+- 所有仓库共用这套配置，只要远端地址是 `git@github.com:用户名/仓库.git` 即可。
+
+### 11.3 新仓库如何添加远端（之后免密码）
+
+```bash
+cd /path/to/your_repo
+
+# 使用标准 SSH 形式添加远端（注意替换为你自己的用户名和仓库名）
+git remote add origin git@github.com:Edsion665/icecream_arm.git
+
+# 首次推送
+git push -u origin main
+```
+
+在 `~/.ssh/config` 配置生效后，这里会自动走 443 端口，且使用 SSH key 认证，无需再输入用户名和密码。
+
+### 11.4 已有仓库如何切换到 SSH+443（以本仓库为例）
+
+如果某个仓库之前是 HTTPS（每次都要输入账号和密码），可以改成 SSH：
+
+```bash
+cd ~/icecream_project
+
+# 看看当前远端地址
+git remote -v
+
+# 将 origin 改为 SSH 形式
+git remote set-url origin git@github.com:Edsion665/icecream_arm.git
+
+# 再次确认
+git remote -v
+
+# 之后推送将通过 SSH，无需用户名/密码
+git push origin main
+```
+
+如果出于特殊原因不想改 `~/.ssh/config`，也可以直接使用带 443 端口的 URL：
+
+```bash
+git remote set-url origin "ssh://git@ssh.github.com:443/Edsion665/icecream_arm.git"
+```
+
+但更推荐使用 11.2 的全局配置方式，方便所有仓库统一管理。
+
+---
+
+## 12. 分支新建 / 删除速查
+
+### 12.1 新建远端分支（本地 + 远端同时创建）
+
+以从 `main` 创建 `feature/reinforcement_learning` 为例：
+
+```bash
+cd ~/icecream_project
+
+# 1) 确保 main 是最新的
+git checkout main
+git pull origin main
+
+# 2) 创建并切换到本地新分支
+git checkout -b feature/reinforcement_learning
+
+# 3) 修改代码 -> git add / git commit 之后，首次推送到远端
+git push -u origin feature/reinforcement_learning
+```
+
+之后在该分支上继续开发时，只需：
+
+```bash
+git push        # 因为已经有 -u 绑定，会默认推到 origin/feature/reinforcement_learning
+```
+
+### 12.2 删除远端分支
+
+以删除 `origin/feature/reinforcement_learning` 为例：
+
+```bash
+cd ~/icecream_project
+
+# 删除远端分支
+git push origin --delete feature/reinforcement_learning
+# 或等价写法：git push origin :feature/reinforcement_learning
+```
+
+如不再需要本地该分支，也可以删除本地分支：
+
+```bash
+# 已经合并到其他分支时的安全删除
+git branch -d feature/reinforcement_learning
+
+# 若 Git 提示“尚未合并”，但你确认可以强制删除
+git branch -D feature/reinforcement_learning
+```
+
+> 实际推荐做法：  
+> - 功能完成并成功合入 `develop`/`main` 后，再删除本地和远端功能分支；  
+> - 合并前不要随意删除，避免丢失尚未集成的工作。
+
+---
+
+以上流程即可作为 `icecream_arm` 仓库的标准 Git 使用规范，在多人协作和长期维护中尽量遵守此约定，可以显著减少合并冲突和分支混乱的问题。
