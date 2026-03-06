@@ -20,10 +20,7 @@ HOME 位置（由 URDF 工作空间分析确定，所有连杆 Z > 0.1m，不入
   σ_min = 0.2055（远离奇异）
 
 轨迹模式
-  line  - 直线+Z向下：方向、长度、速度、--speed-z
-  circle - 先回 HOME，再以 HOME 为圆上一点逆时针画圆（XOY、同高）：--radius、--circle-speed
-           未到 HOME 不会开始画圆；可调 --stabilize-max-steps 放宽等待时间（默认 3000 步≈50s）
-  均可通过绿/红球描述轨迹，并打印偏离与误差报告
+  line - 直线：回 HOME 后从当前末端到地面目标点上方走直线；绿/红球标记轨迹并打印报告
 
 用法
 ----
@@ -59,32 +56,24 @@ parser.add_argument("--speed-z",   type=float, default=0.01,
 parser.add_argument("--damping",   type=float, default=0.01,
                     help="阻尼伪逆 λ，默认 0.01")
 parser.add_argument("--stabilize-steps", type=int, default=120,
-                    help="运动前至少稳定帧数，默认 120（≈2s）；画圆时会等到达 HOME 或超时")
+                    help="运动前至少稳定帧数，默认 120（≈2s）")
 parser.add_argument("--stabilize-max-steps", type=int, default=3000,
-                    help="画圆时最多等待步数，超时未到 HOME 则报错退出，默认 3000（≈50s）")
+                    help="回 HOME 最多等待步数，超时则进入 DONE，默认 3000")
 parser.add_argument("--stabilize-kp", type=float, default=12.0,
-                    help="回 HOME 时关节空间前馈增益，越大回得越快，默认 12")
+                    help="回 HOME 时关节空间前馈增益，默认 12")
 parser.add_argument("--stabilize-max-dq", type=float, default=0.05,
                     help="回 HOME 时每步最大关节角变化(rad)，默认 0.05")
-parser.add_argument("--settle-steps", type=int, default=100,
-                    help="[circle] 到达 HOME 后再静置步数，待速度衰减后再画圆，默认 100（≈1.7s）")
-parser.add_argument("--circle-ramp-steps", type=int, default=30,
-                    help="[circle] 画圆起步线速度缓升步数，前几步低于满速以利收敛，默认 30")
 parser.add_argument("--headless",  action="store_true",
                     help="无界面模式")
 parser.add_argument("--mode",      type=str,   default="line",
                     choices=["line"],
-                    help="轨迹模式: line=直线+Z向下")
-parser.add_argument("--radius",    type=float, default=0.03,
-                    help="[circle] 圆半径（m），默认 0.03")
-parser.add_argument("--circle-speed", type=float, default=0.01,
-                    help="[circle] 沿圆线速度（m/s），默认 0.01")
+                    help="轨迹模式: line=直线（HOME 到地面目标点上方）")
 parser.add_argument("--track-kp",    type=float, default=0.0,
-                    help="轨迹跟踪位置误差增益；圆模式建议 3~8，0=纯前馈")
+                    help="轨迹跟踪位置误差增益，0=纯前馈")
 parser.add_argument("--track-kp-z",   type=float, default=0.0,
-                    help="[circle] 高度 z 的跟踪增益，默认 1.0 保持同高；0=不修正 z")
+                    help="高度 z 的跟踪增益，0=不修正")
 parser.add_argument("--track-kp-ori", type=float, default=0.5,
-                    help="[circle] 仅保持末端向下时的角速度增益，默认 0.5；不跟踪姿态轨迹")
+                    help="保持末端向下时的角速度增益，默认 0.5")
 args, _unknown = parser.parse_known_args()
 
 # ── 启动 Isaac Sim ─────────────────────────────────────────────────────────
@@ -99,8 +88,9 @@ from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.types import ArticulationAction
 import omni.usd
 
-# ── 同目录模块 ─────────────────────────────────────────────────────────────
-_CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ── 路径：脚本所在目录与项目根（便于解析 USD/URDF）────────────────────────────
+_CODE_DIR = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
+_PROJECT_ROOT = os.path.dirname(_CODE_DIR)
 if _CODE_DIR not in sys.path:
     sys.path.insert(0, _CODE_DIR)
 
@@ -123,11 +113,7 @@ Q_HOME = np.array([0.0, -1.271, 1.5, -0.5, 0.0], dtype=float)
 SINGULARITY_THR = 0.01   # 最小奇异值低于此为奇异
 PASS_DEV_TOL    = 0.001  # 1 mm 偏离容差（直线）
 PASS_ERR_TOL    = 0.001  # 1 mm 位置误差容差（直线）
-# 画圆通过容差（放宽）：偏离圆、位置误差低于此即通过
-PASS_DEV_TOL_CIRCLE  = 0.015   # 15 mm 偏离圆
-PASS_ERR_TOL_CIRCLE  = 0.015   # 15 mm 与理想圆周位置误差
-# 画圆可选：关节角与 Q_HOME 误差低于此才允许开始（若需严格从 HOME 起画可保留）
-STABILIZE_JOINT_TOL = 0.03
+STABILIZE_JOINT_TOL = 0.03  # 关节角与 Q_HOME 误差低于此视为到达 HOME
 
 # 控制安全相关：接近奇异时自动减速 + 关节速度限幅（避免高速/大半径条件下数值发散）
 NEAR_SINGULAR_THR = 3.0 * SINGULARITY_THR  # 小于此认为“接近奇异”，逐步缩放任务空间速度
@@ -207,10 +193,6 @@ TRACK_HEIGHT = 0.3
 # 重新规划直线的时间间隔（秒）及对应步数
 TRACK_INTERVAL_SEC = 1.0
 
-# 跟踪模式：小方块 prim 路径与目标高度
-FOLLOW_BOX_PATH = "/World/FollowBox"
-FOLLOW_BOX_HEIGHT = 0.3  # 末端相对方块中心的目标高度（m）
-
 
 def _angular_velocity_keep_down(R_cur: np.ndarray, kp: float) -> np.ndarray:
     """
@@ -231,32 +213,6 @@ def _angular_velocity_keep_down(R_cur: np.ndarray, kp: float) -> np.ndarray:
         # 几乎朝上，绕基座 X 转 180
         return kp * np.array([1.0, 0.0, 0.0], dtype=float)
     return kp * np.cross(tool_axis, down)
-
-
-def _orientation_error_axis_angle(R_des: np.ndarray, R_cur: np.ndarray) -> np.ndarray:
-    """R_des, R_cur 为 3x3，返回轴角表示的姿态误差 (3,)，单位 rad。"""
-    R_err = R_des @ R_cur.T
-    angle = np.arccos(np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0))
-    if angle < 1e-8:
-        return np.zeros(3, dtype=float)
-    axis = np.array([
-        R_err[2, 1] - R_err[1, 2],
-        R_err[0, 2] - R_err[2, 0],
-        R_err[1, 0] - R_err[0, 1],
-    ], dtype=float)
-    return (axis / (2.0 * np.sin(angle) + 1e-12)) * angle
-
-
-def point_to_circle_dist(p, cx: float, cy: float, z0: float, r: float) -> float:
-    """点到 XOY 平面内圆的距离。圆: 中心 (cx, cy), 平面 z=z0, 半径 r。"""
-    p = np.asarray(p, float).ravel()[:3]
-    dx = p[0] - cx
-    dy = p[1] - cy
-    d_xy = np.sqrt(dx * dx + dy * dy) + 1e-12
-    # 圆上最近点在该射线 (cx,cy) -> (px,py) 上
-    closest_x = cx + r * (dx / d_xy)
-    closest_y = cy + r * (dy / d_xy)
-    return float(np.sqrt((p[0] - closest_x) ** 2 + (p[1] - closest_y) ** 2 + (p[2] - z0) ** 2))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -282,88 +238,45 @@ def main():
     sv_home_min, cond_home = kin.manipulability(Q_HOME)
     print(f"[precheck] HOME 末端位置(基座系): {p_home}")
     print(f"[precheck] HOME σ_min={sv_home_min:.4f}  κ={cond_home:.2f}")
-    # 记录 HOME 时刻的末端姿态：
-    # - 画圆模式：以后始终保持该姿态
-    # - 跟踪模式：将“末端垂直向下”的参考方向定义为 HOME 时末端 z 轴方向
+    # 记录 HOME 时刻的末端姿态（直线/跟踪时用于保持末端向下）
     R_home = kin.forward_kinematics_rotation(Q_HOME)
     # 用 HOME 时末端 z 轴方向更新全局“向下”参考方向
     EE_DOWN_DIR[:] = R_home[:, 2]
 
-    if args.mode == "line":
-        path_sv_min, path_ok = _check_path_singularity(
-            kin, Q_HOME, v_ee_nominal, duration_move_line
-        )
-    else:
-        # 圆：HOME 在圆边上，圆心在 HOME 左侧 (cx = p_home[0]-r)，逆时针
-        circle_cx_pre = p_home[0] - args.radius
-        circle_cy_pre = p_home[1]
-        circle_z0_pre = p_home[2]
-        path_sv_min, path_ok = _check_circle_singularity(
-            kin, Q_HOME, circle_cx_pre, circle_cy_pre, circle_z0_pre,
-            args.radius, args.circle_speed,
-        )
+    path_sv_min, path_ok = _check_path_singularity(
+        kin, Q_HOME, v_ee_nominal, duration_move_line
+    )
     if not path_ok:
         print(f"[precheck] ⚠ 路径包含奇异点！σ_min={path_sv_min:.4f}，请换参数。")
     else:
         print(f"[precheck] ✓ 路径无奇异  σ_min={path_sv_min:.4f}")
 
-    # ── 轨迹控制增益与阻尼设置 ────────────────────────────────────────────────
-    # 直线模式：保持最初验证用的“干净”配置，不做自动调参，只用用户给定的 damping。
-    # 圆 / 跟踪模式：保留自动调参逻辑。
+    # ── 轨迹控制增益
+    # 直线段位置 Kp：高速时纯前馈易漂移，用 Kp 把末端拉回理想直线；0.01 m/s 可不用，≥0.05 建议有
     damping_used = args.damping
-    track_kp_line = 0.0
-    track_kp_circle_xy = args.track_kp if args.track_kp > 0.0 else 0.0
-    track_kp_circle_z = args.track_kp_z if args.track_kp_z > 0.0 else 0.0
+    if args.track_kp > 0.0:
+        track_kp_line = args.track_kp
+    else:
+        # 速度高时默认加一点位置反馈，减少重规划次数、加快收敛
+        track_kp_line = 4.0 if args.speed >= 0.05 else 0.0
     track_kp_ori = args.track_kp_ori
-    circle_ramp_steps_used = args.circle_ramp_steps
-
-    if args.mode in ("circle", "follow"):
-        # 等效速度标度：圆 / 跟踪使用 circle-speed
-        speed_eff = float(abs(args.circle_speed))
-        speed_ref = 0.01   # 圆默认速度参考
-
-        # 1) 阻尼 λ 自适应：默认值 0.01 时，随着速度增大和路径 σ_min 变小自动增大阻尼
-        if abs(args.damping - 0.01) < 1e-9:
-            speed_scale = max(1.0, speed_eff / (speed_ref + 1e-12))
-            sv_scale = 1.0
-            if path_sv_min > 1e-4:
-                # σ_min 小 → sv_scale 大 → 阻尼更大
-                sv_scale = min(3.0, max(0.5, 0.05 / path_sv_min))
-            factor = min(3.0, max(1.0, float(np.sqrt(speed_scale * sv_scale))))
-            damping_used = args.damping * factor
-
-        # 2) 轨迹 Kp 自适应（仅在用户未显式传参时自动选择）
-        if args.track_kp <= 0.0:
-            speed_scale = max(0.5, min(3.0, speed_eff / (speed_ref + 1e-12)))
-            k_xy = 5.0 / speed_scale
-            if path_sv_min > 1e-4:
-                # 路径越接近奇异点（σ_min 小），位置环 Kp 适度减小
-                k_xy *= min(1.0, path_sv_min / 0.08)
-            track_kp_circle_xy = float(np.clip(k_xy, 2.0, 8.0))
-        if args.track_kp_z <= 0.0:
-            speed_scale = max(0.5, min(3.0, speed_eff / (speed_ref + 1e-12)))
-            k_z = 1.0 / speed_scale
-            track_kp_circle_z = float(np.clip(k_z, 0.5, 2.0))
-        # 姿态 Kp：仅在保持默认 0.5 时，根据速度略作缩放
-        if abs(args.track_kp_ori - 0.5) < 1e-9:
-            speed_scale = max(0.5, min(3.0, speed_eff / (speed_ref + 1e-12)))
-            k_ori = 0.5 / speed_scale
-            track_kp_ori = float(np.clip(k_ori, 0.3, 0.8))
-
-        # 3) 圆轨迹加速段步数自适应：默认值 30 时，按整圈步数的 5%~15% 估计
-        if args.circle_ramp_steps == 30:
-            duration_circle_est = 2.0 * np.pi * args.radius / (abs(args.circle_speed) + 1e-12)
-            approx_steps = max(1, int(duration_circle_est / (1.0 / 60.0)))
-            circle_ramp_steps_used = int(np.clip(0.1 * approx_steps, 10, 200))
 
     # ── 构建 Isaac Sim 场景 ─────────────────────────────────────────────────
-    physics_dt = 1.0 / 60.0
+    physics_dt = 1.0 / 120.0
     world = World(
         stage_units_in_meters=1.0,
         physics_dt=physics_dt,
         rendering_dt=physics_dt,
     )
-    world.scene.add_default_ground_plane()
+    # 地面：仅用固定 isaacsim_assets 路径；不存在则回退到程序建地面
+    stage_for_scene = omni.usd.get_context().get_stage()
+    if os.path.isfile(DEFAULT_GROUND_USD_PATH):
+        add_reference_to_stage(usd_path=DEFAULT_GROUND_USD_PATH, prim_path=LOCAL_GROUND_PRIM_PATH)
+        print(f"[ground] 使用地面 USD: {DEFAULT_GROUND_USD_PATH} -> {LOCAL_GROUND_PRIM_PATH}")
+    else:
+        print(f"[ground] 地面 USD 不存在: {DEFAULT_GROUND_USD_PATH}，回退到程序建地面")
+        _add_local_ground_plane(stage_for_scene)
+
 
     # 加载机械臂 USD
     usd_path = _resolve_usd(args.usd)
@@ -389,21 +302,6 @@ def main():
     stage = omni.usd.get_context().get_stage()
     marker = TrajectoryMarker(stage, interval=8)
 
-    # 跟踪模式：在地面上生成可用鼠标拖动的小方块，供末端跟踪其上方
-    follow_box_prim = None
-    if args.mode == "follow":
-        from pxr import UsdGeom, Gf
-        follow_box_prim = UsdGeom.Cube.Define(stage, FOLLOW_BOX_PATH)
-        follow_box_prim.CreateSizeAttr(0.05)  # 5cm 立方体
-        xf_box = UsdGeom.Xformable(follow_box_prim)
-        xf_box.ClearXformOpOrder()
-        # 初始放在 HOME 投影点的地面附近，z 设为 0
-        xf_box.AddTranslateOp().Set(
-            Gf.Vec3d(float(p_home[0]), float(p_home[1]), 0.0)
-        )
-        color_attr = follow_box_prim.CreateDisplayColorAttr()
-        color_attr.Set([Gf.Vec3f(0.1, 0.7, 0.9)])  # 青色小方块
-
     # ── 阶段状态机 ─────────────────────────────────────────────────────────
     PHASE_STABILIZE  = "STABILIZE"   # 运动到 HOME 并稳定
     PHASE_MOVE       = "MOVE"        # 沿直线运动
@@ -411,7 +309,6 @@ def main():
 
     phase       = PHASE_STABILIZE
     stab_step   = 0
-    settle_step = 0   # 到达 HOME 后连续静置步数（仅画圆用）
     move_step   = 0
     track_step_counter = 0  # PHASE_DONE 中用于每隔一段时间重新规划直线
 
@@ -421,8 +318,6 @@ def main():
     total_steps   = None
     dt_move       = None
     v_ee          = None
-    # [circle] 圆心 (cx,cy)、平面高度 z0、半径、线速度
-    circle_cx = circle_cy = circle_z0 = circle_r = circle_speed = None
 
     # HOME 下方目标点（矩形中心向上 TRACK_HEIGHT）
     target_pos = None
@@ -437,21 +332,10 @@ def main():
     # 当前控制目标关节角（用于积分）
     q_cmd = Q_HOME.copy()
 
-    if args.mode == "line":
-        print(f"\n[sim] 轨迹=直线 | 方向={direction} | 长度={args.length}m | "
-              f"速度={args.speed}m/s" + (f" | Z向下={args.speed_z}m/s" if args.speed_z != 0 else ""))
-        if track_kp_line > 0.0:
-            print(f"      线段位置 Kp(auto)={track_kp_line:.3f}")
-    elif args.mode == "circle":
-        print(f"\n[sim] 轨迹=圆(XOY平面) | 半径={args.radius*100:.1f}cm | "
-              f"线速度={args.circle_speed*100:.1f}cm/s")
-        print(f"      画圆前先回 HOME（前馈 kp={args.stabilize_kp}），到 HOME 后再静置 {args.settle_steps} 步再画圆")
-        print(f"      圆轨迹 Kp_xy(auto)={track_kp_circle_xy:.3f}  Kp_z(auto)={track_kp_circle_z:.3f}  Kp_ori={track_kp_ori:.3f}")
-        print(f"      圆轨迹加速步数 circle_ramp_steps={circle_ramp_steps_used}")
-    else:  # follow 模式
-        print(f"\n[sim] 轨迹=跟踪方块 | 目标高度={FOLLOW_BOX_HEIGHT*100:.1f}cm | 末端始终垂直向下")
-        print(f"      初始 HOME 位置: {p_home}")
-        print(f"      跟踪增益 Kp_xy(auto)={track_kp_circle_xy:.3f}  Kp_z(auto)={track_kp_circle_z:.3f}  Kp_ori={track_kp_ori:.3f}")
+    print(f"\n[sim] 轨迹=直线 | 方向={direction} | 长度={args.length}m | "
+          f"速度={args.speed}m/s" + (f" | Z向下={args.speed_z}m/s" if args.speed_z != 0 else ""))
+    if track_kp_line > 0.0:
+        print(f"      线段位置 Kp={track_kp_line:.2f}（沿直线纠偏，高速时减少漂移）")
     print(f"      阻尼λ={damping_used:.4f} | 最少稳定帧数={args.stabilize_steps}")
     print()
 
@@ -463,7 +347,6 @@ def main():
             world.reset()
             phase       = PHASE_STABILIZE
             stab_step   = 0
-            settle_step = 0
             move_step   = 0
             q_cmd       = Q_HOME.copy()
             deviations.clear(); pos_errors.clear()
@@ -500,29 +383,18 @@ def main():
                 q_cmd = np.clip(q_sim + dq, JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER)
                 ctrl.apply_action(ArticulationAction(joint_positions=q_cmd.tolist()))
             else:
-                # 已到 HOME：画圆模式先静置若干步再动，避免残余速度叠加
-                settle_step += 1
                 ctrl.apply_action(ArticulationAction(joint_positions=Q_HOME.tolist()))
 
             if stab_step % 30 == 0:
                 p_cur = kin.forward_kinematics_position(q_sim)
                 print(f"[stabilize] step={stab_step:4d} | "
                       f"关节误差={q_err:.4f} rad | "
-                      f"EE=[{p_cur[0]:.3f},{p_cur[1]:.3f},{p_cur[2]:.3f}]"
-                      + (f" | 静置={settle_step}/{args.settle_steps}" if at_home and args.mode == "circle" else ""))
+                      f"EE=[{p_cur[0]:.3f},{p_cur[1]:.3f},{p_cur[2]:.3f}]")
 
-            # 直线：步数满足且已到 HOME 才开始；
             min_steps_done = stab_step >= args.stabilize_steps
             can_start_line = min_steps_done and at_home
-            can_start_circle = min_steps_done and at_home and (settle_step >= args.settle_steps)
-            if args.mode == "circle" and not at_home and stab_step >= args.stabilize_max_steps:
-                print(f"\n[stabilize] 在 {args.stabilize_max_steps} 步内未到达 HOME（当前误差 {q_err:.4f} rad）")
-                print(f"           画圆必须以 HOME 为起点，请增大 --stabilize-max-steps 或检查关节控制/PD 增益。")
-                phase = PHASE_DONE
-                continue
 
-            # 进入运动阶段的条件
-            if args.mode == "line" and can_start_line:
+            if can_start_line:
                 p_line_start  = kin.forward_kinematics_position(q_sim).copy()
                 dt_move       = physics_dt
                 q_cmd         = q_sim.copy()
@@ -609,95 +481,23 @@ def main():
             if sv_min_cur < SINGULARITY_THR:
                 print(f"\n[move] ⚠ 步 {move_step}: 接近奇异！σ_min={sv_min_cur:.4f}")
 
-            if args.mode == "circle":
-                # 逆时针：步 1 对应 angle=0（HOME），angle = omega * (move_step-1) * dt
-                angle   = (circle_speed / (circle_r + 1e-12)) * ((move_step - 1) * dt_move)
-                p_ideal = np.array([
-                    circle_cx + circle_r * np.cos(angle),
-                    circle_cy + circle_r * np.sin(angle),
-                    circle_z0,
-                ], dtype=float)
-                # 起步缓升：前 circle_ramp_steps 步线速度从 0.3 倍升到 1 倍，减轻残余速度叠加
-                ramp = circle_ramp_steps_used
-                if move_step <= ramp and ramp > 0:
-                    speed_scale = 0.3 + 0.7 * (move_step - 1) / max(1, ramp - 1)
-                else:
-                    speed_scale = 1.0
-                v_linear = np.array([
-                    -speed_scale * circle_speed * np.sin(angle),
-                    speed_scale * circle_speed * np.cos(angle),
-                    0.0,
-                ], dtype=float)
-                v_linear = v_linear + track_kp_circle_xy * np.array(
-                    [p_ideal[0] - p_sim[0], p_ideal[1] - p_sim[1], 0.0], dtype=float
-                )
-                v_linear = v_linear + track_kp_circle_z * np.array(
-                    [0.0, 0.0, circle_z0 - p_sim[2]], dtype=float
-                )
-                # 姿态：不重新规划姿态轨迹，而是始终保持 HOME 时的末端姿态 R_home
-                R_cur = kin.forward_kinematics_rotation(q_sim)
-                err_ori = _orientation_error_axis_angle(R_home, R_cur)
-                v_angular = track_kp_ori * err_ori
-                twist = np.concatenate([v_linear, v_angular])
-                dev = point_to_circle_dist(p_sim, circle_cx, circle_cy, circle_z0, circle_r)
-            elif args.mode == "follow":
-                # 跟踪模式：读取方块世界坐标，目标为方块中心正上方 FOLLOW_BOX_HEIGHT
-                from pxr import UsdGeom
-                box_prim = stage.GetPrimAtPath(FOLLOW_BOX_PATH)
-                if not box_prim:
-                    # 方块不存在时跳过本步
-                    continue
-                box_xf = UsdGeom.Xformable(box_prim)
-                world_xf = box_xf.ComputeLocalToWorldTransform(0.0)
-                t = world_xf.ExtractTranslation()
-                p_box = np.array([t[0], t[1], t[2]], dtype=float)
-                target_pos = p_box + np.array([0.0, 0.0, FOLLOW_BOX_HEIGHT], dtype=float)
-
-                # 只有当目标点变化超过阈值时，才重新规划直线方向
-                pos_err_vec = target_pos - p_sim
-                pos_err_norm = float(np.linalg.norm(pos_err_vec))
-                if pos_err_norm < 5e-3:
-                    # 误差很小，不规划直线，保持当前位置
-                    p_ideal = p_sim.copy()
-                    dev = pos_err_norm
-                    twist = np.zeros(6, dtype=float)
-                else:
-                    # 直线方向 = 当前末端 → 目标点
-                    direction = pos_err_vec / pos_err_norm
-                    follow_speed = 0.15  # m/s，沿直线的期望速度
-                    v_linear = follow_speed * direction
-                    # 可选：叠加一点位置误差 P 提高收敛速度
-                    v_linear += 2.0 * pos_err_vec
-                    # 线速度限幅
-                    v_lin_max = 0.3
-                    v_lin_norm = float(np.linalg.norm(v_linear))
-                    if v_lin_norm > v_lin_max:
-                        v_linear *= v_lin_max / (v_lin_norm + 1e-12)
-
-                    # 姿态：保持末端一根轴对准基座 -Z（垂直向下）
-                    R_cur = kin.forward_kinematics_rotation(q_sim)
-                    v_angular = _angular_velocity_keep_down(R_cur, kp=0.8)
-
-                    twist = np.concatenate([v_linear, v_angular])
-                    p_ideal = target_pos.copy()
-                    dev = pos_err_norm
+            s       = move_step * dt_move
+            p_ideal = p_line_start + s * v_ee  # 理想点：用段内恒定的 v_ee，不要改写 v_ee
+            dev     = point_to_line_dist(p_sim, p_line_start, direction_line)
+            # 速度指令 = 前馈 + 位置误差反馈（不修改 v_ee，否则下一帧 p_ideal 会错）
+            if track_kp_line > 0.0:
+                twist_linear = v_ee + track_kp_line * (p_ideal - p_sim)
+                v_lin_norm = float(np.linalg.norm(twist_linear))
+                if v_lin_norm > 0.5:  # 限幅避免高速时校正过猛
+                    twist_linear *= 0.5 / v_lin_norm
+                twist = np.asarray(twist_linear, dtype=float)
             else:
-                s       = move_step * dt_move
-                p_ideal = p_line_start + s * v_ee
-                dev     = point_to_line_dist(p_sim, p_line_start, direction_line)
-                if track_kp_line > 0.0:
-                    v_ee = v_ee + track_kp_line * (p_ideal - p_sim)
                 twist = np.asarray(v_ee, dtype=float)
             err = float(np.linalg.norm(p_sim - p_ideal))
 
-            # 统一：直线 / 圆 / 跟踪 模式均使用雅可比 DLS 速度控制
-            # 构造用于 DLS 的雅可比与阻尼矩阵
-            if args.mode in ("circle", "follow"):
-                J_use = J_full          # (6,5)
-                M = J_use @ J_use.T + (damping_used ** 2) * np.eye(6)
-            else:
-                J_use = J_pos           # (3,5)
-                M = J_use @ J_use.T + (damping_used ** 2) * np.eye(3)
+            # 直线模式：仅位置雅可比 DLS
+            J_use = J_pos
+            M = J_use @ J_use.T + (damping_used ** 2) * np.eye(3)
 
             # 接近奇异时自动缩放任务空间速度，避免在小奇异值方向给出过大的关节速度
             twist_used = twist
@@ -736,7 +536,7 @@ def main():
                       f"{sv_min_cur:>8.4f} | "
                       f"[{p_sim[0]:.4f},{p_sim[1]:.4f},{p_sim[2]:.4f}]")
 
-            if args.mode != "follow" and move_step >= total_steps:
+            if move_step >= total_steps:
                 phase = PHASE_DONE
 
         # ══════════════════════════════════════════════════════════════════
@@ -759,11 +559,11 @@ def main():
                 )
                 deviations.clear()   # 清空避免重复打印
 
-            # 每隔 TRACK_INTERVAL_SEC 重新规划一条从当前末端到“小矩形中心向上 TRACK_HEIGHT”的直线段
-            # 小矩形可被鼠标拖动，目标点实时跟随其中心位置变化。
+            # 每隔一定时间重新规划：高速时缩短间隔，更快纠正方向、减少多次规划才收敛
             if stage is not None:
                 track_step_counter += 1
-                TRACK_INTERVAL_STEPS = max(1, int(TRACK_INTERVAL_SEC / physics_dt))
+                track_interval_sec = 0.5 if args.speed >= 0.05 else TRACK_INTERVAL_SEC
+                TRACK_INTERVAL_STEPS = max(1, int(track_interval_sec / physics_dt))
                 if track_step_counter >= TRACK_INTERVAL_STEPS:
                     track_step_counter = 0
                     # 读取当前小矩形中心位置，并据此定义新的目标点
@@ -886,74 +686,74 @@ def _print_report(
     print()
 
 
-def _print_report_circle(
-    deviations, pos_errors, sv_mins,
-    cx, cy, z0, radius, circle_speed,
-    p_actual_end,
-):
-    """画圆轨迹验证报告。"""
-    dev = np.array(deviations)
-    err = np.array(pos_errors)
-    sv  = np.array(sv_mins)
-    passed_dev = float(dev.max()) < PASS_DEV_TOL_CIRCLE
-    passed_err = float(err.max()) < PASS_ERR_TOL_CIRCLE
-
-    print()
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print("║   Isaac Sim 雅可比画圆验证报告（XOY 平面、末端垂直向下同高）║")
-    print("╚══════════════════════════════════════════════════════════════╝")
-    print(f"  圆心: ({cx:.4f}, {cy:.4f})  平面高度 z={z0:.4f}m  半径: {radius*100:.1f}cm")
-    print(f"  线速度: {circle_speed*100:.1f}cm/s")
-    print(f"  实际终点(仿真FK): [{p_actual_end[0]:.4f},{p_actual_end[1]:.4f},{p_actual_end[2]:.4f}]")
-    print()
-    print(f"  ── 偏离圆（点到圆距离） ──")
-    print(f"     最大: {dev.max()*1000:.4f} mm   "
-          f"{'✓ OK' if passed_dev else '✗ FAIL'}（阈值 {PASS_DEV_TOL_CIRCLE*1000:.0f} mm）")
-    print(f"     平均: {dev.mean()*1000:.4f} mm")
-    print(f"     终点: {dev[-1]*1000:.4f} mm")
-    print()
-    print(f"  ── 与理想圆周位置误差 ──")
-    print(f"     最大: {err.max()*1000:.4f} mm   "
-          f"{'✓ OK' if passed_err else '✗ FAIL'}（阈值 {PASS_ERR_TOL_CIRCLE*1000:.0f} mm）")
-    print(f"     平均: {err.mean()*1000:.4f} mm")
-    print()
-    print(f"  ── 路径可操纵性 ──")
-    print(f"     最小奇异值: {sv.min():.4f}   "
-          f"{'✓ 无奇异' if sv.min() > SINGULARITY_THR else '⚠ 接近奇异'}")
-    print(f"     平均奇异值: {sv.mean():.4f}")
-    print()
-    if passed_dev and passed_err:
-        print("  ════════════════════════════════════════")
-        print("  ✓ 验证通过：雅可比正确，末端沿圆轨迹")
-        print("  ════════════════════════════════════════")
-    else:
-        print("  ✗ 验证未完全通过。可调 --track-kp / --track-kp-z / --track-kp-ori 或减小 --circle-speed/--radius。")
-    print()
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # 辅助
 # ═══════════════════════════════════════════════════════════════════════════
 
+# 本地地面：prim 路径与固定 USD 路径（Isaac 4.5 Grid 默认环境）
+LOCAL_GROUND_PRIM_PATH = "/World/LocalGround"
+DEFAULT_GROUND_USD_PATH = "/home/huangjianan/isaacsim_assets/Assets/Isaac/4.5/Isaac/Environments/Grid/default_environment.usd"
+
+
+def _add_local_ground_plane(stage=None):
+    """在当前 Stage 创建本地地面（可见 + 碰撞），不依赖 Nucleus。
+    使用与 World 相同的 stage 可避免路径/上下文不一致。
+    """
+    from pxr import UsdGeom, Gf
+    if stage is None:
+        stage = omni.usd.get_context().get_stage()
+    path = LOCAL_GROUND_PRIM_PATH
+    # 优先用 PhysicsSchemaTools：自带碰撞与网格（部分 Isaac 版本在 pxr 中提供）
+    try:
+        from pxr import PhysicsSchemaTools
+        # 常见签名: (stage, path, normal_axis, size, position, color_or_scale)
+        PhysicsSchemaTools.addGroundPlane(
+            stage, path, "Z",
+            15.0, Gf.Vec3f(0, 0, 0), Gf.Vec3f(0.5, 0.5, 0.5)
+        )
+        print(f"[ground] 使用本地地面: {path} (PhysicsSchemaTools)")
+        return
+    except Exception as e:
+        # 便于排查：是导入路径问题还是 API 签名问题
+        print(f"[ground] PhysicsSchemaTools 不可用: {type(e).__name__}: {e}")
+    # 回退：大扁立方体 + 显示颜色，并尽量加碰撞
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(1.0)
+    xf = UsdGeom.Xformable(cube)
+    xf.ClearXformOpOrder()
+    xf.AddScaleOp().Set(Gf.Vec3d(25.0, 25.0, 0.02))
+    xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -0.01))
+    cube.CreateDisplayColorAttr([Gf.Vec3f(0.5, 0.5, 0.55)])
+    try:
+        from pxr import UsdPhysics
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    except Exception:
+        pass
+    print(f"[ground] 使用本地地面: {path} (Cube，上表面 z=0)")
+
+
 def _find_urdf() -> str | None:
+    """按优先级在 sim_code、icecream_model/urdf 下查找 URDF。"""
     candidates = [
         os.path.join(_CODE_DIR, "ice_cream_0208_SLDASM.urdf"),
-        os.path.join(os.path.dirname(_CODE_DIR),
-                     "ice_cream_0208.SLDASM", "urdf",
-                     "ice_cream_0208.SLDASM.urdf"),
+        os.path.join(_CODE_DIR, "ice_cream_0208.SLDASM.urdf"),
+        os.path.join(_PROJECT_ROOT, "icecream_model", "urdf", "ice_cream_0208.SLDASM.urdf"),
+        os.path.join(_PROJECT_ROOT, "icecream_model", "urdf", "ice_cream_0208_SLDASM.urdf"),
+        os.path.join(_PROJECT_ROOT, "ice_cream_0208.SLDASM", "urdf", "ice_cream_0208.SLDASM.urdf"),
     ]
     return next((p for p in candidates if os.path.isfile(p)), None)
 
 
 def _resolve_usd(usd_arg: str | None) -> str:
+    """解析机械臂 USD：--usd 指定则用该路径，否则在 sim_code / 项目根下查找。"""
     if usd_arg is not None:
         path = os.path.abspath(usd_arg)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"USD 文件不存在: {path}")
         return path
-    # 自动查找同目录的 ice_cream_arm.usd
     candidates = [
         os.path.join(_CODE_DIR, "ice_cream_arm.usd"),
+        os.path.join(_PROJECT_ROOT, "sim_code", "ice_cream_arm.usd"),
         os.path.join(_CODE_DIR, "ice_cream_0208.SLDASM", "ice_cream_arm.usd"),
     ]
     for c in candidates:
@@ -961,7 +761,7 @@ def _resolve_usd(usd_arg: str | None) -> str:
             return c
     raise FileNotFoundError(
         "未找到 ice_cream_arm.usd，请用 --usd 指定路径，"
-        "或先运行 urdf_to_usd.py 生成 USD 文件。"
+        "或将其放在 sim_code/ 下，或先运行 urdf_to_usd.py 生成。"
     )
 
 
@@ -980,33 +780,6 @@ def _check_path_singularity(kin, q_start, v_ee, duration,
         M  = J @ J.T + damping ** 2 * np.eye(3)
         dq = J.T @ np.linalg.solve(M, v_ee)
         q  = np.clip(q + dq * dt, JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER)
-    return min_sv, True
-
-
-def _check_circle_singularity(kin, q_start, cx: float, cy: float, z0: float,
-                              radius: float, circle_speed: float,
-                              dt=1/200.0, damping=0.01):
-    """离线预检圆周路径奇异性。圆在平面 z=z0，中心(cx,cy)，半径 radius。"""
-    duration = 2.0 * np.pi * radius / (circle_speed + 1e-12)
-    n = max(1, int(duration / dt))
-    q = q_start.copy()
-    min_sv = 1e9
-    for i in range(n):
-        t = i * dt
-        angle = (circle_speed / (radius + 1e-12)) * t
-        v_ee = np.array([
-            -circle_speed * np.sin(angle),
-            circle_speed * np.cos(angle),
-            0.0,
-        ], dtype=float)
-        J = kin.jacobian_analytical(q)[:3, :]
-        sv = np.linalg.svd(J, compute_uv=False)
-        min_sv = min(min_sv, float(sv.min()))
-        if sv.min() < SINGULARITY_THR:
-            return min_sv, False
-        M = J @ J.T + damping ** 2 * np.eye(3)
-        dq = J.T @ np.linalg.solve(M, v_ee)
-        q = np.clip(q + dq * dt, JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER)
     return min_sv, True
 
 
