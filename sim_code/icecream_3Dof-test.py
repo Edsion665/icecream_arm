@@ -102,6 +102,7 @@ from icecream_kinematics import (
     JOINT_LIMITS_UPPER,
     LINK5_LENGTH,
     JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4,
+    q4_geometric_decouple,
     _rpy_to_matrix,
 )
 
@@ -403,10 +404,7 @@ def main():
                 dt_move       = physics_dt
                 q_cmd         = q_sim.copy()
                 # 几何解耦：q1,q2,q3 控位置；q4 = -(q2+q3) 使末节垂直 XOY；q5 固定
-                q_cmd[3] = np.clip(
-                    -(q_cmd[1] + q_cmd[2]),
-                    JOINT_LIMITS_LOWER[3], JOINT_LIMITS_UPPER[3]
-                )
+                q_cmd[3] = q4_geometric_decouple(q_cmd)
                 q_cmd[4] = Q_HOME[4]
 
                 # 在跟踪点正下方地面生成小矩形；目标点 z = TRACK_HEIGHT + LINK5_LENGTH（末节向下时末端在 TRACK_HEIGHT）
@@ -529,10 +527,7 @@ def main():
                 q_cmd[:3] + dq3 * dt_move,
                 JOINT_LIMITS_LOWER[:3], JOINT_LIMITS_UPPER[:3]
             )
-            q_cmd[3] = np.clip(
-                -(q_cmd[1] + q_cmd[2]),
-                JOINT_LIMITS_LOWER[3], JOINT_LIMITS_UPPER[3]
-            )
+            q_cmd[3] = q4_geometric_decouple(q_cmd)
             q_cmd[4] = Q_HOME[4]  # joint5 固定
 
             ctrl.apply_action(

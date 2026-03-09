@@ -1,5 +1,299 @@
 #!/usr/bin/env python3
 """
+使用键盘控制 Ice Cream SINGLE 机械臂各关节角度，用来交互式调 HOME 姿态。
+
+参考 `icecream_move.py` 的做法：
+- 仿真场景一直运行（带地面 + 机械臂）；
+- 在 3D 窗口里按键盘即可实时调节关节角度。
+
+按键映射（默认控制前 5 个关节，单位：度，步长由 --step-deg 控制，默认 2°）：
+  W / S：切换当前选中的关节（W -> 下一个，S -> 上一个）
+  A / D：减小 / 增大 当前选中关节的角度
+  H    ：所有前 5 个关节回到 0°
+  P    ：在终端打印当前 5 个关节角度（度）
+"""
+
+from isaacsim import SimulationApp
+
+simulation_app = SimulationApp({"headless": False})
+
+import argparse
+import os
+import sys
+from typing import List
+
+import carb
+import numpy as np
+import omni.appwindow
+
+# 适配 isaacsim.core.api / omni.isaac.core 两种命名空间
+try:
+    from isaacsim.core.api import World
+    from isaacsim.core.prims import SingleArticulation
+    from isaacsim.core.utils.stage import add_reference_to_stage
+    from isaacsim.core.utils.types import ArticulationAction
+except ModuleNotFoundError:
+    from omni.isaac.core import World
+    from omni.isaac.core.prims import SingleArticulation
+    from omni.isaac.core.utils.stage import add_reference_to_stage
+    from omni.isaac.core.utils.types import ArticulationAction
+
+import omni.usd
+
+
+_CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_CODE_DIR)
+
+
+def _resolve_usd(usd_arg: str | None) -> str:
+    """解析机械臂 USD：--usd 指定则用该路径，否则在常见位置查找 SINGLE / 0208 模型。"""
+    if usd_arg is not None:
+        path = os.path.abspath(usd_arg)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"USD 文件不存在: {path}")
+        return path
+
+    candidates = [
+        os.path.join(_CODE_DIR, "ice_cream_single_arm.usd"),
+        os.path.join(_PROJECT_ROOT, "sim_code", "ice_cream_single_arm.usd"),
+        os.path.join(_CODE_DIR, "ice_cream_arm.usd"),
+        os.path.join(_PROJECT_ROOT, "sim_code", "ice_cream_arm.usd"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    raise FileNotFoundError(
+        "未找到 ice_cream_single_arm.usd / ice_cream_arm.usd，请用 --usd 指定路径。"
+    )
+
+
+def _find_articulation_root_prim_path(stage, under_path: str) -> str | None:
+    """
+    从 under_path 起向下查找第一个带 ArticulationRootAPI 的 prim 路径。
+    URDF 导入后 ArticulationRoot 通常在子 prim（如 link0 或 root_joint）上。
+    """
+    try:
+        from pxr import UsdPhysics
+    except Exception:
+        return None
+
+    prim = stage.GetPrimAtPath(under_path)
+    if not prim.IsValid():
+        return None
+    if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+        return under_path
+    for child in prim.GetAllChildren():
+        path = child.GetPath().pathString
+        if child.HasAPI(UsdPhysics.ArticulationRootAPI):
+            return path
+        found = _find_articulation_root_prim_path(stage, path)
+        if found:
+            return found
+    return None
+
+
+def _add_local_ground(stage) -> None:
+    """在当前 stage 创建一个简易地面。"""
+    from pxr import UsdGeom, Gf, UsdPhysics
+
+    path = "/World/LocalGround"
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(1.0)
+    xf = UsdGeom.Xformable(cube)
+    xf.ClearXformOpOrder()
+    xf.AddScaleOp().Set(Gf.Vec3d(25.0, 25.0, 0.02))
+    xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -0.01))
+    cube.CreateDisplayColorAttr([Gf.Vec3f(0.5, 0.5, 0.55)])
+    try:
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    except Exception:
+        pass
+
+
+def _to_full_joint_vector(q_arm: np.ndarray, n_dof: int) -> np.ndarray:
+    """
+    将前 5 个臂关节角度补齐为 n_dof（多余 DOF 置 0，用于带夹爪的模型）。
+    """
+    arm_dof = min(5, q_arm.size)
+    q = np.zeros(n_dof, dtype=float)
+    q[:arm_dof] = q_arm[:arm_dof]
+    return q
+
+
+def _print_joint_state(names: List[str], q_arm_deg: np.ndarray) -> None:
+    print("\n当前关节角（度）：")
+    for i in range(min(5, q_arm_deg.size)):
+        name = names[i] if i < len(names) else f"joint{i+1}"
+        print(f"  {i+1}: {name:>10s} = {q_arm_deg[i]:8.3f}°")
+    print()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="键盘控制 5 个关节角度：W/S 选关节，A/D 调角度，用于调 HOME 姿态"
+    )
+    parser.add_argument(
+        "--usd",
+        type=str,
+        default=None,
+        help="机械臂 USD 路径（默认优先使用 ice_cream_single_arm.usd，其次 ice_cream_arm.usd）",
+    )
+    parser.add_argument(
+        "--step-deg",
+        type=float,
+        default=2.0,
+        help="每次 A/D 调节角度（度），默认 2",
+    )
+    args, _ = parser.parse_known_args()
+
+    step_deg = float(args.step_deg)
+    step_rad = np.deg2rad(step_deg)
+
+    physics_dt = 1.0 / 60.0
+    world = World(stage_units_in_meters=1.0, physics_dt=physics_dt, rendering_dt=physics_dt)
+
+    # 地面 + 机械臂
+    stage = omni.usd.get_context().get_stage()
+    _add_local_ground(stage)
+
+    usd_path = _resolve_usd(args.usd)
+    arm_prim_path = "/World/IceCreamArm"
+    add_reference_to_stage(usd_path=usd_path, prim_path=arm_prim_path)
+
+    # 基座放到世界原点
+    prim = stage.GetPrimAtPath(arm_prim_path)
+    if prim.IsValid():
+        from pxr import UsdGeom, Gf
+
+        xf = UsdGeom.Xformable(prim)
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
+
+    found_root = _find_articulation_root_prim_path(stage, arm_prim_path)
+    if found_root and found_root.endswith("/root_joint"):
+        articulation_path = found_root[: -len("/root_joint")].rstrip("/") or arm_prim_path
+    else:
+        articulation_path = found_root or arm_prim_path
+
+    arm = world.scene.add(SingleArticulation(articulation_path, name="ice_cream_arm"))
+    world.scene.add_default_ground_plane()  # Isaac 自带地面（可以和本地地面共存）
+    world.reset()
+
+    q0 = arm.get_joint_positions()
+    if q0 is None:
+        carb.log_error("无法从 articulation 读取关节角，退出。")
+        simulation_app.close()
+        return
+
+    q0 = np.array(q0, dtype=float).ravel()
+    n_dof = q0.size
+    arm_dof = min(5, n_dof)
+
+    try:
+        names = list(getattr(arm, "dof_names", None) or getattr(arm, "joint_names", []))
+    except Exception:
+        names = [f"joint{i+1}" for i in range(n_dof)]
+
+    carb.log_info(f"[keyboard_home_tuner] USD: {usd_path}")
+    carb.log_info(f"[keyboard_home_tuner] Articulation 路径: {articulation_path}")
+    carb.log_info(f"[keyboard_home_tuner] DOF 总数: {n_dof}，臂关节数: {arm_dof}（只控制前 {arm_dof} 个）")
+    carb.log_info(
+        "[keyboard_home_tuner] 键盘映射: W/S 选关节, A/D 减小/增大当前关节角度 (step %.1f°), H 回零, P 打印角度"
+        % step_deg
+    )
+
+    # 简单限位：[-180°, 180°]
+    joint_lower = np.deg2rad(np.full(arm_dof, -180.0, dtype=float))
+    joint_upper = np.deg2rad(np.full(arm_dof, 180.0, dtype=float))
+
+    # 当前命令角度（弧度，前 arm_dof 个）
+    q_arm = q0[:arm_dof].copy()
+    _print_joint_state(names, np.rad2deg(q_arm))
+
+    # 选择的关节索引
+    selected_joint = 0
+
+    def _log_selected():
+        carb.log_info(
+            f"[keyboard_home_tuner] selected joint: {selected_joint} ({names[selected_joint] if selected_joint < len(names) else f'joint{selected_joint+1}'})"
+        )
+
+    _log_selected()
+
+    # 键盘订阅（参考 icecream_move.py）
+    _input = carb.input.acquire_input_interface()
+    _appwindow = omni.appwindow.get_default_app_window()
+    _keyboard = _appwindow.get_keyboard() if _appwindow is not None else None
+
+    if _keyboard is None:
+        carb.log_error("无法获取键盘设备（app window 键盘为 None），退出。")
+        simulation_app.close()
+        return
+
+    def on_key(event, *_args, **_kwargs):
+        nonlocal selected_joint, q_arm
+        from carb.input import KeyboardEventType
+
+        if event.type != KeyboardEventType.KEY_PRESS:
+            return True
+
+        name = event.input.name
+
+        # 选择关节
+        if name == "W":
+            selected_joint = (selected_joint + 1) % arm_dof
+            _log_selected()
+        elif name == "S":
+            selected_joint = (selected_joint - 1) % arm_dof
+            _log_selected()
+        # 调节角度
+        elif name == "A":
+            q_arm[selected_joint] -= step_rad
+        elif name == "D":
+            q_arm[selected_joint] += step_rad
+        # 所有关节回零
+        elif name == "H":
+            q_arm[:] = 0.0
+        # 打印当前角度
+        elif name == "P":
+            _print_joint_state(names, np.rad2deg(q_arm))
+        else:
+            return True
+
+        # 限幅与日志
+        q_arm = np.clip(q_arm, joint_lower, joint_upper)
+        if name in ("A", "D", "H"):
+            deg = np.rad2deg(q_arm[selected_joint])
+            carb.log_info(
+                f"[keyboard_home_tuner] {names[selected_joint] if selected_joint < len(names) else f'joint{selected_joint+1}'} -> {deg:.2f}°"
+            )
+        return True
+
+    _input.subscribe_to_keyboard_events(_keyboard, on_key)
+
+    ctrl = arm.get_articulation_controller()
+    reset_needed = False
+
+    # 主循环：持续运行仿真，将当前 q_arm 作为前 5 个关节目标
+    while simulation_app.is_running():
+        world.step(render=True)
+        if world.is_stopped():
+            reset_needed = True
+        if world.is_playing():
+            if reset_needed:
+                world.reset()
+                reset_needed = False
+            q_full = _to_full_joint_vector(q_arm, n_dof)
+            ctrl.apply_action(ArticulationAction(joint_positions=q_full.tolist()))
+
+    simulation_app.close()
+
+
+if __name__ == "__main__":
+    main()
+
+#!/usr/bin/env python3
+"""
 实时键盘调节 5 个关节角度，交互式寻找合适的 HOME 姿态。
 
 特点：

@@ -2,13 +2,13 @@
 """
 3-DOF 直线跟踪测试（几何解耦策略）
 ==================================
-ice_cream_0208.SLDASM  5-DOF 机械臂，仅用前 3 关节控位置；q4 = -(q2+q3) 使末节垂直 XOY；q5 固定。
+ice_cream_0208.SLDASM  5-DOF 机械臂，仅用前 3 关节控位置；q4 = 120°-(q2+q3) 使末节保持姿态；q5 固定。
 
 Geometric Decoupling Strategy
 -----------------------------
   • 任务空间：仅 3D 位置 (x,y,z)，跟踪点为 joint4 电机中心。
   • 雅可比：J ∈ R^{3×3}，该点位置对 q1,q2,q3 的雅可比。
-  • q4 几何约束：每步发送 q4 = -(q2+q3)，保证最后一节与 XOY 平面垂直；q5 固定于 HOME。
+  • q4 几何约束：每步发送 q4 = 120°-(q2+q3)；q5 固定于 HOME。
 
 功能
 ----
@@ -17,7 +17,8 @@ Geometric Decoupling Strategy
 3. 绿/红球标记轨迹，打印偏离与误差报告
 
 HOME 位置
-  q_home = [0, -1.271, 1.5, -0.5, 0]  rad
+  由 `keyboard_home_tuner.py` 交互调节得到：
+    joint1..5 ≈ [-46, 34, 40, -12, 2] deg  （本脚本内转换为弧度）
   跟踪点（与 link4 重合）目标 z = TRACK_HEIGHT + LINK5_LENGTH（末节向下时末端在 TRACK_HEIGHT）
 
 轨迹模式
@@ -129,6 +130,7 @@ from icecream_kinematics import (
     JOINT_LIMITS_UPPER,
     LINK5_LENGTH,
     JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4,
+    q4_geometric_decouple,
     _rpy_to_matrix,
 )
 
@@ -138,7 +140,8 @@ from icecream_kinematics import (
 
 # 所有连杆 Z ≥ 0.105m（不碰地面）
 # EE ≈ [0.494, 0.166, 0.482] m，σ_min=0.2055，条件数<2.1
-Q_HOME = np.array([0.0, -1.271, 1.5, -0.5, 0.0], dtype=float)
+Q_HOME_DEG = np.array([-46.0, 34.0, 40.0, -12.0, 2.0], dtype=float)
+Q_HOME = np.deg2rad(Q_HOME_DEG)
 
 SINGULARITY_THR = 0.01   # 最小奇异值低于此为奇异
 PASS_DEV_TOL    = 0.001  # 1 mm 偏离容差（直线）
@@ -224,6 +227,13 @@ TRACK_HEIGHT = 0.3
 # 重新规划直线的时间间隔（秒）及对应步数
 TRACK_INTERVAL_SEC = 1.0
 
+# 是否进行直线跟踪控制（False = 仅保持 HOME/当前位置，不沿直线运动）
+DO_LINE_TRACKING = True
+
+# 回到 HOME 后，小矩形中心在「末端执行器正下方」再沿水平「前」方向偏移的距离（m）
+# 「前」= 基座指向 EE 在 XOY 上的投影方向
+FORWARD_OFFSET_M = 0.1
+
 
 def _angular_velocity_keep_down(R_cur: np.ndarray, kp: float) -> np.ndarray:
     """
@@ -251,6 +261,7 @@ def main():
     # ── 运动学（解析雅可比）────────────────────────────────────────────────
     urdf_path = args.urdf or _find_urdf()
     kin = URDFKinematics(urdf_path=urdf_path)
+    link5_length = kin.get_link5_length()
     print(f"[kinematics] 参数来源: {kin._source} | {kin._urdf_path}")
 
     # ── 方向向量与合成速度（直线模式）────────────────────────────────────────
@@ -260,7 +271,7 @@ def main():
     direction_line = v_ee_nominal / (np.linalg.norm(v_ee_nominal) + 1e-12)
     duration_move_line = args.length / (args.speed + 1e-12)
 
-    # ── 预检：路径奇异性（3-DOF 跟踪点 = joint4 电机中心，q4=-(q2+q3)，q5 固定）────────────────
+    # ── 预检：路径奇异性（3-DOF 跟踪点 = joint4 电机中心，q4=120°-(q2+q3)，q5 固定）────────────────
     print(f"\n[precheck] HOME 关节角: {Q_HOME}")
     p_home = kin.forward_kinematics_position(Q_HOME)
     p_link4_origin = kin.forward_kinematics_position_link4(Q_HOME)
@@ -270,7 +281,7 @@ def main():
     print(f"[precheck] HOME link4 原点(转轴)位置: {p_link4_origin}")
     print(f"[precheck] HOME 跟踪点(电机中心)位置:  {p_track_home}")
     print(f"[precheck] HOME 末端(link5)位置:      {p_home}")
-    print(f"[precheck] LINK5_LENGTH={LINK5_LENGTH:.4f}m（目标 z = TRACK_HEIGHT + LINK5_LENGTH）")
+    print(f"[precheck] LINK5_LENGTH={link5_length:.4f}m（目标 z = TRACK_HEIGHT + LINK5_LENGTH）")
     print(f"[precheck] HOME σ_min={sv_home_min:.4f}  κ={cond_home:.2f}")
     R_home = kin.forward_kinematics_rotation(Q_HOME)
     # 末端“向下”固定为世界系 -Z，不随 HOME 姿态改（保证 link5 相对世界 z 轴平行）
@@ -385,6 +396,61 @@ def main():
     except Exception:
         pass
 
+    # 一开始就把机械臂送到 HOME 姿态（你在 keyboard_home_tuner.py 中调出来的那一组角度），
+    # 让仿真里的“初始位置”就是该 HOME，而不是 USD 默认的零位。
+    q_init_full = None
+    try:
+        q_init_full = np.asarray(Q_HOME, dtype=float).ravel()[:NUM_JOINTS]
+        if n_dof > NUM_JOINTS:
+            q_init_full = np.concatenate(
+                [q_init_full, np.zeros(n_dof - NUM_JOINTS, dtype=float)]
+            )
+        else:
+            q_init_full = q_init_full
+        # 预积分若干步：在每一步都下发同一个关节目标，使刚体真正收敛到该 HOME 姿态
+        warmup_steps = 120
+        for _ in range(warmup_steps):
+            ctrl.apply_action(ArticulationAction(joint_positions=q_init_full.tolist()))
+            world.step(render=not args.headless)
+        # 从仿真实际读取一开始的关节角，并打印（前 5 个为臂关节，其余为夹爪）
+        q_start_raw = arm.get_joint_positions()
+        if q_start_raw is not None:
+            q_start = np.array(q_start_raw, dtype=float).ravel()
+            q_arm_start = q_start[:NUM_JOINTS]
+            q_arm_start_deg = np.degrees(q_arm_start)
+            print("\n[init] 仿真中实际关节角（臂前 5 轴，单位 deg）：")
+            for i, ang in enumerate(q_arm_start_deg, start=1):
+                print(f"       joint{i} = {ang:7.3f}°")
+            if q_start.size > NUM_JOINTS:
+                q_extra_deg = np.degrees(q_start[NUM_JOINTS:])
+                print(f"       额外 DOF（夹爪等，总 {q_start.size} 轴）= {q_extra_deg}")
+        # 在 HOME 跟踪点（joint4 原点沿自身 -Z 方向 20mm）位置放置一个小球，便于可视化该跟踪点
+        try:
+            from pxr import UsdGeom, Gf
+            stage_vis = omni.usd.get_context().get_stage()
+            if stage_vis is not None:
+                p_track_home_world = kin.forward_kinematics_position_joint4_motor_center(Q_HOME)
+                sp = UsdGeom.Sphere.Define(stage_vis, "/World/TrackPointHome")
+                sp.CreateRadiusAttr(0.01)  # 1cm 小球
+                sp.CreateDisplayColorAttr([Gf.Vec3f(0.2, 0.8, 0.9)])  # 青色
+                xf_sp = UsdGeom.Xformable(sp.GetPrim())
+                xf_sp.ClearXformOpOrder()
+                xf_sp.AddTranslateOp().Set(
+                    Gf.Vec3d(
+                        float(p_track_home_world[0]),
+                        float(p_track_home_world[1]),
+                        float(p_track_home_world[2]),
+                    )
+                )
+                print(
+                    "[init] 已在 HOME 跟踪点位置放置可视化小球 TrackPointHome，"
+                    f"位置={p_track_home_world}"
+                )
+        except Exception:
+            pass
+    except Exception:
+        q_init_full = None
+
     def _to_full_joint_list(q_arm):
         """将前 5 个臂关节目标补齐为 n_dof 长度（夹爪保持 0），用于 apply_action。"""
         q = np.asarray(q_arm, dtype=float).ravel()[:NUM_JOINTS]
@@ -486,6 +552,28 @@ def main():
 
             if stab_step % 30 == 0:
                 p_cur = kin.forward_kinematics_position(q_sim)
+                # 读取当前 joint4 原点与青色跟踪点小球的位置，便于在仿真中对比
+                try:
+                    p_joint4 = kin.forward_kinematics_position_link4(q_sim)
+                    from pxr import UsdGeom
+                    track_prim = stage.GetPrimAtPath("/World/TrackPointHome")
+                    track_pos = None
+                    if track_prim:
+                        xf_tp = UsdGeom.Xformable(track_prim)
+                        world_xf_tp = xf_tp.ComputeLocalToWorldTransform(0.0)
+                        t_tp = world_xf_tp.ExtractTranslation()
+                        track_pos = np.array([t_tp[0], t_tp[1], t_tp[2]], dtype=float)
+                    print(
+                        "[debug] joint4_origin_world="
+                        f"[{p_joint4[0]:.4f},{p_joint4[1]:.4f},{p_joint4[2]:.4f}]"
+                    )
+                    if track_pos is not None:
+                        print(
+                            "[debug] track_sphere_world="
+                            f"[{track_pos[0]:.4f},{track_pos[1]:.4f},{track_pos[2]:.4f}]"
+                        )
+                except Exception:
+                    pass
                 print(f"[stabilize] step={stab_step:4d} | "
                       f"关节误差={q_err:.4f} rad | "
                       f"EE=[{p_cur[0]:.3f},{p_cur[1]:.3f},{p_cur[2]:.3f}]")
@@ -495,22 +583,32 @@ def main():
 
             if can_start_line:
                 p_line_start  = kin.forward_kinematics_position_joint4_motor_center(q_sim).copy()
+                p_ee          = kin.forward_kinematics_position(q_sim)  # 末端执行器位置（link5 原点）
                 dt_move       = physics_dt
                 q_cmd         = q_sim.copy()
-                # 几何解耦：q1,q2,q3 控位置；q4 = -(q2+q3) 使末节垂直 XOY；q5 固定
-                q_cmd[3] = np.clip(
-                    -(q_cmd[1] + q_cmd[2]),
-                    JOINT_LIMITS_LOWER[3], JOINT_LIMITS_UPPER[3]
-                )
+                # 几何解耦：q1,q2,q3 控位置；q4 = 120°-(q2+q3)；q5 固定（与 3Dof-test 同步）
+                q_cmd[3] = q4_geometric_decouple(q_cmd)
                 q_cmd[4] = Q_HOME[4]
 
-                # 在跟踪点正下方地面生成小矩形；目标点 z = TRACK_HEIGHT + LINK5_LENGTH（末节向下时末端在 TRACK_HEIGHT）
+                # 小矩形：在末端执行器正下方，再沿水平「前」方向（基座→EE 在 XOY 投影）偏移 FORWARD_OFFSET_M
+                xy_ee = np.array([p_ee[0], p_ee[1]], dtype=float)
+                norm_xy = float(np.linalg.norm(xy_ee))
+                if norm_xy < 1e-6:
+                    forward_xy = np.array([1.0, 0.0], dtype=float)
+                else:
+                    forward_xy = xy_ee / norm_xy
+                home_box_center = np.array(
+                    [p_ee[0] + forward_xy[0] * FORWARD_OFFSET_M,
+                     p_ee[1] + forward_xy[1] * FORWARD_OFFSET_M,
+                     0.0], dtype=float
+                )
+                target_pos = np.array(
+                    [home_box_center[0], home_box_center[1], TRACK_HEIGHT + link5_length], dtype=float
+                )
+
+                # 在末端执行器下方往前一段距离的地面生成小矩形；目标点 z = TRACK_HEIGHT + LINK5_LENGTH
                 try:
                     from pxr import UsdGeom, Gf
-                    home_box_center = np.array([p_line_start[0], p_line_start[1], 0.0], dtype=float)
-                    target_pos = np.array(
-                        [home_box_center[0], home_box_center[1], TRACK_HEIGHT + LINK5_LENGTH], dtype=float
-                    )
                     print(
                         "[home_box] center=[%.4f, %.4f, %.4f], target_pos=[%.4f, %.4f, %.4f]"
                         % (
@@ -539,10 +637,10 @@ def main():
                 except Exception:
                     home_box_center = np.array([p_line_start[0], p_line_start[1], 0.0], dtype=float)
                     target_pos = np.array(
-                        [home_box_center[0], home_box_center[1], TRACK_HEIGHT + LINK5_LENGTH], dtype=float
+                        [home_box_center[0], home_box_center[1], TRACK_HEIGHT + link5_length], dtype=float
                     )
 
-                # 以当前位置为起点、以 target_pos 为终点，重新规划一条直线段
+                # 以当前位置（跟踪点）为起点、以 target_pos 为终点，规划直线段；q4=120°-(q2+q3)，三自由度跟踪
                 delta = target_pos - p_line_start
                 seg_len = float(np.linalg.norm(delta))
                 if seg_len < 1e-6:
@@ -550,8 +648,10 @@ def main():
                     p_ideal_final = target_pos.copy()
                     total_steps   = 1
                     v_ee          = np.zeros(3, dtype=float)
+                    direction_line = np.array([1.0, 0.0, 0.0], dtype=float)
                 else:
                     direction = delta / seg_len
+                    direction_line = direction.copy()
                     v_ee = args.speed * direction
                     duration_move_line = seg_len / (args.speed + 1e-12)
                     total_steps = max(1, int(duration_move_line / dt_move))
@@ -563,7 +663,7 @@ def main():
                 print(f"       起点: {p_line_start}  理想终点: {p_ideal_final}")
                 print(f"       v_ee = 直线 {args.speed}m/s （自动按当前位置→目标点方向投影）")
                 print(f"       总步数: {total_steps} | dt={dt_move*1000:.2f}ms")
-                print(f"       [调试] 跟踪点=joint4电机中心 | q4=-(q2+q3) 末节垂直XOY | q5 固定 | q1,q2,q3 控位置")
+                print(f"       [调试] 跟踪点=joint4电机中心 | q4=120°-(q2+q3) | q5 固定 | q1,q2,q3 控位置")
                 print(f"       {'步':>5s} | {'偏离(mm)':>10s} | {'误差(mm)':>10s} | "
                       f"{'σ_min':>8s} | {'跟踪点(电机中心)(m)':>28s}")
                 print(f"       {'-'*75}")
@@ -576,85 +676,86 @@ def main():
             move_step += 1
             p_link4_origin = kin.forward_kinematics_position_link4(q_sim)
 
-            # 几何解耦：仅用与 link4 重合点的位置对 q1,q2,q3 的雅可比 J ∈ R^{3×3}，determined 系统
-            J_link4_3 = kin.jacobian_joint4_motor_center_first3(q_sim)
+            if DO_LINE_TRACKING:
+                # 几何解耦：仅用与 link4 重合点的位置对 q1,q2,q3 的雅可比 J ∈ R^{3×3}，determined 系统
+                J_link4_3 = kin.jacobian_joint4_motor_center_first3(q_sim)
 
-            sv    = np.linalg.svd(J_link4_3, compute_uv=False)
-            sv_min_cur = float(sv.min())
-            sv_mins.append(sv_min_cur)
+                sv    = np.linalg.svd(J_link4_3, compute_uv=False)
+                sv_min_cur = float(sv.min())
+                sv_mins.append(sv_min_cur)
 
-            if sv_min_cur < SINGULARITY_THR:
-                print(f"\n[move] ⚠ 步 {move_step}: 接近奇异！σ_min={sv_min_cur:.4f}")
+                if sv_min_cur < SINGULARITY_THR:
+                    print(f"\n[move] ⚠ 步 {move_step}: 接近奇异！σ_min={sv_min_cur:.4f}")
 
-            s       = move_step * dt_move
-            p_ideal = p_line_start + s * v_ee
-            dev     = point_to_line_dist(p_sim, p_line_start, direction_line)
-            dev_joint = point_to_line_dist(p_link4_origin, p_line_start, direction_line)
-            # 任务空间：仅 3D 线速度，无角速度（姿态由 q4=-(q2+q3) 与 q5 固定保证）
-            if track_kp_line > 0.0:
-                twist_linear = v_ee + track_kp_line * (p_ideal - p_sim)
-                v_lin_norm = float(np.linalg.norm(twist_linear))
-                if v_lin_norm > 0.5:
-                    twist_linear *= 0.5 / v_lin_norm
-                twist = np.asarray(twist_linear, dtype=float)
-            else:
-                twist = np.asarray(v_ee, dtype=float)
-            err = float(np.linalg.norm(p_sim - p_ideal))
+                s       = move_step * dt_move
+                p_ideal = p_line_start + s * v_ee
+                dev     = point_to_line_dist(p_sim, p_line_start, direction_line)
+                dev_joint = point_to_line_dist(p_link4_origin, p_line_start, direction_line)
+                # 任务空间：仅 3D 线速度，无角速度（姿态由 q4=120°-(q2+q3) 与 q5 固定保证）
+                if track_kp_line > 0.0:
+                    twist_linear = v_ee + track_kp_line * (p_ideal - p_sim)
+                    v_lin_norm = float(np.linalg.norm(twist_linear))
+                    if v_lin_norm > 0.5:
+                        twist_linear *= 0.5 / v_lin_norm
+                    twist = np.asarray(twist_linear, dtype=float)
+                else:
+                    twist = np.asarray(v_ee, dtype=float)
+                err = float(np.linalg.norm(p_sim - p_ideal))
 
-            # 3×3 DLS：J_link4_3 @ dq3 = twist，无过定、无姿态行
-            J_use = J_link4_3
-            M = J_use @ J_use.T + (damping_used ** 2) * np.eye(3)
+                # 3×3 DLS：J_link4_3 @ dq3 = twist，无过定、无姿态行
+                J_use = J_link4_3
+                M = J_use @ J_use.T + (damping_used ** 2) * np.eye(3)
 
-            twist_used = twist
-            if sv_min_cur < NEAR_SINGULAR_THR:
-                alpha = (sv_min_cur - SINGULARITY_THR) / max(
-                    1e-6, (NEAR_SINGULAR_THR - SINGULARITY_THR)
+                twist_used = twist
+                if sv_min_cur < NEAR_SINGULAR_THR:
+                    alpha = (sv_min_cur - SINGULARITY_THR) / max(
+                        1e-6, (NEAR_SINGULAR_THR - SINGULARITY_THR)
+                    )
+                    alpha = float(np.clip(alpha, MIN_NEAR_SINGULAR_SCALE, 1.0))
+                    twist_used = twist * alpha
+
+                dq3 = J_use.T @ np.linalg.solve(M, twist_used)  # (3,)
+
+                dq_norm = float(np.linalg.norm(dq3))
+                if dq_norm > MAX_JOINT_VEL:
+                    dq3 *= MAX_JOINT_VEL / (dq_norm + 1e-12)
+
+                # q1,q2,q3：位置跟踪（电机中心）；q4 = 120°-(q2+q3)；q5 固定（与 3Dof-test 同步）
+                q_cmd[:3] = np.clip(
+                    q_cmd[:3] + dq3 * dt_move,
+                    JOINT_LIMITS_LOWER[:3], JOINT_LIMITS_UPPER[:3]
                 )
-                alpha = float(np.clip(alpha, MIN_NEAR_SINGULAR_SCALE, 1.0))
-                twist_used = twist * alpha
+                q_cmd[3] = q4_geometric_decouple(q_cmd)
+                q_cmd[4] = Q_HOME[4]  # joint5 固定
 
-            dq3 = J_use.T @ np.linalg.solve(M, twist_used)  # (3,)
+                deviations.append(dev)
+                pos_errors.append(err)
+                q_sim_log.append(q_sim.copy())
+                p_sim_log.append(p_sim.copy())
+                marker.tick(p_sim, p_ideal)
 
-            dq_norm = float(np.linalg.norm(dq3))
-            if dq_norm > MAX_JOINT_VEL:
-                dq3 *= MAX_JOINT_VEL / (dq_norm + 1e-12)
-
-            # q1,q2,q3：位置跟踪（电机中心）；q4 = -(q2+q3) 使末节垂直 XOY；q5 固定
-            q_cmd[:3] = np.clip(
-                q_cmd[:3] + dq3 * dt_move,
-                JOINT_LIMITS_LOWER[:3], JOINT_LIMITS_UPPER[:3]
-            )
-            q_cmd[3] = np.clip(
-                -(q_cmd[1] + q_cmd[2]),
-                JOINT_LIMITS_LOWER[3], JOINT_LIMITS_UPPER[3]
-            )
-            q_cmd[4] = Q_HOME[4]  # joint5 固定
+                # 调试：每 30 步输出「谁在跟线」— 电机中心 vs 转轴 到直线的偏离，以及末端与 -Z 夹角
+                if move_step % 30 == 0 or move_step == total_steps:
+                    dist_mm = float(np.linalg.norm(p_sim - p_link4_origin)) * 1000.0
+                    R_ee = kin.forward_kinematics_rotation(q_sim)
+                    ee_z = R_ee[:, 2]  # 末端 z 轴（沿末节指向）在世界系下的方向
+                    cos_angle = np.clip(float(np.dot(ee_z, np.array([0.0, 0.0, -1.0]))), -1.0, 1.0)
+                    angle_with_neg_z_deg = np.degrees(np.arccos(cos_angle))
+                    print(f"       {move_step:>5d} | {dev*1000:>10.4f} | {err*1000:>10.4f} | "
+                          f"{sv_min_cur:>8.4f} | "
+                          f"[{p_sim[0]:.4f},{p_sim[1]:.4f},{p_sim[2]:.4f}]")
+                    print(f"       [dbg] 电机中心偏离直线= {dev*1000:.4f} mm  |  转轴偏离直线= {dev_joint*1000:.4f} mm  "
+                          f"| 两点距离= {dist_mm:.2f} mm  (若为电机中心跟线，前者应更小)")
+                    print(f"            跟踪点(电机中心)= [{p_sim[0]:.4f},{p_sim[1]:.4f},{p_sim[2]:.4f}]  "
+                          f"link4原点(转轴)= [{p_link4_origin[0]:.4f},{p_link4_origin[1]:.4f},{p_link4_origin[2]:.4f}]")
+                    print(f"            [姿态] 末端 z 轴与世界 -Z 夹角= {angle_with_neg_z_deg:.4f}° (0°=垂直向下)")
+            else:
+                # 不进行直线跟踪：仅保持进入 MOVE 时的姿态（q_cmd 已在进入时设好）
+                pass
 
             ctrl.apply_action(
                 ArticulationAction(joint_positions=_to_full_joint_list(q_cmd).tolist())
             )
-
-            deviations.append(dev)
-            pos_errors.append(err)
-            q_sim_log.append(q_sim.copy())
-            p_sim_log.append(p_sim.copy())
-            marker.tick(p_sim, p_ideal)
-
-            # 调试：每 30 步输出「谁在跟线」— 电机中心 vs 转轴 到直线的偏离，以及末端与 -Z 夹角
-            if move_step % 30 == 0 or move_step == total_steps:
-                dist_mm = float(np.linalg.norm(p_sim - p_link4_origin)) * 1000.0
-                R_ee = kin.forward_kinematics_rotation(q_sim)
-                ee_z = R_ee[:, 2]  # 末端 z 轴（沿末节指向）在世界系下的方向
-                cos_angle = np.clip(float(np.dot(ee_z, np.array([0.0, 0.0, -1.0]))), -1.0, 1.0)
-                angle_with_neg_z_deg = np.degrees(np.arccos(cos_angle))
-                print(f"       {move_step:>5d} | {dev*1000:>10.4f} | {err*1000:>10.4f} | "
-                      f"{sv_min_cur:>8.4f} | "
-                      f"[{p_sim[0]:.4f},{p_sim[1]:.4f},{p_sim[2]:.4f}]")
-                print(f"       [dbg] 电机中心偏离直线= {dev*1000:.4f} mm  |  转轴偏离直线= {dev_joint*1000:.4f} mm  "
-                      f"| 两点距离= {dist_mm:.2f} mm  (若为电机中心跟线，前者应更小)")
-                print(f"            跟踪点(电机中心)= [{p_sim[0]:.4f},{p_sim[1]:.4f},{p_sim[2]:.4f}]  "
-                      f"link4原点(转轴)= [{p_link4_origin[0]:.4f},{p_link4_origin[1]:.4f},{p_link4_origin[2]:.4f}]")
-                print(f"            [姿态] 末端 z 轴与世界 -Z 夹角= {angle_with_neg_z_deg:.4f}° (0°=垂直向下)")
 
             if move_step >= total_steps:
                 phase = PHASE_DONE
@@ -698,7 +799,7 @@ def main():
                         box_center = np.array([t[0], t[1], t[2]], dtype=float)
                         # 跟踪点目标 z = 地面 + TRACK_HEIGHT + LINK5_LENGTH
                         target_pos = np.array(
-                            [box_center[0], box_center[1], box_center[2] + TRACK_HEIGHT + LINK5_LENGTH],
+                            [box_center[0], box_center[1], box_center[2] + TRACK_HEIGHT + link5_length],
                             dtype=float,
                         )
                     except Exception:
@@ -841,8 +942,11 @@ def _add_local_ground_plane(stage=None):
 
 
 def _find_urdf() -> str | None:
-    """按优先级在 sim_code、icecream_model/urdf 下查找 URDF。"""
+    """按优先级在项目根下查找 URDF（优先 SINGLE，其次 0208）。"""
     candidates = [
+        # SINGLE 模型 URDF（推荐）
+        os.path.join(_PROJECT_ROOT, "ice_cream_SINGLE.SLDASM", "urdf", "ice_cream_SINGLE.SLDASM.urdf"),
+        # 兼容旧 0208 模型 URDF
         os.path.join(_CODE_DIR, "ice_cream_0208_SLDASM.urdf"),
         os.path.join(_CODE_DIR, "ice_cream_0208.SLDASM.urdf"),
         os.path.join(_PROJECT_ROOT, "icecream_model", "urdf", "ice_cream_0208.SLDASM.urdf"),
@@ -893,7 +997,7 @@ def _check_path_singularity(kin, q_start, v_ee, duration,
 
 def _check_path_singularity_track_point(kin, q_start, v_ee, duration,
                                         dt=1/200.0, damping=0.01):
-    """离线预检跟踪点（joint4 电机中心）路径奇异性（几何解耦：q4=-(q2+q3)，q5 固定）。"""
+    """离线预检跟踪点（joint4 电机中心）路径奇异性（几何解耦：q4=120°-(q2+q3)，q5 固定）。"""
     n   = max(1, int(duration / dt))
     q   = q_start.copy()
     min_sv = 1e9

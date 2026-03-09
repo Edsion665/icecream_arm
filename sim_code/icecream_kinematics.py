@@ -11,14 +11,6 @@ Ice Cream 机械臂运动学 (ice_cream_0208.SLDASM)
 变换链：T_world_ee = T_world_base · T_base_ee(q)
         T_world_cam = T_world_ee · T_ee_cam
 
-URDF 关节参数（从 ice_cream_0208.SLDASM.urdf 精确提取）
-──────────────────────────────────────────────────────────
-joint1  link0→link1  xyz=[ 0.125000,  0.125000,  0.105500]  rpy=[0, 0, 0]                   axis=[0,0,-1]
-joint2  link1→link2  xyz=[ 0.022580, -0.022034,  0.048900]  rpy=[π/2, 0, 0.111028]          axis=[0,0,-1]
-joint3  link2→link3  xyz=[ 0.313730,  0.055610,  0.000000]  rpy=[0, 0, -1.395365]           axis=[0,0,-1]
-joint4  link3→link4  xyz=[-0.119740,  0.269212,  0.000000]  rpy=[0, 0, -1.394055]           axis=[0,0,-1]
-joint5  link4→link5  xyz=[ 0.025038,  0.097126, -0.024500]  rpy=[1.223645, -π/2, 0]         axis=[0,0,-1]
-
 工作空间（q 在 ±1.2 rad 时采样）：
   X ∈ [0.10, 0.71] m   Y ∈ [-0.33, 0.65] m   Z ∈ [-0.34, 0.71] m
 """
@@ -54,8 +46,22 @@ LINK5_LENGTH = float(np.linalg.norm(_LINK5_XYZ))
 #   2. 在 CAD 中量取该关节电机的几何中心（外壳中心或质心），再换算到 link4 系下；
 #   3. 或：若 URDF 中 link4 有子 visual/collision 表示电机体，取该 mesh 中心在 link4 系下的坐标。
 # 若暂无准确值可填 [0,0,0]，则跟踪点退化为 joint4 转轴。
-# 当前值：joint4 电机中心在 link4 系（与 joint4 系一致）z 轴反方向 20 mm。
+# 当前值：跟踪点 = joint4 原点沿 link4 系 -z 方向 20 mm（电机中心）；置零则退化为转轴。
 JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4 = np.array([0.0, 0.0, -0.02], dtype=float)
+
+
+# 几何解耦时 q4 的固定偏移：q4 = Q4_OFFSET_DEG - (q2+q3)，单位弧度
+Q4_OFFSET_DEG = 120.0  # 度
+Q4_OFFSET_RAD = float(np.deg2rad(Q4_OFFSET_DEG))
+
+
+def q4_geometric_decouple(q: np.ndarray) -> float:
+    """
+    几何解耦时 joint4 目标角：q4 = 120° - (q2+q3)（弧度：Q4_OFFSET_RAD - (q2+q3)）。
+    使末节按给定偏移保持姿态；与 ice_cream_single_test 一致。
+    """
+    q = np.asarray(q, dtype=float).ravel()[:NUM_JOINTS]
+    return float(np.clip(Q4_OFFSET_RAD - (q[1] + q[2]), JOINT_LIMITS_LOWER[3], JOINT_LIMITS_UPPER[3]))
 
 
 def _load_joint4_motor_offset_from_urdf(urdf_path: str) -> Optional[np.ndarray]:
@@ -85,18 +91,8 @@ def _load_joint4_motor_offset_from_urdf(urdf_path: str) -> Optional[np.ndarray]:
 
 # 若存在 URDF 且 link4 定义了 motor_center 且为非零向量，则覆盖默认偏移（0 0 0 视为未定义，不覆盖）
 def _apply_joint4_motor_offset_from_urdf() -> None:
-    global JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4
-    for candidate in [
-        os.path.join(os.path.dirname(__file__), "..", "icecream_model", "urdf", "ice_cream_0208.SLDASM.urdf"),
-        os.path.join(os.path.dirname(__file__), "ice_cream_0208.SLDASM.urdf"),
-    ]:
-        off = _load_joint4_motor_offset_from_urdf(candidate)
-        if off is not None and np.linalg.norm(off) > 1e-9:
-            JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4 = off
-            break
-
-
-_apply_joint4_motor_offset_from_urdf()
+    """保留函数以兼容旧代码，如需从 URDF 中读取 motor_center，可在此处启用。当前默认使用硬编码偏移 [0, 0, -0.02]。"""
+    return
 
 # --------------------------------------------------------------------------
 # URDF 精确参数（硬编码 fallback，无需 URDF 文件也可运行）
@@ -284,6 +280,9 @@ class URDFKinematics:
             axis = np.array([0., 0., -1.])
             if axis_el is not None and axis_el.get("xyz"):
                 axis = np.array([float(v) for v in axis_el.get("xyz").split()])
+            # 部分 URDF（如 SolidWorks 导出的 SINGLE）关节轴为 "0 0 0"，导致 FK 无关节旋转、与仿真/实物严重偏差
+            if np.linalg.norm(axis) < 1e-10:
+                axis = np.array([0., 0., -1.])
             order.append((JOINT_NAMES.index(name), {
                 "name": name, "xyz": xyz, "rpy": rpy, "axis": axis,
             }))

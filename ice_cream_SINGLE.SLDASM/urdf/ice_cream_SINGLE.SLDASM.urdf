@@ -95,7 +95,7 @@
     <child
       link="link1" />
     <axis
-      xyz="0 0 0" />
+      xyz="0 0 -1" />
     <limit
       lower="-3.14"
       upper="3.14"
@@ -153,7 +153,7 @@
     <child
       link="link2" />
     <axis
-      xyz="0 0 0" />
+      xyz="0 0 -1" />
     <limit
       lower="-3.14"
       upper="3.14"
@@ -211,7 +211,7 @@
     <child
       link="link3" />
     <axis
-      xyz="0 0 0" />
+      xyz="0 0 -1" />
     <limit
       lower="-3.14"
       upper="3.14"
@@ -269,7 +269,7 @@
     <child
       link="link4" />
     <axis
-      xyz="0 0 0" />
+      xyz="0 0 -1" />
     <limit
       lower="-3.14"
       upper="3.14"
@@ -327,7 +327,7 @@
     <child
       link="link5" />
     <axis
-      xyz="0 0 0" />
+      xyz="0 0 -1" />
     <limit
       lower="-3.14"
       upper="3.14"
@@ -385,7 +385,7 @@
     <child
       link="fingerlink_R" />
     <axis
-      xyz="0 0 0" />
+      xyz="0 0 -1" />
     <limit
       lower="0"
       upper="0"
