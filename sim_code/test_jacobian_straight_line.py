@@ -262,7 +262,7 @@ def main():
     track_kp_ori = args.track_kp_ori
 
     # ── 构建 Isaac Sim 场景 ─────────────────────────────────────────────────
-    physics_dt = 1.0 / 600.0
+    physics_dt = 1.0 / 60.0
     world = World(
         stage_units_in_meters=1.0,
         physics_dt=physics_dt,

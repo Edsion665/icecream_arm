@@ -1,8 +1,9 @@
+
 # IceCream 关节协作机械臂项目
 
+![alt text](https://github.com/Edsion665/icecream_arm/blob/main/icecream.jpg?raw=true)
 
-
-Dariy-Prince团队自研的 **5 自由度关节协作机械臂** 项目。
+Dairy-Prince团队自研的 **5 自由度关节协作机械臂** 项目。
 
 甜品家族一号成员冰淇淋！
 
@@ -207,7 +208,7 @@ cd ~/icecream_project
   - 实现：
     - 电机电流/位置/速度闭环控制；
     - 编码器读取与零点校准；
-    - 温度 / 电流等状态监测与保护；
+    - 温度 / 电流等状态监测与保护；岛
     - 通信协议（CAN / RS485 / UART 等）。
 
 - **预期内容**

@@ -41,6 +41,63 @@ BASE_LINK_NAME = "link0"
 JOINT_LIMITS_LOWER = np.array([-3.14] * NUM_JOINTS, dtype=float)
 JOINT_LIMITS_UPPER = np.array([ 3.14] * NUM_JOINTS, dtype=float)
 
+# 第五节（link5）长度：link4 原点到 link5 原点的距离（joint5 在 link4 系下的 xyz 的模）
+# 用于「末节始终向下」时：link4 目标 z = 期望末端高度 + LINK5_LENGTH，则末端恰在期望高度
+_LINK5_XYZ = np.array([0.0250377384169529, 0.0971256101915153, -0.0244999999998483], dtype=float)
+LINK5_LENGTH = float(np.linalg.norm(_LINK5_XYZ))
+
+# joint4 电机几何中心在 link4 系下的偏移（m）
+# - link4 原点 = joint4 转轴位置（URDF 中 link4 的 origin），不是电机外壳的几何中心。
+# - 本向量 = 在 link4 坐标系下，从 link4 原点指向 joint4 所在电机几何中心的向量。
+# 从 URDF/CAD 获取方法：
+#   1. 在 URDF 中 link4 的原点即 joint4 的转动中心；
+#   2. 在 CAD 中量取该关节电机的几何中心（外壳中心或质心），再换算到 link4 系下；
+#   3. 或：若 URDF 中 link4 有子 visual/collision 表示电机体，取该 mesh 中心在 link4 系下的坐标。
+# 若暂无准确值可填 [0,0,0]，则跟踪点退化为 joint4 转轴。
+# 当前值：joint4 电机中心在 link4 系（与 joint4 系一致）z 轴反方向 20 mm。
+JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4 = np.array([0.0, 0.0, -0.02], dtype=float)
+
+
+def _load_joint4_motor_offset_from_urdf(urdf_path: str) -> Optional[np.ndarray]:
+    """
+    从 URDF 中读取 link4 的 joint4 电机中心偏移（若存在）。
+    若 link4 内包含自定义标签 <motor_center xyz="x y z" />（单位 m），则返回 (3,) 向量，否则返回 None。
+    可在 URDF 的 link4 中增加：<motor_center xyz="0 0 -0.02" /> 表示电机中心在 link4 系下相对原点的偏移（z 轴反方向 20 mm）。
+    """
+    if not os.path.isfile(urdf_path):
+        return None
+    try:
+        tree = ET.parse(urdf_path)
+        root = tree.getroot()
+        for link in root.findall(".//link"):
+            if link.get("name") != "link4":
+                continue
+            mc = link.find("motor_center")
+            if mc is not None and mc.get("xyz"):
+                parts = mc.get("xyz").split()
+                if len(parts) >= 3:
+                    return np.array([float(parts[0]), float(parts[1]), float(parts[2])], dtype=float)
+            break
+    except Exception:
+        pass
+    return None
+
+
+# 若存在 URDF 且 link4 定义了 motor_center 且为非零向量，则覆盖默认偏移（0 0 0 视为未定义，不覆盖）
+def _apply_joint4_motor_offset_from_urdf() -> None:
+    global JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4
+    for candidate in [
+        os.path.join(os.path.dirname(__file__), "..", "icecream_model", "urdf", "ice_cream_0208.SLDASM.urdf"),
+        os.path.join(os.path.dirname(__file__), "ice_cream_0208.SLDASM.urdf"),
+    ]:
+        off = _load_joint4_motor_offset_from_urdf(candidate)
+        if off is not None and np.linalg.norm(off) > 1e-9:
+            JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4 = off
+            break
+
+
+_apply_joint4_motor_offset_from_urdf()
+
 # --------------------------------------------------------------------------
 # URDF 精确参数（硬编码 fallback，无需 URDF 文件也可运行）
 # --------------------------------------------------------------------------
@@ -270,6 +327,81 @@ class URDFKinematics:
     def forward_kinematics_rotation(self, q: np.ndarray) -> np.ndarray:
         """末端在基座系下的旋转矩阵 (3,3)。"""
         return self.forward_kinematics(q)[:3, :3].copy()
+
+    def forward_kinematics_link4(self, q: np.ndarray) -> np.ndarray:
+        """Base → link4 的 4×4 齐次变换（仅前 4 个关节）。link4 原点为关节转动中心。"""
+        q = np.asarray(q, dtype=float).ravel()[:NUM_JOINTS]
+        T = np.eye(4, dtype=float)
+        for i in range(4):
+            T = T @ self._joint_transform(i, q[i])
+        return T
+
+    def forward_kinematics_position_link4(self, q: np.ndarray) -> np.ndarray:
+        """
+        与 link4 原点重合的空间点在基座系下的位置 (3,)。
+        仅表示该点的坐标，与 link4 的姿态无关；末节朝向由机构与 q4、q5 决定。
+        """
+        return self.forward_kinematics_link4(q)[:3, 3].copy()
+
+    def get_link5_length(self) -> float:
+        """第五节（link4 原点 → link5 原点）长度（m）。末节向下时末端 z = link4_z - LINK5_LENGTH。"""
+        return float(np.linalg.norm(self._joints[4]["xyz"]))
+
+    def jacobian_link4_position_first3(self, q: np.ndarray) -> np.ndarray:
+        """
+        与 link4 原点重合的空间点位置对前 3 个关节的雅可比 J ∈ R^{3×3}。
+        该点只是空间坐标，旋转与 link4 无关；仅用 joint1~3 控制该点位置（q4、q5 不参与）。
+        """
+        q = np.asarray(q, dtype=float).ravel()[:NUM_JOINTS]
+        J = np.zeros((3, 3), dtype=float)
+        T_accum = [np.eye(4, dtype=float)]
+        T = np.eye(4, dtype=float)
+        for i in range(NUM_JOINTS):
+            T = T @ self._joint_transform(i, q[i])
+            T_accum.append(T.copy())
+        p_link4 = T_accum[4][:3, 3]
+        for i in range(3):
+            j = self._joints[i]
+            R_parent = T_accum[i][:3, :3]
+            p_parent = T_accum[i][:3, 3]
+            p_joint_i = p_parent + R_parent @ j["xyz"]
+            z_i = R_parent @ (_rpy_to_matrix(j["rpy"]) @ j["axis"])
+            z_i = z_i / (np.linalg.norm(z_i) + 1e-10)
+            J[:, i] = np.cross(z_i, p_link4 - p_joint_i)
+        return J
+
+    def forward_kinematics_position_joint4_motor_center(self, q: np.ndarray) -> np.ndarray:
+        """
+        joint4 电机几何中心在基座系下的位置 (3,)。
+        = link4 原点位置 + R_link4 @ JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4。
+        """
+        T4 = self.forward_kinematics_link4(q)
+        p_link4 = T4[:3, 3]
+        R_link4 = T4[:3, :3]
+        offset = JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4
+        return (p_link4 + R_link4 @ offset).copy()
+
+    def jacobian_joint4_motor_center_first3(self, q: np.ndarray) -> np.ndarray:
+        """
+        joint4 电机中心位置对前 3 个关节的雅可比 J ∈ R^{3×3}。
+        含旋转贡献：dp/dq_i = J_link4[:,i] + omega_i × (R_link4 @ offset)。
+        """
+        q = np.asarray(q, dtype=float).ravel()[:NUM_JOINTS]
+        J_link4 = self.jacobian_link4_position_first3(q)
+        T_accum = [np.eye(4, dtype=float)]
+        T = np.eye(4, dtype=float)
+        for i in range(NUM_JOINTS):
+            T = T @ self._joint_transform(i, q[i])
+            T_accum.append(T.copy())
+        R_link4 = T_accum[4][:3, :3]
+        r = R_link4 @ JOINT4_MOTOR_CENTER_OFFSET_IN_LINK4
+        for i in range(3):
+            j = self._joints[i]
+            R_parent = T_accum[i][:3, :3]
+            z_i = R_parent @ (_rpy_to_matrix(j["rpy"]) @ j["axis"])
+            z_i = z_i / (np.linalg.norm(z_i) + 1e-10)
+            J_link4[:, i] += np.cross(z_i, r)
+        return J_link4
 
     # ------------------------------------------------------------------
     # 几何雅可比（解析推导 + 数值差分双重实现）
