@@ -1,0 +1,24 @@
+## Keil / MDK build outputs
+Objects/
+Listings/
+DebugConfig/
+
+*.o
+*.d
+*.crf
+*.axf
+*.map
+*.lst
+*.htm
+*.lnp
+*.dep
+*.sct
+*.Bak
+
+## Keil user / local GUI files
+*.uvguix.*
+
+## OS / editor
+.vscode/
+*.swp
+*.tmp
