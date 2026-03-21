@@ -216,6 +216,9 @@ void Hardware_Init(void)
     memset(&FilterInitStruct, 0, sizeof(FilterInitStruct));
     memset(&NVIC_InitStruct,  0, sizeof(NVIC_InitStruct));
 
+    /* 全片统一用 Group2；须在任何 IRQ 优先级配置之前调用一次 */
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
+
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO, ENABLE);
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_CAN1, ENABLE);
 

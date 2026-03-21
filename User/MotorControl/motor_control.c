@@ -9,8 +9,6 @@ uint8_t Motor_Homed[MOTOR_NUM];
 volatile uint8_t Extreme_Test_Hold_Active = 0;
 
 /* 配置参数数组 */
-static const float p_limit_min[MOTOR_NUM] = P_LIMIT_MIN;
-static const float p_limit_max[MOTOR_NUM] = P_LIMIT_MAX;
 static const float move_kp[MOTOR_NUM] = MOVE_KP;
 static const float move_kd[MOTOR_NUM] = MOVE_KD;
 static const float move_speed_limit[MOTOR_NUM] = MOVE_SPEED_LIMIT;
@@ -67,35 +65,7 @@ void Safe_Control(int idx, float p, float v, float kp, float kd, float t)
 {
     if (Emergency_Stop) return;
 
-    /*
-     * 位置限幅策略（按你的需求）：
-     * - 目标越界：夹到边界（防止继续撞限位）
-     * - 若“当前反馈本身已越界”：不强拉回边界，默认就地保持不动
-     *   （仅当指令继续往更外侧走时，才把指令位置改为当前反馈位置）
-     */
-    {
-        float cur_p = Motor_States[idx].pos;
-        float pmin  = p_limit_min[idx];
-        float pmax  = p_limit_max[idx];
-
-        if (cur_p < pmin) {
-            /* 已在下限外：允许向内回，但禁止继续向外（就地保持） */
-            if (p < cur_p) {
-                p = cur_p;
-                v = 0.0f;
-            }
-        } else if (cur_p > pmax) {
-            /* 已在上限外：允许向内回，但禁止继续向外（就地保持） */
-            if (p > cur_p) {
-                p = cur_p;
-                v = 0.0f;
-            }
-        } else {
-            /* 在限位内：目标越界则夹到边界 */
-            if (p < pmin) p = pmin;
-            if (p > pmax) p = pmax;
-        }
-    }
+    /* 不做软件 P_LIMIT 夹紧；位置仅受驱动器 MIT 包范围等约束 */
 
     if (t < Runtime_T_Min[idx]) t = Runtime_T_Min[idx];
     if (t > Runtime_T_Max[idx]) t = Runtime_T_Max[idx];
@@ -151,16 +121,7 @@ void Move_Motor_To_Target(int motor_idx, float target_p, uint8_t mark_homed_afte
     float speed_limit;
     int steps, s, i;
 
-    if ((motor_idx == 0) && use_shortest_wrap_for_base) {
-        float rem  = fmodf(start_p, 2.0f * 3.1415926535f);
-        float diff = target_p - rem;
-        if (diff > 3.1415926535f)  diff -= 2.0f * 3.1415926535f;
-        if (diff < -3.1415926535f) diff += 2.0f * 3.1415926535f;
-        target_p = start_p + diff;
-    }
-
-    if (target_p < p_limit_min[motor_idx]) target_p = p_limit_min[motor_idx];
-    if (target_p > p_limit_max[motor_idx]) target_p = p_limit_max[motor_idx];
+    (void)use_shortest_wrap_for_base; /* 已取消底座最短路径与 P_LIMIT，参数保留兼容旧调用 */
 
     dist = target_p - start_p;
     move_tff = Get_Move_Tff(motor_idx, dist);
@@ -246,16 +207,7 @@ float Move_Motor_To_Rel_FromFeedback(int motor_idx, float target_rel, uint8_t ma
     st = WorldCoord_DeltaToTarget((uint8_t)motor_idx, current_abs, target_rel, &delta, &target_abs);
     if (st != WORLD_OK) return 0.0f;
 
-    /*
-      底座轴策略：不允许整圈旋转（走最短角度）。
-      做法：把 delta wrap 到 (-pi, pi]，再回推 target_abs = current_abs + delta。
-      这样不改变控制参数/轨迹形状，只改变“目标选哪条等价路径”。
-    */
     (void)use_shortest_wrap_for_base;
-    if (motor_idx == 0) {
-        delta = WorldCoord_WrapDeltaPi(delta);
-        target_abs = current_abs + delta;
-    }
 
     /*
       这里仍然调用原来的 Move_Motor_To_Target（轨迹与保持参数完全不变），
@@ -280,11 +232,6 @@ void Move_Two_Motors_To_Targets(int motor_a, float target_a,
     float cmd_p_a, cmd_v_a, cmd_p_b, cmd_v_b;
     float tff_a, tff_b;
     int steps, s, i;
-
-    if (target_a < p_limit_min[motor_a]) target_a = p_limit_min[motor_a];
-    if (target_a > p_limit_max[motor_a]) target_a = p_limit_max[motor_a];
-    if (target_b < p_limit_min[motor_b]) target_b = p_limit_min[motor_b];
-    if (target_b > p_limit_max[motor_b]) target_b = p_limit_max[motor_b];
 
     dist_a = target_a - start_a;
     dist_b = target_b - start_b;
@@ -403,11 +350,9 @@ void Move_Four_Motors_To_Targets(int m0, float t0,
         }
     }
 
-    /* 1) 限位裁剪 + 起点/位移计算（起点使用 Current_Targets） */
+    /* 1) 起点/位移计算（起点使用 Current_Targets） */
     for (k = 0; k < 4; k++) {
         int idx = motors[k];
-        if (target[k] < p_limit_min[idx]) target[k] = p_limit_min[idx];
-        if (target[k] > p_limit_max[idx]) target[k] = p_limit_max[idx];
 
         start[k] = Current_Targets[idx];
         dist[k]  = target[k] - start[k];
@@ -536,7 +481,7 @@ void Move_Four_Motors_To_Rels(int m0, float r0,
     Move_Four_Motors_To_Targets(m0, t0, m1, t1, m2, t2, m3, t3, mark_homed_after);
 }
 
-/* 从真实反馈起步、带底座最短路径处理的四轴相对 HOME 同步运动 */
+/* 从真实反馈起步、四轴相对 HOME 同步运动（不做底座 WrapDeltaPi、不做 P_LIMIT） */
 void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
                                            int m1, float r1,
                                            int m2, float r2,
@@ -573,7 +518,7 @@ void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
         Current_Targets[idx] = start[k];
     }
 
-    /* 2) 目标：相对 HOME -> 绝对目标，并对底座做最短路径处理 */
+    /* 2) 目标：相对 HOME -> 绝对目标（线性，与 WorldCoord_AbsFromRel 一致） */
     for (k = 0; k < 4; k++) {
         int idx = motors[k];
         float delta;
@@ -583,16 +528,6 @@ void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
                                                           &delta,
                                                           &target_abs[k]);
         if (st != WORLD_OK) return;
-
-        /* 底座轴：不允许整圈，走 (-pi,pi] 最短路径 */
-        if (idx == 0) {
-            delta = WorldCoord_WrapDeltaPi(delta);
-            target_abs[k] = start[k] + delta;
-        }
-
-        /* 物理限位裁剪（恢复安全约束） */
-        if (target_abs[k] < p_limit_min[idx]) target_abs[k] = p_limit_min[idx];
-        if (target_abs[k] > p_limit_max[idx]) target_abs[k] = p_limit_max[idx];
 
         dist[k]  = target_abs[k] - start[k];
         tff[k]   = Get_Move_Tff(idx, dist[k]);

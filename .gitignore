@@ -22,3 +22,6 @@ DebugConfig/
 .vscode/
 *.swp
 *.tmp
+
+## 本地杂项目录（勿提交）
+icecream_arm/

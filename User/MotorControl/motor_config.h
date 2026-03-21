@@ -112,14 +112,13 @@
 #define MOTOR2_MOVE_TFF_NEG 0.08f
 #define MOTOR2_HOLD_TFF     0.20f
 
-/*================ 物理限位定义 ================*/
-#define P_LIMIT_MIN {-12.50f, -0.45f, -0.70f, -0.70f}
-#define P_LIMIT_MAX { 12.50f,  2.70f,  2.70f,  2.70f}
+/*================ 物理限位 ================*/
+/* 已关闭：motor_control / motor_world_exec 不再做软件 P_LIMIT 夹紧（机械安全请靠硬件/驱动器） */
 
 /*================ 世界坐标(HOME)配置 ================*/
 /*
-  HOME 绝对角（rad）：定义“世界坐标零点”在驱动反馈绝对角坐标系中的位置。
-  树莓派建议下发：相对 HOME 的目标角（world_rel），MCU 端换算成绝对目标角执行。
+  HOME 绝对角（rad）：供 WorldCoord / MotorWorld_* 等接口使用。
+  树莓派 DATA: 帧（main Process_Rpi_Raw6）已改为「绝对角·度×100」，不再加 HOME 偏置。
 */
 #define WORLD_HOME_ABS {3.134f, 1.439f, 2.483f, 1.478f}
 
@@ -138,6 +137,9 @@
 /*================ 调试日志开关 ================*/
 /* 1=通过串口 Serial_Printf 输出关键中间量；0=关闭日志 */
 #define MOTOR_DEBUG_LOG_ENABLE   1
+
+/* FB 行回传频率（Hz），由 TIM3 产生标志供主循环轮询 */
+#define FB_REPORT_HZ             10
 
 /*================ 额外流程参数 ================*/
 #define MOTION_SPEED_SCALE       2.0f
