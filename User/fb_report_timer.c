@@ -14,10 +14,18 @@ void FB_Report_SendLine(void)
     uint8_t i;
     int16_t fb_raw[4];
     char out[80];
-    const float rad2deg100 = 180.0f / 3.1415926535f * 100.0f;
+    static const float home_abs[4] = WORLD_HOME_ABS;
+    const float rad2deg = 180.0f / MOTOR_PI;
 
     for (i = 0; i < 4; i++) {
-        fb_raw[i] = (int16_t)(Motor_States[i].pos * rad2deg100);
+        float rel_rad = Motor_States[i].pos - home_abs[i];
+        float rel_deg = rel_rad * rad2deg;
+        if (rel_deg > RPI_REL_DEG_LIMIT) {
+            rel_deg = RPI_REL_DEG_LIMIT;
+        } else if (rel_deg < -RPI_REL_DEG_LIMIT) {
+            rel_deg = -RPI_REL_DEG_LIMIT;
+        }
+        fb_raw[i] = (int16_t)(rel_deg * 100.0f);
     }
     snprintf(out, sizeof(out), "FB %d %d %d %d\r\n",
              (int)fb_raw[0], (int)fb_raw[1], (int)fb_raw[2], (int)fb_raw[3]);

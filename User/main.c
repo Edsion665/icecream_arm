@@ -15,21 +15,37 @@
 
 /* 周期性 FB：实现见 fb_report_timer.c（主循环 + 插补内均调用 ServicePending） */
 
-/*================ 处理树莓派 6 个角度：帧内为绝对角(度×100) -> 绝对 rad 轨迹 ================*/
+/* 与 motor_config.h 中 WORLD_HOME_ABS 同源（标定零位对应的绝对 rad） */
+static const float s_rpi_home_abs_rad[4] = WORLD_HOME_ABS;
+
+static float Rpi_ClampRelDeg(float deg)
+{
+    if (deg > RPI_REL_DEG_LIMIT) {
+        return RPI_REL_DEG_LIMIT;
+    }
+    if (deg < -RPI_REL_DEG_LIMIT) {
+        return -RPI_REL_DEG_LIMIT;
+    }
+    return deg;
+}
+
+/*================ 处理树莓派 6 个角度：前 4 为相对零位的度×100，±180° 内 -> 绝对 rad ================*/
 static void Process_Rpi_Raw6(const int16_t raw[6])
 {
     float target_abs[4];
     uint8_t i;
     char out[160];
 
-    /* 前 4 路：整数为「绝对角·度×100」，直接换成驱动器绝对弧度（不加 WORLD_HOME） */
+    /* 前 4 路：相对标定零位的角（度×100），限幅 ±RPI_REL_DEG_LIMIT 后再换算绝对目标 */
     for (i = 0; i < 4; i++) {
-        float deg = ((float)raw[i]) / 100.0f;
-        target_abs[i] = deg * 3.1415926535f / 180.0f;
+        float rel_deg = ((float)raw[i]) / 100.0f;
+        rel_deg       = Rpi_ClampRelDeg(rel_deg);
+        float rel_rad = rel_deg * MOTOR_PI / 180.0f;
+        target_abs[i] = s_rpi_home_abs_rad[i] + rel_rad;
     }
 
     snprintf(out, sizeof(out),
-            "RES abs_rad: %.4f %.4f %.4f %.4f (DATA deg*100 -> rad, no HOME)\r\n",
+            "RES abs_rad: %.4f %.4f %.4f %.4f (rel deg*100->HOME+clamp, drv rad)\r\n",
             target_abs[0], target_abs[1], target_abs[2], target_abs[3]);
     Serial_SendString(out);
     Serial2_SendString(out);
@@ -262,30 +278,6 @@ int main(void)
 
         /* 刚性保持由 TIM4 ISR 按快照周期下发；此处刷新快照使 Current_Targets 与 homed 及时同步 */
         MotorHoldTimer_PublishSnapshot();
-
-#if MOTOR_DEBUG_LOG_ENABLE && MIT_HOLD_TRACE_ENABLE
-        {
-            static uint32_t s_hold_trace_ms;
-            s_hold_trace_ms += (uint32_t)INTERVAL_MS;
-            if (s_hold_trace_ms >= MIT_HOLD_TRACE_PERIOD_MS) {
-                char tb[200];
-                s_hold_trace_ms = 0;
-                snprintf(tb, sizeof(tb),
-                         "TRACE hold es=%u sd=%lu apply=%lu skS=%lu skE=%u "
-                         "tgt[rad] %.3f %.3f %.3f %.3f fb[rad] %.3f %.3f %.3f %.3f\r\n",
-                         (unsigned int)Emergency_Stop,
-                         (unsigned long)MotorHoldTimer_GetStreamDepth(),
-                         (unsigned long)g_MotorHold_IsrApplyCount,
-                         (unsigned long)g_MotorHold_IsrSkipStreamCount,
-                         (unsigned int)g_MotorHold_IsrSkipEmgCount,
-                         Current_Targets[0], Current_Targets[1],
-                         Current_Targets[2], Current_Targets[3],
-                         Motor_States[0].pos, Motor_States[1].pos,
-                         Motor_States[2].pos, Motor_States[3].pos);
-                Serial_SendString(tb);
-            }
-        }
-#endif
 
         Delay_ms(INTERVAL_MS);
     }

@@ -115,12 +115,36 @@
 /*================ 物理限位 ================*/
 /* 已关闭：motor_control / motor_world_exec 不再做软件 P_LIMIT 夹紧（机械安全请靠硬件/驱动器） */
 
-/*================ 世界坐标(HOME)配置 ================*/
+/*================ 世界坐标(HOME) / 树莓派关节零位标定 ================*/
+#ifndef MOTOR_PI
+#define MOTOR_PI 3.1415926535f
+#endif
+/* 与 DATA/FB 相同的线性标度：整数为度×100，换成驱动器使用的 rad */
+#define RPI_DEG100_TO_RAD(d100) \
+    ((((float)(d100)) * 0.01f) * (MOTOR_PI / 180.0f))
+
 /*
-  HOME 绝对角（rad）：供 WorldCoord / MotorWorld_* 等接口使用。
-  树莓派 DATA: 帧（main Process_Rpi_Raw6）已改为「绝对角·度×100」，不再加 HOME 偏置。
-*/
-#define WORLD_HOME_ABS {3.134f, 1.439f, 2.483f, 1.478f}
+ * 机械标定零位（输入：度×100）：摆到该姿态后，上位机坐标系记为 0,0,0,0。
+ * 修改标定只需改下面四个数，WORLD_HOME_ABS 会自动一致。
+ */
+#define RPI_HOME_RAW_DEG100_J0  (-298)
+#define RPI_HOME_RAW_DEG100_J1  (8059)
+#define RPI_HOME_RAW_DEG100_J2  (13327)
+#define RPI_HOME_RAW_DEG100_J3  (2700)
+
+/*
+ * DATA 前 4 轴表示「相对零位的角度」（度×100），软件限制在 ±RPI_REL_DEG_LIMIT（度），
+ * 即 ±180° → ±18000；超出部分截断到边界。
+ */
+#define RPI_REL_DEG_LIMIT       180.0f
+
+/* HOME 绝对角（rad）：与 RPI 零位相同，供 WorldCoord / Move_* 相对世界角 等使用 */
+#define WORLD_HOME_ABS { \
+    RPI_DEG100_TO_RAD(RPI_HOME_RAW_DEG100_J0), \
+    RPI_DEG100_TO_RAD(RPI_HOME_RAW_DEG100_J1), \
+    RPI_DEG100_TO_RAD(RPI_HOME_RAW_DEG100_J2), \
+    RPI_DEG100_TO_RAD(RPI_HOME_RAW_DEG100_J3) \
+}
 
 /*
   关节是否允许连续旋转（1=可连续旋转，不做 wrap；0=不可整圈旋转，使用最短角 wrap）
@@ -140,6 +164,13 @@
 /* 运动结束后，最多做几次闭环修正（不改控制参数，只重复执行同轨迹/保持） */
 #define ARRIVAL_MAX_CORRECTIONS  2
 
+/*
+ * TIM4 周期刚性保持（ISR 内 Apply_Rigid_Hold_OnBuffers_NoPostDelay）
+ * 1=开启（推荐量产）
+ * 0=关闭仅做试验：无插补时 MIT 不再由 TIM4 下发，可能变软/断粮；改回 1 即可恢复
+ */
+#define MOTOR_HOLD_TIM4_ENABLE   1
+
 /*================ 调试日志开关 ================*/
 /*
  * 1=打开：FB 回传 + 插补/Hold 周期内轮询 FB（避免主循环被 Move_* 阻塞时无角度回传）
@@ -147,16 +178,8 @@
  */
 #define MOTOR_DEBUG_LOG_ENABLE   1
 
-/*
- * 1=主循环经 USART1 周期性打印保持诊断（须同时打开 MOTOR_DEBUG_LOG_ENABLE 且已 Serial_Init）
- *    含：急停/插补深度、TIM4 ISR 内「实际下发保持」与跳过计数、Current_Targets 与反馈 pos
- * 0=关闭
- */
-#define MIT_HOLD_TRACE_ENABLE    1
-#define MIT_HOLD_TRACE_PERIOD_MS 200u
-
-/* FB 行回传频率（Hz），由 TIM3 产生标志供主循环轮询 */
-#define FB_REPORT_HZ             10
+/* FB 行回传频率（Hz），由 TIM3 产生标志供主循环轮询（数值越小串口负载越低） */
+#define FB_REPORT_HZ             4
 
 /*================ 额外流程参数 ================*/
 #define MOTION_SPEED_SCALE       2.0f

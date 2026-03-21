@@ -34,9 +34,13 @@ static void copy_snap_from_targets(void)
 
 void MotorHoldTimer_PublishSnapshot(void)
 {
+#if MOTOR_HOLD_TIM4_ENABLE
     NVIC_DisableIRQ(TIM4_IRQn);
+#endif
     copy_snap_from_targets();
+#if MOTOR_HOLD_TIM4_ENABLE
     NVIC_EnableIRQ(TIM4_IRQn);
+#endif
 }
 
 void MotorHoldTimer_StreamEnter(void)
@@ -57,6 +61,8 @@ void MotorHoldTimer_StreamExit(void)
     }
     __enable_irq();
 }
+
+#if MOTOR_HOLD_TIM4_ENABLE
 
 static void MotorHoldTimer_OnTick(void)
 {
@@ -155,3 +161,17 @@ void TIM4_IRQHandler(void)
         MotorHoldTimer_OnTick();
     }
 }
+
+#else /* !MOTOR_HOLD_TIM4_ENABLE */
+
+void MotorHoldTimer_Init(void)
+{
+    /* MOTOR_HOLD_TIM4_ENABLE=0：不启动 TIM4，ISR 内不再下发刚性保持（试验用） */
+}
+
+void TIM4_IRQHandler(void)
+{
+    /* 未使能 TIM4 时不应进入；留空实现满足链接 */
+}
+
+#endif /* MOTOR_HOLD_TIM4_ENABLE */
