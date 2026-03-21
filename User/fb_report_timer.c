@@ -1,8 +1,40 @@
 #include "fb_report_timer.h"
 #include "MotorControl/motor_config.h"
+#include "MotorControl/motor_can.h"
+#include "../Hardware/Serial.h"
+#include "../Hardware/Serial2.h"
 #include "stm32f10x.h"
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_tim.h"
+#include <stdio.h>
+
+#if MOTOR_DEBUG_LOG_ENABLE
+void FB_Report_SendLine(void)
+{
+    uint8_t i;
+    int16_t fb_raw[4];
+    char out[80];
+    const float rad2deg100 = 180.0f / 3.1415926535f * 100.0f;
+
+    for (i = 0; i < 4; i++) {
+        fb_raw[i] = (int16_t)(Motor_States[i].pos * rad2deg100);
+    }
+    snprintf(out, sizeof(out), "FB %d %d %d %d\r\n",
+             (int)fb_raw[0], (int)fb_raw[1], (int)fb_raw[2], (int)fb_raw[3]);
+    Serial_SendString(out);
+    Serial2_SendString(out);
+}
+
+void FB_Report_ServicePending(void)
+{
+    if (FB_ReportTimer_TakePending()) {
+        FB_Report_SendLine();
+    }
+}
+#else
+void FB_Report_SendLine(void) { }
+void FB_Report_ServicePending(void) { }
+#endif
 
 void FB_ReportTimer_Init(void)
 {

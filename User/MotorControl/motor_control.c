@@ -1,7 +1,15 @@
 #include "motor_control.h"
 #include "motor_utils.h"
 #include "../Coordinate/world_coord.h"
+#include "../fb_report_timer.h"
 #include <math.h>
+
+/* 插补阻塞主循环期间仍需按 TIM3 周期发 FB（见 main 中 FB 说明） */
+#if MOTOR_DEBUG_LOG_ENABLE
+#define MOTOR_FB_AFTER_STEP()  FB_Report_ServicePending()
+#else
+#define MOTOR_FB_AFTER_STEP()  ((void)0)
+#endif
 
 /*================ 全局变量定义 ================*/
 float Current_Targets[MOTOR_NUM];
@@ -109,6 +117,7 @@ void Hold_All_Rigid(uint32_t hold_ms)
         if (Emergency_Stop) return;
         Apply_Rigid_Hold_One_Cycle();
         Delay_ms(INTERVAL_MS);
+        MOTOR_FB_AFTER_STEP();
     }
 }
 
@@ -170,6 +179,7 @@ void Move_Motor_To_Target(int motor_idx, float target_p, uint8_t mark_homed_afte
         }
 
         Delay_ms(INTERVAL_MS);
+        MOTOR_FB_AFTER_STEP();
     }
 
     Current_Targets[motor_idx] = target_p;
@@ -301,6 +311,7 @@ void Move_Two_Motors_To_Targets(int motor_a, float target_a,
         }
 
         Delay_ms(INTERVAL_MS);
+        MOTOR_FB_AFTER_STEP();
     }
 
     Current_Targets[motor_a] = target_a;
@@ -454,6 +465,7 @@ void Move_Four_Motors_To_Targets(int m0, float t0,
         }
 
         Delay_ms(INTERVAL_MS);
+        MOTOR_FB_AFTER_STEP();
     }
 
     /* 5) 最终落点与 homed 标记 */
@@ -628,6 +640,7 @@ void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
         }
 
         Delay_ms(INTERVAL_MS);
+        MOTOR_FB_AFTER_STEP();
     }
 
     /* 6) 最终落点与 homed 标记 */

@@ -11,26 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/*
- * 周期性 FB 行：4 个 int（ASCII），与 DATA 帧前 4 路约定相同。
- * 物理量：各轴驱动器绝对角；单位：度×100（与 DATA 一致，无 HOME 偏置）。
- * 数据来源：CAN 的 Motor_States[i].pos（rad）-> 度×100。
- */
-static void Send_FB_Line(void)
-{
-    uint8_t i;
-    int16_t fb_raw[4];
-    char out[80];
-    const float rad2deg100 = 180.0f / 3.1415926535f * 100.0f;
-
-    for (i = 0; i < 4; i++) {
-        fb_raw[i] = (int16_t)(Motor_States[i].pos * rad2deg100);
-    }
-    snprintf(out, sizeof(out), "FB %d %d %d %d\r\n",
-             (int)fb_raw[0], (int)fb_raw[1], (int)fb_raw[2], (int)fb_raw[3]);
-    Serial_SendString(out);
-    Serial2_SendString(out);
-}
+/* 周期性 FB：实现见 fb_report_timer.c（主循环 + 插补内均调用 ServicePending） */
 
 /*================ 处理树莓派 6 个角度：帧内为绝对角(度×100) -> 绝对 rad 轨迹 ================*/
 static void Process_Rpi_Raw6(const int16_t raw[6])
@@ -147,7 +128,7 @@ int main(void)
     Serial2_Init();
 
 #if MOTOR_DEBUG_LOG_ENABLE
-    /* TIM3：按 FB_REPORT_HZ 置位；Send_FB_Line 会发 USART1+2，须在两路串口均 Init 之后 */
+    /* TIM3：按 FB_REPORT_HZ 置位；FB 发 USART1+2，须在两路串口均 Init 之后 */
     FB_ReportTimer_Init();
 #endif
 
@@ -241,9 +222,7 @@ int main(void)
         }
 
 #if MOTOR_DEBUG_LOG_ENABLE
-        if (FB_ReportTimer_TakePending()) {
-            Send_FB_Line();
-        }
+        FB_Report_ServicePending();
 #endif
 
         if (Emergency_Stop) {

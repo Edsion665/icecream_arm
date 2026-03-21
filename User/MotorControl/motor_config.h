@@ -135,7 +135,10 @@
 #define ARRIVAL_MAX_CORRECTIONS  2
 
 /*================ 调试日志开关 ================*/
-/* 1=通过串口 Serial_Printf 输出关键中间量；0=关闭日志 */
+/*
+ * 1=打开：FB 回传 + 插补/Hold 周期内轮询 FB（避免主循环被 Move_* 阻塞时无角度回传）
+ * 0=关闭：无 FB、无插补内轮询
+ */
 #define MOTOR_DEBUG_LOG_ENABLE   1
 
 /* FB 行回传频率（Hz），由 TIM3 产生标志供主循环轮询 */
