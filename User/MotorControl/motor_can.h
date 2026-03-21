@@ -25,10 +25,12 @@ extern volatile uint8_t Fault_Code;
 /*================ CAN 发送函数 ================*/
 void CAN_Send_Blocking(CanTxMsg *tx);
 void Motor_MIT_Send_Raw(int idx, float p, float v, float kp, float kd, float t);
+void Motor_MIT_Send_Raw_NoPostDelay(int idx, float p, float v, float kp, float kd, float t);
 void Motor_Send_Special(uint32_t id, uint8_t cmd);
 void Motor_Read_Register_Request(int idx, uint8_t rid);
 
 /*================ 反馈/寄存器读取 ================*/
+/* 拉反馈时仍对 idx 轴发「当前目标 + 保持刚度」的 MIT，禁止全零包（否则驱动器会瞬时失力） */
 void Request_Motor_Feedback(int idx);
 uint8_t Wait_Register_Response(int idx, uint8_t rid, uint32_t wait_ms);
 uint8_t Read_Register_Float(int idx, uint8_t rid, float *out);

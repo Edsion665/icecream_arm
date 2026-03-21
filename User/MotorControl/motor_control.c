@@ -2,6 +2,7 @@
 #include "motor_utils.h"
 #include "../Coordinate/world_coord.h"
 #include "../fb_report_timer.h"
+#include "../motor_hold_timer.h"
 #include <math.h>
 
 /* 插补阻塞主循环期间仍需按 TIM3 周期发 FB（见 main 中 FB 说明） */
@@ -46,6 +47,7 @@ void Sync_CurrentTargets_From_Feedback(void)
             Current_Targets[i] = Motor_States[i].pos;
         }
     }
+    MotorHoldTimer_PublishSnapshot();
 }
 
 /*================ 前馈力矩补偿 ================*/
@@ -84,6 +86,41 @@ void Safe_Control(int idx, float p, float v, float kp, float kd, float t)
     Motor_MIT_Send_Raw(idx, p, v, kp, kd, t);
 }
 
+static void Safe_Control_NoPostDelay(int idx, float p, float v, float kp, float kd, float t)
+{
+    if (Emergency_Stop) return;
+
+    if (t < Runtime_T_Min[idx]) t = Runtime_T_Min[idx];
+    if (t > Runtime_T_Max[idx]) t = Runtime_T_Max[idx];
+
+    if (kd < 0.15f) kd = 0.15f;
+    if (kp < 0.0f) kp = 0.0f;
+
+    Motor_MIT_Send_Raw_NoPostDelay(idx, p, v, kp, kd, t);
+}
+
+void Apply_Rigid_Hold_OnBuffers_NoPostDelay(const float *pos, const uint8_t *homed)
+{
+    int i;
+
+    if (pos == 0 || homed == 0) {
+        return;
+    }
+
+    for (i = 0; i < MOTOR_NUM; i++) {
+        if (Emergency_Stop) return;
+        if (homed[i]) {
+            Safe_Control_NoPostDelay(i, pos[i], 0.0f,
+                                     extreme_hold_kp[i], extreme_hold_kd[i],
+                                     Get_Extreme_Hold_Tff(i));
+        } else {
+            Safe_Control_NoPostDelay(i, pos[i], 0.0f,
+                                     lock_kp[i], lock_kd[i],
+                                     Get_Hold_Tff(i));
+        }
+    }
+}
+
 /*================ 核心：刚性保持 ================*/
 void Apply_Rigid_Hold_One_Cycle(void)
 {
@@ -108,17 +145,57 @@ void Apply_Rigid_Hold_One_Cycle(void)
     }
 }
 
+/*
+ * 读反馈前向总线发的 MIT：必须与刚性保持一致。
+ * 旧实现发 Motor_MIT_Send_Raw(...,0,0,0,0,0)，多数驱动器视为 Kp/Kd=0 → 瞬时失能，
+ * 在 Process_Rpi_Raw6 里串口回复后调用 Read_All_Current_Positions 时表现为「一发串口就塌」。
+ */
+void Request_Motor_Feedback(int idx)
+{
+    if (idx < 0 || idx >= MOTOR_NUM) {
+        return;
+    }
+    if (Emergency_Stop || System_Disabled) {
+        return;
+    }
+
+    /*
+     * 指令位置一律用 Current_Targets（Read_All 在清标志前/每轮重试前会把已回包轴同步为 Motor_States.pos）。
+     * 切勿在 Current_Targets 仍为 0 时批量 Request——见 Read_All_Current_Positions。
+     */
+    if (Motor_Homed[idx]) {
+        Safe_Control(idx,
+                     Current_Targets[idx],
+                     0.0f,
+                     extreme_hold_kp[idx],
+                     extreme_hold_kd[idx],
+                     Get_Extreme_Hold_Tff(idx));
+    } else {
+        Safe_Control(idx,
+                     Current_Targets[idx],
+                     0.0f,
+                     lock_kp[idx],
+                     lock_kd[idx],
+                     Get_Hold_Tff(idx));
+    }
+}
+
 void Hold_All_Rigid(uint32_t hold_ms)
 {
     uint32_t cycles = hold_ms / INTERVAL_MS;
     uint32_t c;
 
+    MotorHoldTimer_StreamEnter();
     for (c = 0; c < cycles; c++) {
-        if (Emergency_Stop) return;
+        if (Emergency_Stop) {
+            MotorHoldTimer_StreamExit();
+            return;
+        }
         Apply_Rigid_Hold_One_Cycle();
         Delay_ms(INTERVAL_MS);
         MOTOR_FB_AFTER_STEP();
     }
+    MotorHoldTimer_StreamExit();
 }
 
 /*================ 通用单轴轨迹函数 ================*/
@@ -136,9 +213,10 @@ void Move_Motor_To_Target(int motor_idx, float target_p, uint8_t mark_homed_afte
     move_tff = Get_Move_Tff(motor_idx, dist);
     speed_limit = move_speed_limit[motor_idx] * MOTION_SPEED_SCALE;
 
-    if (fabsf(dist) < 0.001f) {
+    if (fabsf(dist) < MOVE_DIST_TOL_RAD) {
         Current_Targets[motor_idx] = target_p;
         if (mark_homed_after) Motor_Homed[motor_idx] = 1;
+        MotorHoldTimer_PublishSnapshot();
         return;
     }
 
@@ -148,11 +226,16 @@ void Move_Motor_To_Target(int motor_idx, float target_p, uint8_t mark_homed_afte
     steps = (int)(total_time / (INTERVAL_MS * 0.001f));
     if (steps < 80) steps = 80;
 
+    MotorHoldTimer_StreamEnter();
     for (s = 0; s <= steps; s++) {
-        if (Emergency_Stop) return;
+        if (Emergency_Stop) {
+            MotorHoldTimer_StreamExit();
+            return;
+        }
 
         if (Motor_Is_Fault(motor_idx)) {
             Latch_Fault((uint8_t)motor_idx, Motor_States[motor_idx].err);
+            MotorHoldTimer_StreamExit();
             return;
         }
 
@@ -184,6 +267,7 @@ void Move_Motor_To_Target(int motor_idx, float target_p, uint8_t mark_homed_afte
 
     Current_Targets[motor_idx] = target_p;
     if (mark_homed_after) Motor_Homed[motor_idx] = 1;
+    MotorHoldTimer_StreamExit();
 }
 
 void Move_Motor_To_Rel(int motor_idx, float target_rel, uint8_t mark_homed_after, uint8_t use_shortest_wrap_for_base)
@@ -252,16 +336,17 @@ void Move_Two_Motors_To_Targets(int motor_a, float target_a,
     speed_a = move_speed_limit[motor_a] * MOTION_SPEED_SCALE;
     speed_b = move_speed_limit[motor_b] * MOTION_SPEED_SCALE;
 
-    if (fabsf(dist_a) < 0.001f && fabsf(dist_b) < 0.001f) {
+    if (fabsf(dist_a) < MOVE_DIST_TOL_RAD && fabsf(dist_b) < MOVE_DIST_TOL_RAD) {
         Current_Targets[motor_a] = target_a;
         Current_Targets[motor_b] = target_b;
         if (mark_a_homed_after) Motor_Homed[motor_a] = 1;
         if (mark_b_homed_after) Motor_Homed[motor_b] = 1;
+        MotorHoldTimer_PublishSnapshot();
         return;
     }
 
-    total_time_a = (fabsf(dist_a) < 0.001f) ? 0.25f : fabsf(dist_a) * 3.1415926535f / (2.0f * speed_a);
-    total_time_b = (fabsf(dist_b) < 0.001f) ? 0.25f : fabsf(dist_b) * 3.1415926535f / (2.0f * speed_b);
+    total_time_a = (fabsf(dist_a) < MOVE_DIST_TOL_RAD) ? 0.25f : fabsf(dist_a) * 3.1415926535f / (2.0f * speed_a);
+    total_time_b = (fabsf(dist_b) < MOVE_DIST_TOL_RAD) ? 0.25f : fabsf(dist_b) * 3.1415926535f / (2.0f * speed_b);
 
     total_time = (total_time_a > total_time_b) ? total_time_a : total_time_b;
     if (total_time < 0.25f) total_time = 0.25f;
@@ -269,15 +354,21 @@ void Move_Two_Motors_To_Targets(int motor_a, float target_a,
     steps = (int)(total_time / (INTERVAL_MS * 0.001f));
     if (steps < 80) steps = 80;
 
+    MotorHoldTimer_StreamEnter();
     for (s = 0; s <= steps; s++) {
-        if (Emergency_Stop) return;
+        if (Emergency_Stop) {
+            MotorHoldTimer_StreamExit();
+            return;
+        }
 
         if (Motor_Is_Fault(motor_a)) {
             Latch_Fault((uint8_t)motor_a, Motor_States[motor_a].err);
+            MotorHoldTimer_StreamExit();
             return;
         }
         if (Motor_Is_Fault(motor_b)) {
             Latch_Fault((uint8_t)motor_b, Motor_States[motor_b].err);
+            MotorHoldTimer_StreamExit();
             return;
         }
 
@@ -319,6 +410,7 @@ void Move_Two_Motors_To_Targets(int motor_a, float target_a,
 
     if (mark_a_homed_after) Motor_Homed[motor_a] = 1;
     if (mark_b_homed_after) Motor_Homed[motor_b] = 1;
+    MotorHoldTimer_StreamExit();
 }
 
 void Move_Two_Motors_To_Rels(int motor_a, float target_rel_a,
@@ -376,7 +468,7 @@ void Move_Four_Motors_To_Targets(int m0, float t0,
     {
         uint8_t all_small = 1;
         for (k = 0; k < 4; k++) {
-            if (fabsf(dist[k]) >= 0.001f) {
+            if (fabsf(dist[k]) >= MOVE_DIST_TOL_RAD) {
                 all_small = 0;
                 break;
             }
@@ -389,6 +481,7 @@ void Move_Four_Motors_To_Targets(int m0, float t0,
                     Motor_Homed[idx] = 1;
                 }
             }
+            MotorHoldTimer_PublishSnapshot();
             return;
         }
     }
@@ -396,7 +489,7 @@ void Move_Four_Motors_To_Targets(int m0, float t0,
     /* 3) 计算每轴时间，选择最大值为同步时间 */
     total_time_max = 0.25f;
     for (k = 0; k < 4; k++) {
-        if (fabsf(dist[k]) < 0.001f) {
+        if (fabsf(dist[k]) < MOVE_DIST_TOL_RAD) {
             total_time[k] = 0.25f;
         } else {
             total_time[k] = fabsf(dist[k]) * 3.1415926535f / (2.0f * speed[k]);
@@ -411,18 +504,23 @@ void Move_Four_Motors_To_Targets(int m0, float t0,
     if (steps < 80) steps = 80;
 
     /* 4) 插补循环：4 轴同步走同一个 ratio/blend/vel_shape */
+    MotorHoldTimer_StreamEnter();
     for (s = 0; s <= steps; s++) {
         float ratio     = (float)s / (float)steps;
         float blend     = 0.5f - 0.5f * cosf(3.1415926535f * ratio);
         float vel_shape = 0.5f * 3.1415926535f * sinf(3.1415926535f * ratio);
 
-        if (Emergency_Stop) return;
+        if (Emergency_Stop) {
+            MotorHoldTimer_StreamExit();
+            return;
+        }
 
         /* 故障检查：任一轴故障则直接锁存并退出 */
         for (k = 0; k < 4; k++) {
             int idx = motors[k];
             if (Motor_Is_Fault(idx)) {
                 Latch_Fault((uint8_t)idx, Motor_States[idx].err);
+                MotorHoldTimer_StreamExit();
                 return;
             }
         }
@@ -476,6 +574,7 @@ void Move_Four_Motors_To_Targets(int m0, float t0,
             Motor_Homed[idx] = 1;
         }
     }
+    MotorHoldTimer_StreamExit();
 }
 
 void Move_Four_Motors_To_Rels(int m0, float r0,
@@ -539,7 +638,10 @@ void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
                                                           target_rel[k],
                                                           &delta,
                                                           &target_abs[k]);
-        if (st != WORLD_OK) return;
+        if (st != WORLD_OK) {
+            MotorHoldTimer_PublishSnapshot();
+            return;
+        }
 
         dist[k]  = target_abs[k] - start[k];
         tff[k]   = Get_Move_Tff(idx, dist[k]);
@@ -551,7 +653,7 @@ void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
     {
         uint8_t all_small = 1;
         for (k = 0; k < 4; k++) {
-            if (fabsf(dist[k]) >= 0.001f) {
+            if (fabsf(dist[k]) >= MOVE_DIST_TOL_RAD) {
                 all_small = 0;
                 break;
             }
@@ -564,6 +666,7 @@ void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
                     Motor_Homed[idx] = 1;
                 }
             }
+            MotorHoldTimer_PublishSnapshot();
             return;
         }
     }
@@ -571,7 +674,7 @@ void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
     /* 4) 计算每轴时间，选择最大值为同步时间 */
     total_time_max = 0.25f;
     for (k = 0; k < 4; k++) {
-        if (fabsf(dist[k]) < 0.001f) {
+        if (fabsf(dist[k]) < MOVE_DIST_TOL_RAD) {
             total_time[k] = 0.25f;
         } else {
             total_time[k] = fabsf(dist[k]) * 3.1415926535f / (2.0f * speed[k]);
@@ -586,18 +689,23 @@ void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
     if (steps < 80) steps = 80;
 
     /* 5) 插补循环 */
+    MotorHoldTimer_StreamEnter();
     for (s = 0; s <= steps; s++) {
         float ratio     = (float)s / (float)steps;
         float blend     = 0.5f - 0.5f * cosf(3.1415926535f * ratio);
         float vel_shape = 0.5f * 3.1415926535f * sinf(3.1415926535f * ratio);
 
-        if (Emergency_Stop) return;
+        if (Emergency_Stop) {
+            MotorHoldTimer_StreamExit();
+            return;
+        }
 
         /* 故障检测 */
         for (k = 0; k < 4; k++) {
             int idx = motors[k];
             if (Motor_Is_Fault(idx)) {
                 Latch_Fault((uint8_t)idx, Motor_States[idx].err);
+                MotorHoldTimer_StreamExit();
                 return;
             }
         }
@@ -651,6 +759,6 @@ void Move_Four_Motors_FromFeedback_To_Rels(int m0, float r0,
             Motor_Homed[idx] = 1;
         }
     }
+    MotorHoldTimer_StreamExit();
 }
-
 

@@ -129,8 +129,14 @@
 #define JOINT_CONTINUOUS_ROTATE {0, 0, 0, 0}
 
 /*================ 到位判断 / 闭环修正参数 ================*/
-/* 允许的到位误差（rad） */
+/* 允许的到位误差（rad），用于闭环修正等 */
 #define ARRIVAL_TOL_RAD          0.02f
+/*
+ * 插补「位移可忽略」阈值（rad）：小于此则不走 Move 循环、不 StreamEnter（TIM4 保持不断）。
+ * 须略大于典型稳态跟踪误差 + 读反馈抖动；过小则同一 DATA 反复下发仍常跑插补 → 体感像失力。
+ * 若仍偶发：可再试 0.15f（约 8.6°）；过大则「已到点附近」不再纠偏，精度变差。
+ */
+#define MOVE_DIST_TOL_RAD        0.12f
 /* 运动结束后，最多做几次闭环修正（不改控制参数，只重复执行同轨迹/保持） */
 #define ARRIVAL_MAX_CORRECTIONS  2
 
@@ -140,6 +146,14 @@
  * 0=关闭：无 FB、无插补内轮询
  */
 #define MOTOR_DEBUG_LOG_ENABLE   1
+
+/*
+ * 1=主循环经 USART1 周期性打印保持诊断（须同时打开 MOTOR_DEBUG_LOG_ENABLE 且已 Serial_Init）
+ *    含：急停/插补深度、TIM4 ISR 内「实际下发保持」与跳过计数、Current_Targets 与反馈 pos
+ * 0=关闭
+ */
+#define MIT_HOLD_TRACE_ENABLE    1
+#define MIT_HOLD_TRACE_PERIOD_MS 200u
 
 /* FB 行回传频率（Hz），由 TIM3 产生标志供主循环轮询 */
 #define FB_REPORT_HZ             10

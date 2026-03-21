@@ -2,6 +2,9 @@
 #include "motor_utils.h"
 #include <string.h>
 
+/* 定义在 motor_control.c；Read_All 内同步目标用 */
+extern float Current_Targets[MOTOR_NUM];
+
 /*================ 全局变量定义 ================*/
 uint32_t Motor_IDs[MOTOR_NUM] = MOTOR_IDS;
 uint32_t Motor_Master_IDs[MOTOR_NUM] = MOTOR_MASTER_IDS;
@@ -58,6 +61,36 @@ void Motor_MIT_Send_Raw(int idx, float p, float v, float kp, float kd, float t)
 
     CAN_Send_Blocking(&tx);
     Delay_us(200);
+}
+
+/* 定时器 ISR 等高频路径：省略帧间延时，避免拉长中断时间 */
+void Motor_MIT_Send_Raw_NoPostDelay(int idx, float p, float v, float kp, float kd, float t)
+{
+    uint8_t d[8];
+    CanTxMsg tx;
+
+    uint16_t p_i  = float_to_uint(p,  Runtime_P_Min[idx], Runtime_P_Max[idx], 16);
+    uint16_t v_i  = float_to_uint(v,  Runtime_V_Min[idx], Runtime_V_Max[idx], 12);
+    uint16_t kp_i = float_to_uint(kp, 0.0f, 500.0f, 12);
+    uint16_t kd_i = float_to_uint(kd, 0.0f, 5.0f, 12);
+    uint16_t t_i  = float_to_uint(t,  Runtime_T_Min[idx], Runtime_T_Max[idx], 12);
+
+    d[0] = (uint8_t)(p_i >> 8);
+    d[1] = (uint8_t)(p_i & 0xFF);
+    d[2] = (uint8_t)(v_i >> 4);
+    d[3] = (uint8_t)(((v_i & 0x0F) << 4) | (kp_i >> 8));
+    d[4] = (uint8_t)(kp_i & 0xFF);
+    d[5] = (uint8_t)(kd_i >> 4);
+    d[6] = (uint8_t)(((kd_i & 0x0F) << 4) | (t_i >> 8));
+    d[7] = (uint8_t)(t_i & 0xFF);
+
+    tx.StdId = Motor_IDs[idx] & 0x7FF;
+    tx.IDE   = CAN_Id_Standard;
+    tx.RTR   = CAN_RTR_Data;
+    tx.DLC   = 8;
+    memcpy(tx.Data, d, 8);
+
+    CAN_Send_Blocking(&tx);
 }
 
 void Motor_Send_Special(uint32_t id, uint8_t cmd)
@@ -118,11 +151,12 @@ void Latch_Fault(uint8_t idx, uint8_t code)
 }
 
 /*================ 反馈/寄存器读取 ================*/
-void Request_Motor_Feedback(int idx)
-{
-    Motor_MIT_Send_Raw(idx, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-}
+/* Request_Motor_Feedback：实现见 motor_control.c（须带刚度发 MIT，不能发全零） */
 
+/*
+ * 仅轮询 Motor_RegResp + Delay_ms，不向电机发任何 CAN/MIT；
+ * 寄存器请求由 Motor_Read_Register_Request 发出（非全零 MIT 包）。
+ */
 uint8_t Wait_Register_Response(int idx, uint8_t rid, uint32_t wait_ms)
 {
     uint32_t t;
@@ -178,11 +212,28 @@ void Read_All_Current_Positions(void)
     int retry, i;
     uint8_t all_ok;
 
+    /*
+     * 清「本轮收到」标志前：用已有效的反馈把 Current_Targets 对齐真实角。
+     * 否则紧接着 Request 会用旧目标（常见为 0）发带刚度的 MIT → 上电/读反馈瞬间猛拉。
+     */
+    for (i = 0; i < MOTOR_NUM; i++) {
+        if (Motor_Feedback_Received[i]) {
+            Current_Targets[i] = Motor_States[i].pos;
+        }
+    }
+
     for (i = 0; i < MOTOR_NUM; i++) {
         Motor_Feedback_Received[i] = 0;
     }
 
     for (retry = 0; retry < 10; retry++) {
+        /* 等待间隙里若某轴已回包，先把目标对齐该轴，再向仍未回包轴发 MIT */
+        for (i = 0; i < MOTOR_NUM; i++) {
+            if (Motor_Feedback_Received[i]) {
+                Current_Targets[i] = Motor_States[i].pos;
+            }
+        }
+
         all_ok = 1;
         for (i = 0; i < MOTOR_NUM; i++) {
             if (!Motor_Feedback_Received[i]) {

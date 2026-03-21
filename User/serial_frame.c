@@ -59,8 +59,11 @@ int SerialFrame_ParseData(char *line, int16_t raw6[6])
     }
 
     if (((unsigned int)chk_got & 0xFFu) != (chk_expect & 0xFFu)) {
-        char buf[48];
-        snprintf(buf, sizeof(buf), "FAIL chk err (expect %02X)\r\n", (unsigned int)(chk_expect & 0xFFu));
+        char buf[72];
+        snprintf(buf, sizeof(buf),
+                 "FAIL chk err got %02X expect %02X (XOR byte0..before*)\r\n",
+                 (unsigned int)(chk_got & 0xFFu),
+                 (unsigned int)(chk_expect & 0xFFu));
         fail_both(buf);
         return 0;
     }

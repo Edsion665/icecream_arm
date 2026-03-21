@@ -22,6 +22,8 @@ void Safe_Control(int idx, float p, float v, float kp, float kd, float t);
 
 /*================ 核心：刚性保持 ================*/
 void Apply_Rigid_Hold_One_Cycle(void);
+/* 供 TIM 保持 ISR 使用：无帧间 Delay_us，从缓冲区读位置/homed */
+void Apply_Rigid_Hold_OnBuffers_NoPostDelay(const float *pos, const uint8_t *homed);
 void Hold_All_Rigid(uint32_t hold_ms);
 
 /*================ 通用单轴轨迹函数 ================*/

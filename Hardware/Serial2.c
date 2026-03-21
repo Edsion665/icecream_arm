@@ -26,7 +26,7 @@ void Serial2_Init(void)
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 
-    USART_InitStructure.USART_BaudRate            = 115200;
+    USART_InitStructure.USART_BaudRate            = SERIAL_USART2_BAUD;
     USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
     USART_InitStructure.USART_Mode                = USART_Mode_Tx;
     USART_InitStructure.USART_Parity              = USART_Parity_No;
@@ -53,17 +53,17 @@ void Serial2_SendByte(uint8_t Byte)
         uint16_t in;
         uint16_t next;
 
-        __disable_irq();
+        NVIC_DisableIRQ(USART2_IRQn);
         in   = s_tx2_in;
         next = (uint16_t)((in + 1u) % SERIAL2_TX_BUF_SIZE);
         if (next != s_tx2_out) {
             s_tx2[in] = Byte;
             s_tx2_in  = next;
             USART_ITConfig(USART2, USART_IT_TXE, ENABLE);
-            __enable_irq();
+            NVIC_EnableIRQ(USART2_IRQn);
             return;
         }
-        __enable_irq();
+        NVIC_EnableIRQ(USART2_IRQn);
     }
 }
 
@@ -78,9 +78,28 @@ void Serial2_SendArray(uint8_t *Array, uint16_t Length)
 void Serial2_SendString(char *String)
 {
     uint16_t i = 0;
+
+    if (String == 0) {
+        return;
+    }
+
     while (String[i] != '\0') {
-        Serial2_SendByte((uint8_t)String[i]);
-        i++;
+        NVIC_DisableIRQ(USART2_IRQn);
+        while (String[i] != '\0') {
+            uint16_t in   = s_tx2_in;
+            uint16_t next = (uint16_t)((in + 1u) % SERIAL2_TX_BUF_SIZE);
+            if (next == s_tx2_out) {
+                break;
+            }
+            s_tx2[in] = String[i++];
+            s_tx2_in  = next;
+        }
+        USART_ITConfig(USART2, USART_IT_TXE, ENABLE);
+        NVIC_EnableIRQ(USART2_IRQn);
+
+        if (String[i] == '\0') {
+            return;
+        }
     }
 }
 

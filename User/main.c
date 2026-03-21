@@ -8,6 +8,8 @@
 #include "../Hardware/Serial2.h"
 #include "serial_frame.h"
 #include "fb_report_timer.h"
+#include "motor_hold_timer.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -36,6 +38,28 @@ static void Process_Rpi_Raw6(const int16_t raw[6])
     /* 插补起点与反馈一致（与 Move_Four_Motors_FromFeedback_To_Rels 开头相同） */
     for (i = 0; i < 4; i++) {
         Current_Targets[i] = Motor_States[i].pos;
+    }
+
+    /*
+     * 已在 MOVE_DIST_TOL_RAD 内则不再跑四轴插补：避免重复同一 DATA 时
+     * StreamEnter 长时间关掉 TIM4 保持（轨迹用 move_kp，体感像失力）。
+     */
+    {
+        uint8_t already_there = 1u;
+        for (i = 0; i < 4; i++) {
+            if (fabsf(target_abs[i] - Motor_States[i].pos) >= MOVE_DIST_TOL_RAD) {
+                already_there = 0u;
+                break;
+            }
+        }
+        if (already_there) {
+            for (i = 0; i < 4; i++) {
+                Current_Targets[i] = target_abs[i];
+                Motor_Homed[i] = 1u;
+            }
+            MotorHoldTimer_PublishSnapshot();
+            return;
+        }
     }
 
     {
@@ -120,7 +144,7 @@ int main(void)
     Delay_ms(3000);
 
 #if MOTOR_DEBUG_LOG_ENABLE
-    /* 调试日志输出依赖串口初始化（默认 USART1@9600） */
+    /* 调试日志输出依赖串口初始化（USART1 波特率见 Serial.h SERIAL_USART1_BAUD） */
     Serial_Init();
 #endif
 
@@ -178,16 +202,23 @@ int main(void)
         }
     }
 
+    /* TIM4：按 INTERVAL_MS 周期 ISR 下发 MIT 保持（快照）；主线程阻塞时仍维持上一拍目标 */
+    MotorHoldTimer_Init();
+    MotorHoldTimer_PublishSnapshot();
+
     /* 串口1（USART1）：按行字符串控制；串口2（USART2）：转发串口1 收发 */
 
     /* 串口1 解析状态：收到 start 后永久开启电机角度解析 */
     static uint8_t s_parsing_enabled = 0;
 
     while (1) {
-        /* 串口1：逐行处理，不丢行 */
+        /* USART1 RX 经 DMA；此处拉数据降低行解析延迟（MIT 由 TIM4 快照发） */
+        Serial_ServiceRxDma();
+
+        /* 串口1：每轮主循环最多处理 1 行 */
         {
             char line[RPI_LINE_MAX_LEN];
-            while (Serial_GetNextLine(line, sizeof(line))) {
+            if (Serial_GetNextLine(line, sizeof(line))) {
                 char tmp[RPI_LINE_MAX_LEN];
                 uint8_t i;
 
@@ -208,13 +239,11 @@ int main(void)
                     Serial2_SendString("OK\r\n");
                     /* 2) 开启后续电机角度解析，且不再关闭 */
                     s_parsing_enabled = 1;
-                    continue;
-                }
-
-                /* 已开启解析：识别电机角度数据帧（帧头 DATA: + 6 整数 + 校验 *XX） */
-                if (s_parsing_enabled) {
+                    /* 勿用 continue：会跳过本周期 Apply_Rigid_Hold（原 while 里 continue 只取下一行） */
+                } else if (s_parsing_enabled) {
+                    /* 帧头 DATA: + 6 整数 + 校验 *XX */
                     int16_t raw6[6];
-                    if (SerialFrame_ParseData(line, raw6)) { /* 校验成功则解析电机角度 */
+                    if (SerialFrame_ParseData(line, raw6)) {
                         Process_Rpi_Raw6(raw6);
                     }
                 }
@@ -231,8 +260,33 @@ int main(void)
             continue;
         }
 
-        /* 全程只做硬性保持，不再做柔性保持 */
-        Apply_Rigid_Hold_One_Cycle();
+        /* 刚性保持由 TIM4 ISR 按快照周期下发；此处刷新快照使 Current_Targets 与 homed 及时同步 */
+        MotorHoldTimer_PublishSnapshot();
+
+#if MOTOR_DEBUG_LOG_ENABLE && MIT_HOLD_TRACE_ENABLE
+        {
+            static uint32_t s_hold_trace_ms;
+            s_hold_trace_ms += (uint32_t)INTERVAL_MS;
+            if (s_hold_trace_ms >= MIT_HOLD_TRACE_PERIOD_MS) {
+                char tb[200];
+                s_hold_trace_ms = 0;
+                snprintf(tb, sizeof(tb),
+                         "TRACE hold es=%u sd=%lu apply=%lu skS=%lu skE=%u "
+                         "tgt[rad] %.3f %.3f %.3f %.3f fb[rad] %.3f %.3f %.3f %.3f\r\n",
+                         (unsigned int)Emergency_Stop,
+                         (unsigned long)MotorHoldTimer_GetStreamDepth(),
+                         (unsigned long)g_MotorHold_IsrApplyCount,
+                         (unsigned long)g_MotorHold_IsrSkipStreamCount,
+                         (unsigned int)g_MotorHold_IsrSkipEmgCount,
+                         Current_Targets[0], Current_Targets[1],
+                         Current_Targets[2], Current_Targets[3],
+                         Motor_States[0].pos, Motor_States[1].pos,
+                         Motor_States[2].pos, Motor_States[3].pos);
+                Serial_SendString(tb);
+            }
+        }
+#endif
+
         Delay_ms(INTERVAL_MS);
     }
 }
