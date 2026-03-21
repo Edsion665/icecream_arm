@@ -4,6 +4,12 @@
 #include <string.h>
 #include "Serial.h"
 
+/*================ USART1 发送：环形缓冲 + TXE 中断（避免忙等拖死主循环/保持） ================*/
+#define SERIAL1_TX_BUF_SIZE  1024u
+static uint8_t s_tx1[SERIAL1_TX_BUF_SIZE];
+static volatile uint16_t s_tx1_in  = 0;
+static volatile uint16_t s_tx1_out = 0;
+
 /* 兼容旧符号（新逻辑用队列 + Serial_GetNextLine） */
 volatile uint8_t g_rpi_line_ready = 0;
 char g_rpi_line[RPI_LINE_MAX_LEN];
@@ -19,7 +25,6 @@ static char s_rx_build[RPI_LINE_MAX_LEN];
 static void queue_push_line(const char *line)
 {
     if (s_q_count >= RPI_LINE_QUEUE_DEPTH) {
-        /* 队列满：丢弃最旧一行，腾出位置 */
         s_q_head = (uint8_t)((s_q_head + 1u) % RPI_LINE_QUEUE_DEPTH);
         s_q_count--;
     }
@@ -28,7 +33,6 @@ static void queue_push_line(const char *line)
     s_q_tail = (uint8_t)((s_q_tail + 1u) % RPI_LINE_QUEUE_DEPTH);
     s_q_count++;
 
-    /* 可选：镜像最后一行到 g_rpi_line，便于调试观察 */
     strncpy(g_rpi_line, line, RPI_LINE_MAX_LEN - 1u);
     g_rpi_line[RPI_LINE_MAX_LEN - 1u] = '\0';
     g_rpi_line_ready = 1;
@@ -82,12 +86,11 @@ void Serial_Init(void)
     USART_Init(USART1, &USART_InitStructure);
 
     USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+    USART_ITConfig(USART1, USART_IT_TXE, DISABLE);
 
-    /*
-     * NVIC 分组须在 Hardware_Init() 里已对全片配置；
-     * 此处禁止再调 NVIC_PriorityGroupConfig，以免改写 CAN 优先级语义。
-     * 抢占优先级数字越大优先级越低：USART1 用 3，低于 CAN_RX0 的 0。
-     */
+    s_tx1_in = 0;
+    s_tx1_out = 0;
+
     NVIC_InitStructure.NVIC_IRQChannel                   = USART1_IRQn;
     NVIC_InitStructure.NVIC_IRQChannelCmd                = ENABLE;
     NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 3;
@@ -99,9 +102,22 @@ void Serial_Init(void)
 
 void Serial_SendByte(uint8_t Byte)
 {
-    USART_SendData(USART1, Byte);
-    while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET) {
-        ;
+    for (;;) {
+        uint16_t in;
+        uint16_t next;
+
+        __disable_irq();
+        in   = s_tx1_in;
+        next = (uint16_t)((in + 1u) % SERIAL1_TX_BUF_SIZE);
+        if (next != s_tx1_out) {
+            s_tx1[in] = Byte;
+            s_tx1_in  = next;
+            USART_ITConfig(USART1, USART_IT_TXE, ENABLE);
+            __enable_irq();
+            return;
+        }
+        __enable_irq();
+        /* 缓冲满：极短自旋；正常 FB/RES 远小于缓冲区 */
     }
 }
 
@@ -157,7 +173,7 @@ void Serial_Printf(char *format, ...)
 
 void USART1_IRQHandler(void)
 {
-    if (USART_GetITStatus(USART1, USART_IT_RXNE) == SET) {
+    if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
         uint8_t RxData = (uint8_t)USART_ReceiveData(USART1);
 
         if (RxData == '\r' || RxData == '\n') {
@@ -176,5 +192,15 @@ void USART1_IRQHandler(void)
         }
 
         USART_ClearITPendingBit(USART1, USART_IT_RXNE);
+    }
+
+    if (USART_GetITStatus(USART1, USART_IT_TXE) != RESET) {
+        if (s_tx1_out != s_tx1_in) {
+            USART_SendData(USART1, s_tx1[s_tx1_out]);
+            s_tx1_out = (uint16_t)((s_tx1_out + 1u) % SERIAL1_TX_BUF_SIZE);
+        }
+        if (s_tx1_out == s_tx1_in) {
+            USART_ITConfig(USART1, USART_IT_TXE, DISABLE);
+        }
     }
 }

@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 void Serial_Init(void);
+/* 发送：入队由 TXE 中断送出，不长时间占用 CPU（避免拖死电机保持周期） */
 void Serial_SendByte(uint8_t Byte);
 void Serial_SendArray(uint8_t *Array, uint16_t Length);
 void Serial_SendString(char *String);
