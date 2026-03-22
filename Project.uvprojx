@@ -701,6 +701,11 @@
               <FileType>1</FileType>
               <FilePath>.\Hardware\Serial2.c</FilePath>
             </File>
+            <File>
+              <FileName>Servo.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Hardware\Servo.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

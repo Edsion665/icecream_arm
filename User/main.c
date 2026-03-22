@@ -6,7 +6,11 @@
 #include "Coordinate/world_coord.h"
 #include "../Hardware/Serial.h"
 #include "../Hardware/Serial2.h"
+#include "../Hardware/Servo.h"
+#include "../Hardware/PWM.h"
 #include "serial_frame.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_rcc.h"
 #include "fb_report_timer.h"
 #include "motor_hold_timer.h"
 #include <math.h>
@@ -14,6 +18,9 @@
 #include <string.h>
 
 /* 周期性 FB：实现见 fb_report_timer.c（主循环 + 插补内均调用 ServicePending） */
+
+/* 1=PB0/PB1 PWM 测试（50Hz，1.5ms 中位），直接验证舵机引脚；0=正常舵机控制 */
+#define PWM_PB01_TEST_ENABLE  0
 
 /* 与 motor_config.h 中 WORLD_HOME_ABS 同源（标定零位对应的绝对 rad） */
 static const float s_rpi_home_abs_rad[4] = WORLD_HOME_ABS;
@@ -29,12 +36,16 @@ static float Rpi_ClampRelDeg(float deg)
     return deg;
 }
 
-/*================ 处理树莓派 6 个角度：前 4 为相对零位的度×100，±180° 内 -> 绝对 rad ================*/
+/*================ 处理树莓派 6 个角度：前 4 为相对零位的度×100，±180° 内 -> 绝对 rad；后 2 为舵机 ================*/
 static void Process_Rpi_Raw6(const int16_t raw[6])
 {
     float target_abs[4];
     uint8_t i;
     char out[160];
+
+    /* 后 2 路：舵机，-18000~18000（度×100）直接映射到 500~2500us */
+    Servo_SetWrist(raw[4]);
+    Servo_SetGripper(raw[5]);
 
     /* 前 4 路：相对标定零位的角（度×100），限幅 ±RPI_REL_DEG_LIMIT 后再换算绝对目标 */
     for (i = 0; i < 4; i++) {
@@ -168,7 +179,7 @@ int main(void)
     Serial2_Init();
 
 #if MOTOR_DEBUG_LOG_ENABLE
-    /* TIM3：按 FB_REPORT_HZ 置位；FB 发 USART1+2，须在两路串口均 Init 之后 */
+    /* TIM2：按 FB_REPORT_HZ 置位；FB 发 USART1+2，须在两路串口均 Init 之后 */
     FB_ReportTimer_Init();
 #endif
 
@@ -221,6 +232,14 @@ int main(void)
     /* TIM4：按 INTERVAL_MS 周期 ISR 下发 MIT 保持（快照）；主线程阻塞时仍维持上一拍目标 */
     MotorHoldTimer_Init();
     MotorHoldTimer_PublishSnapshot();
+
+#if PWM_PB01_TEST_ENABLE
+    /* PB0/PB1 PWM 测试：50Hz，1.5ms 脉宽（舵机中位） */
+    PWM_Init();
+#else
+    /* 舵机：PB0 腕部、PB1 机械爪，50Hz PWM */
+    Servo_Init();
+#endif
 
     /* 串口1（USART1）：按行字符串控制；串口2（USART2）：转发串口1 收发 */
 
@@ -278,6 +297,10 @@ int main(void)
 
         /* 刚性保持由 TIM4 ISR 按快照周期下发；此处刷新快照使 Current_Targets 与 homed 及时同步 */
         MotorHoldTimer_PublishSnapshot();
+
+#if !PWM_PB01_TEST_ENABLE
+        Servo_Update();
+#endif
 
         Delay_ms(INTERVAL_MS);
     }

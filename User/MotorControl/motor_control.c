@@ -5,7 +5,7 @@
 #include "../motor_hold_timer.h"
 #include <math.h>
 
-/* 插补阻塞主循环期间仍需按 TIM3 周期发 FB（见 main 中 FB 说明） */
+/* 插补阻塞主循环期间仍需按 TIM2 周期发 FB（见 main 中 FB 说明） */
 #if MOTOR_DEBUG_LOG_ENABLE
 #define MOTOR_FB_AFTER_STEP()  FB_Report_ServicePending()
 #else

@@ -58,7 +58,7 @@ void FB_ReportTimer_Init(void)
         hz = 1u;
     }
 
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
 
     RCC_GetClocksFreq(&clk);
     timclk = clk.PCLK1_Frequency;
@@ -93,18 +93,18 @@ void FB_ReportTimer_Init(void)
     tb.TIM_CounterMode   = TIM_CounterMode_Up;
     tb.TIM_Period        = (uint16_t)(arr - 1u);
     tb.TIM_ClockDivision = TIM_CKD_DIV1;
-    TIM_TimeBaseInit(TIM3, &tb);
+    TIM_TimeBaseInit(TIM2, &tb);
 
-    TIM_ClearFlag(TIM3, TIM_FLAG_Update);
-    TIM_SetCounter(TIM3, 0);
-    TIM_ITConfig(TIM3, TIM_IT_Update, DISABLE);
-    TIM_Cmd(TIM3, ENABLE);
+    TIM_ClearFlag(TIM2, TIM_FLAG_Update);
+    TIM_SetCounter(TIM2, 0);
+    TIM_ITConfig(TIM2, TIM_IT_Update, DISABLE);
+    TIM_Cmd(TIM2, ENABLE);
 }
 
 uint8_t FB_ReportTimer_TakePending(void)
 {
-    if (TIM_GetFlagStatus(TIM3, TIM_FLAG_Update) != RESET) {
-        TIM_ClearFlag(TIM3, TIM_FLAG_Update);
+    if (TIM_GetFlagStatus(TIM2, TIM_FLAG_Update) != RESET) {
+        TIM_ClearFlag(TIM2, TIM_FLAG_Update);
         return 1u;
     }
     return 0u;
