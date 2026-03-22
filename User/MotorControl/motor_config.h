@@ -160,7 +160,7 @@
  * 须略大于典型稳态跟踪误差 + 读反馈抖动；过小则同一 DATA 反复下发仍常跑插补 → 体感像失力。
  * 若仍偶发：可再试 0.15f（约 8.6°）；过大则「已到点附近」不再纠偏，精度变差。
  */
-#define MOVE_DIST_TOL_RAD        0.12f
+#define MOVE_DIST_TOL_RAD        0.9f
 /* 运动结束后，最多做几次闭环修正（不改控制参数，只重复执行同轨迹/保持） */
 #define ARRIVAL_MAX_CORRECTIONS  2
 

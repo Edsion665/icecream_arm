@@ -3,12 +3,13 @@
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_tim.h"
 
-/* 50Hz 舵机 PWM：20ms 周期，1us 分辨率，1500us=中位 */
-#define PWM_TEST_PERIOD_US  20000u
-#define PWM_TEST_CENTER_US  1500u
+/* 50Hz 舵机 PWM：20ms 周期，1us 分辨率 */
+#define PWM_TEST_PERIOD_US   20000u
+#define PWM_TEST_WRIST_US    1328u   /* 腕部 PB0 零位，与 Servo.c 一致 */
+#define PWM_TEST_GRIPPER_US  1500u   /* 机械爪 PB1 中位 */
 
 /**
-  * PB0/PB1 PWM 测试：50Hz，1.5ms 脉宽（舵机中位），直接验证舵机引脚
+  * PB0/PB1 PWM 测试：与 Servo 初值一致（腕部/机械爪 1500us）
   */
 void PWM_Init(void)
 {
@@ -51,12 +52,13 @@ void PWM_Init(void)
 	TIM_OCStructure.TIM_OCMode      = TIM_OCMode_PWM1;
 	TIM_OCStructure.TIM_OutputState = TIM_OutputState_Enable;
 	TIM_OCStructure.TIM_OCPolarity  = TIM_OCPolarity_High;
-	TIM_OCStructure.TIM_Pulse       = PWM_TEST_CENTER_US;
+	TIM_OCStructure.TIM_Pulse       = PWM_TEST_WRIST_US;
 	TIM_OC3Init(TIM3, &TIM_OCStructure);
+	TIM_OCStructure.TIM_Pulse       = PWM_TEST_GRIPPER_US;
 	TIM_OC4Init(TIM3, &TIM_OCStructure);
 
-	TIM_SetCompare3(TIM3, PWM_TEST_CENTER_US);
-	TIM_SetCompare4(TIM3, PWM_TEST_CENTER_US);
+	TIM_SetCompare3(TIM3, PWM_TEST_WRIST_US);
+	TIM_SetCompare4(TIM3, PWM_TEST_GRIPPER_US);
 
 	TIM_ClearFlag(TIM3, TIM_FLAG_Update);
 	TIM_SetCounter(TIM3, 0);
