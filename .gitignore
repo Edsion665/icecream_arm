@@ -25,3 +25,6 @@ DebugConfig/
 
 ## 本地杂项目录（勿提交）
 icecream_arm/
+
+## 压缩包（超过 GitHub 100MB 限制）
+*.zip
