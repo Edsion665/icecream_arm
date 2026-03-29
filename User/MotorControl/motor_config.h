@@ -205,7 +205,7 @@
 #define MOTOR_DEBUG_LOG_ENABLE   1
 
 /* FB 行回传频率（Hz），由 TIM2 产生标志供主循环轮询；与 Pi 前馈同节拍 */
-#define FB_REPORT_HZ             100
+#define FB_REPORT_HZ             10
 
 /*================ 额外流程参数 ================*/
 #define MOTION_SPEED_SCALE       2.0f
