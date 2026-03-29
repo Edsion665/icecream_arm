@@ -1,0 +1,453 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="ice_cream_v6.SLDASM">
+  <link
+    name="link0">
+    <inertial>
+      <origin
+        xyz="0.0133470055897431 0.457437807969501 -0.0275827404298519"
+        rpy="0 0 0" />
+      <mass
+        value="0.85505019762779" />
+      <inertia
+        ixx="0.00443406576850002"
+        ixy="-0.000216132387597278"
+        ixz="-2.17640351722505E-07"
+        iyy="0.00700830983963866"
+        iyz="-2.08585919491685E-07"
+        izz="0.00410488825263743" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link0.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.698039215686274 0.698039215686274 0.698039215686274 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link0.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="link1">
+    <inertial>
+      <origin
+        xyz="-1.03917039684376E-06 -0.000721472735639734 -0.00340211909351376"
+        rpy="0 0 0" />
+      <mass
+        value="0.15246600813643" />
+      <inertia
+        ixx="5.05969811013781E-05"
+        ixy="-2.71973341392303E-08"
+        ixz="5.32019696643662E-10"
+        iyy="8.91233428579098E-05"
+        iyz="-4.93964156535137E-06"
+        izz="9.7522906914231E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint1"
+    type="continuous">
+    <origin
+      xyz="0.0200000000000042 0.377520246488081 -0.0275749999999952"
+      rpy="1.5707963267949 -1.5707963267949 0" />
+    <parent
+      link="link0" />
+    <child
+      link="link1" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="0"
+      velocity="0.1" />
+  </joint>
+  <link
+    name="link2">
+    <inertial>
+      <origin
+        xyz="-0.00185889023750316 0.107222903080035 0.0268743519611299"
+        rpy="0 0 0" />
+      <mass
+        value="0.453717666834875" />
+      <inertia
+        ixx="0.00201222842395176"
+        ixy="-0.000102487183534474"
+        ixz="-1.70781403254506E-08"
+        iyy="0.000171098379757117"
+        iyz="1.52539251927192E-09"
+        izz="0.0020706193316588" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint2"
+    type="continuous">
+    <origin
+      xyz="0.0275999999641092 0.0199999999689605 0.0589000000000009"
+      rpy="1.5707963267949 0 -1.5707963267949" />
+    <parent
+      link="link1" />
+    <child
+      link="link2" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="0"
+      velocity="0.1" />
+  </joint>
+  <link
+    name="link3">
+    <inertial>
+      <origin
+        xyz="0.043598991740324 -0.0839729535461071 -0.0267774918746218"
+        rpy="0 0 0" />
+      <mass
+        value="0.413035103558907" />
+      <inertia
+        ixx="0.00144395062572832"
+        ixy="0.000148681085876665"
+        ixz="8.50349569593976E-10"
+        iyy="0.000193545835302925"
+        iyz="1.79337462623341E-08"
+        izz="0.00152394025016061" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint3"
+    type="continuous">
+    <origin
+      xyz="0 0.31862024648808 2.49999641133147E-05"
+      rpy="3.14159265358979 0 0" />
+    <parent
+      link="link2" />
+    <child
+      link="link3" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="0"
+      velocity="0.1" />
+  </joint>
+  <link
+    name="link4">
+    <inertial>
+      <origin
+        xyz="-0.0217216875125016 0.00033049897834541 -0.0234588975342074"
+        rpy="0 0 0" />
+      <mass
+        value="0.211816244203133" />
+      <inertia
+        ixx="0.000105708003062523"
+        ixy="3.9890860323402E-07"
+        ixz="-9.44551027625408E-10"
+        iyy="0.000155403262304933"
+        iyz="4.19692107818996E-08"
+        izz="0.00011917411213665" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4"
+    type="revolute">
+    <origin
+      xyz="0.0768333127084071 -0.290347012401545 -0.00319999999999943"
+      rpy="0 0 1.5707963267949" />
+    <parent
+      link="link3" />
+    <child
+      link="link4" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="0"
+      velocity="0.1" />
+  </joint>
+  <link
+    name="link5">
+    <inertial>
+      <origin
+        xyz="0.0013394 -0.01507 0.050399"
+        rpy="0 0 0" />
+      <mass
+        value="0.23729" />
+      <inertia
+        ixx="7.9788E-05"
+        ixy="6.3131E-06"
+        ixz="-1.2773E-06"
+        iyy="0.00025047"
+        iyz="9.2639E-06"
+        izz="0.0002831" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link5.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/link5.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint5"
+    type="revolute">
+    <origin
+      xyz="-0.09985 -0.0095 -0.0245"
+      rpy="3.1416 -1.5708 0" />
+    <parent
+      link="link4" />
+    <child
+      link="link5" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="0"
+      velocity="0.1" />
+  </joint>
+  <link
+    name="fingerlink_R">
+    <inertial>
+      <origin
+        xyz="0.000954820503611037 0.000242454903527811 -0.0128199696420825"
+        rpy="0 0 0" />
+      <mass
+        value="0.0525990958345479" />
+      <inertia
+        ixx="1.05358618830416E-05"
+        ixy="8.83239792618609E-08"
+        ixz="1.45571643670353E-08"
+        iyy="1.02165156724903E-05"
+        iyz="-9.18221721791422E-07"
+        izz="1.13270668704294E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/fingerlink_R.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.698039215686274 0.698039215686274 0.698039215686274 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/fingerlink_R.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="FINGER_RIGHT"
+    type="prismatic">
+    <origin
+      xyz="0.023822460321683 -0.00227999999999988 0.0870999999999997"
+      rpy="1.5707963267949 0 -1.5707963267949" />
+    <parent
+      link="link5" />
+    <child
+      link="fingerlink_R" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="fingerlink_L">
+    <inertial>
+      <origin
+        xyz="0.000168757920926299 -0.000962748098437535 -0.012819969642101"
+        rpy="0 0 0" />
+      <mass
+        value="0.0525990958345485" />
+      <inertia
+        ixx="1.02165156724906E-05"
+        ixy="-8.83715679875245E-08"
+        ixz="-9.18221721791515E-07"
+        iyy="1.05358618830418E-05"
+        iyz="-1.45571643671312E-08"
+        izz="1.13270668704293E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/fingerlink_L.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.698039215686274 0.698039215686274 0.698039215686274 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ice_cream_v6_description/meshes/fingerlink_L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="FINGER_L"
+    type="prismatic">
+    <origin
+      xyz="-0.016177539678335 -0.00227999999999978 0.0872499999999996"
+      rpy="0 -1.5707963267949 0" />
+    <parent
+      link="link5" />
+    <child
+      link="fingerlink_L" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+</robot>

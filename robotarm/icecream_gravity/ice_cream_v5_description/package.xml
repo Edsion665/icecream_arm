@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ice_cream_v5_description</name>
+  <version>1.0.0</version>
+  <description>Ice Cream v5 arm — URDF/meshes for ROS2 (from SolidWorks export; package paths fixed).</description>
+  <maintainer email="todo@example.com">TODO</maintainer>
+  <license>BSD</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
