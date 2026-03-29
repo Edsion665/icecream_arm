@@ -2,8 +2,41 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+@dataclass
+class TauFfRuntimeConfig:
+    """力矩前馈模式可调参数（可在运行时改 `calibration_rad` 等）。"""
+
+    # 四轴标定零位（弧度），与 STM32 上报 FB 弧度同含义；默认全 0
+    calibration_rad: list[float] = field(default_factory=lambda: [1.57416, 1.42462,2.42676,0.47208])
+    # TAU: 下发频率（Hz）；过高可能占满 CPU / 串口带宽
+    send_hz: float = 20.0
+    # Pinocchio 算出的四轴重力前馈 (Nm) 乘以该系数再下发 TAU:（1.0 为不缩放）
+    gain: float = 1.0
+
+
+def _env_mode() -> str:
+    v = os.environ.get("ARM_CONTROL_MODE", "tau_ff").strip().lower()
+    return v if v in ("data", "tau_ff") else "tau_ff"
+
+
+# 控制模式：data = 仅 WebSocket set_joint 发 DATA；tau_ff = 握手后按 FB 算重力并发 TAU
+CONTROL_MODE: str = _env_mode()
+
+TAU_FF = TauFfRuntimeConfig()
+try:
+    _hz = float(os.environ.get("ARM_CONTROL_TAU_HZ", "20"))
+    TAU_FF.send_hz = max(1.0, min(500.0, _hz))
+except ValueError:
+    TAU_FF.send_hz = 20.0
+try:
+    TAU_FF.gain = float(os.environ.get("ARM_CONTROL_TAU_GAIN", "1.0"))
+except ValueError:
+    TAU_FF.gain = 1.0
 
 
 @dataclass(frozen=True)
@@ -55,4 +88,14 @@ class AppConfig:
 
 
 CONFIG = AppConfig()
+
+
+def set_tau_calibration_rad(r0: float, r1: float, r2: float, r3: float) -> None:
+    """四轴标定零位（弧度），供外部调用。"""
+    TAU_FF.calibration_rad[:] = [float(r0), float(r1), float(r2), float(r3)]
+
+
+def set_tau_gain(gain: float) -> None:
+    """四轴力矩前馈总增益（与 `TAU_FF.gain` 相同）。"""
+    TAU_FF.gain = float(gain)
 

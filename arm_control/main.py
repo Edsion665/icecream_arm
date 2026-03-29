@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from asyncio import Queue
 from typing import Any, Dict
 
 from .camera_manager import camera_loop
+from .config import CONTROL_MODE, TAU_FF, set_tau_calibration_rad, set_tau_gain
+from .gravity_feedforward import compute_tau_ff_nm
 from .protocol import ParsedFrame
 from .serial_manager import SerialManager
 from .state_store import StateStore
@@ -48,7 +51,7 @@ def _build_data_frame_from_cmd(data: Dict[str, Any]) -> bytes:
     a4 = int(data.get("a4", 0))
     a5 = int(data.get("a5", 0))
 
-    # XOR 校验字段基于“帧头 + 6 整数”（不包含 '*' 和校验码本身）
+    # XOR 校验字段基于「帧头 + 6 整数」（不包含 '*' 和校验码本身）
     payload_str = f"DATA:{a0},{a1},{a2},{a3},{a4},{a5}"
     cs = 0
     for b in payload_str.encode("ascii"):
@@ -58,12 +61,66 @@ def _build_data_frame_from_cmd(data: Dict[str, Any]) -> bytes:
     return frame
 
 
+def _build_tau_frame(t0: float, t1: float, t2: float, t3: float) -> bytes:
+    """TAU:t0,t1,t2,t3*XX\\r\\n，XOR 与 DATA: 相同（对 TAU:... 不含 * 部分逐字节异或）。"""
+    payload_str = f"TAU:{t0:.6f},{t1:.6f},{t2:.6f},{t3:.6f}"
+    cs = 0
+    for b in payload_str.encode("ascii"):
+        cs ^= b
+    line = f"{payload_str}*{cs & 0xFF:02X}\r\n"
+    return line.encode("ascii")
+
+
+async def _tau_ff_loop(state_store: StateStore, serial_mgr: SerialManager) -> None:
+    """力矩前馈：按 FB 弧度差 + Pinocchio 计算四轴 τ，按 send_hz 发 TAU:（不等待 RES）。"""
+    logger = logging.getLogger(__name__)
+    logged_ff_err: str | None = None
+    while True:
+        if CONTROL_MODE != "tau_ff":
+            await asyncio.sleep(0.05)
+            continue
+
+        interval = 1.0 / max(1.0, float(TAU_FF.send_hz))
+        iter_start = time.monotonic()
+
+        fb = state_store.get_fb_arm_rad()
+        if fb is None:
+            await asyncio.sleep(interval)
+            continue
+        cal = TAU_FF.calibration_rad
+        if len(cal) != 4:
+            logger.error("TAU_FF.calibration_rad 须为 4 个浮点数")
+            await asyncio.sleep(interval)
+            continue
+        delta = tuple(fb[i] - cal[i] for i in range(4))
+        try:
+            t0, t1, t2, t3 = compute_tau_ff_nm(delta)
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc)
+            if msg != logged_ff_err:
+                logged_ff_err = msg
+                logger.warning("重力前馈计算失败（缺 numpy/pinocchio 或 URDF？）：%s", exc)
+            await asyncio.sleep(interval)
+            continue
+        logged_ff_err = None
+        g = float(TAU_FF.gain)
+        t0, t1, t2, t3 = t0 * g, t1 * g, t2 * g, t3 * g
+        raw = _build_tau_frame(t0, t1, t2, t3)
+        serial_mgr.send_raw(raw)
+
+        elapsed = time.monotonic() - iter_start
+        remain = interval - elapsed
+        if remain > 0:
+            await asyncio.sleep(remain)
+
+
 async def _process_commands(
     state_store: StateStore,
     serial_mgr: SerialManager,
     command_queue: "Queue[Dict[str, Any]]",
 ) -> None:
     """处理从 WebSocket 收到的控制指令，并转发到串口。"""
+    logger = logging.getLogger(__name__)
     while True:
         cmd_msg = await command_queue.get()
         try:
@@ -73,18 +130,31 @@ async def _process_commands(
             data = cmd_msg.get("data") or {}
 
             if cmd_name == "set_joint":
-                # 将上位机的 set_joint 命令转换为 `DATA:...*XX\r\n` 文本协议
+                # 仅在 data 模式下转发 DATA:（力矩前馈模式下关闭，避免与 TAU 流冲突）
+                if CONTROL_MODE != "data":
+                    logger.debug("set_joint 已忽略（当前为 tau_ff 模式，不发 DATA）")
+                    continue
                 frame = _build_data_frame_from_cmd(data)
-                logging.getLogger(__name__).info("下发关节指令到 STM32：%r", frame)
+                logger.info("下发关节指令到 STM32：%r", frame)
                 ok = await asyncio.to_thread(serial_mgr.send_raw_and_wait_for_res, frame)
                 if not ok:
-                    logging.getLogger(__name__).error(
+                    logger.error(
                         "未收到 STM32 回传 RES：重连/重发失败（frame=%r）", frame
                     )
+            elif cmd_name == "set_tau_calibration":
+                # 四轴标定零位（弧度）：{"r0":0,"r1":0,"r2":0,"r3":0}
+                r0 = float(data.get("r0", 0.0))
+                r1 = float(data.get("r1", 0.0))
+                r2 = float(data.get("r2", 0.0))
+                r3 = float(data.get("r3", 0.0))
+                set_tau_calibration_rad(r0, r1, r2, r3)
+                logger.info("已更新力矩前馈标定零位 (rad): %s", TAU_FF.calibration_rad)
+            elif cmd_name == "set_tau_gain":
+                set_tau_gain(float(data.get("gain", 1.0)))
+                logger.info("已更新力矩前馈增益: %s", TAU_FF.gain)
             else:
-                # 其他命令暂时仍用原有二进制封帧方式（如后续扩展）
                 raw = json.dumps({"cmd": cmd_name, "data": data}).encode("utf-8")
-                logging.getLogger(__name__).info(
+                logger.info(
                     "下发通用命令（二进制封帧）：cmd=%s, payload=%r", cmd_name, raw
                 )
                 serial_mgr.send_command(0x11, raw)
@@ -104,16 +174,31 @@ async def _run_async() -> None:
 
     serial_mgr = SerialManager(state_store=state_store, on_frame=on_frame)
     serial_mgr.start()
-    logger.info("串口管理线程已启动")
+    logger.info("串口管理线程已启动，控制模式=%s", CONTROL_MODE)
+
+    if CONTROL_MODE == "tau_ff":
+        logger.info(
+            "预热 Pinocchio 重力模型（首次加载 URDF，树莓派上可能需数秒）…"
+        )
+        try:
+            await asyncio.to_thread(
+                lambda: compute_tau_ff_nm((0.0, 0.0, 0.0, 0.0))
+            )
+            logger.info(
+                "Pinocchio 预热完成，TAU 目标频率 %.1f Hz",
+                float(TAU_FF.send_hz),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Pinocchio 预热失败（运行中仍会重试）：%s", exc)
 
     def on_camera_frame(frame_b64: str) -> None:
-        # TODO: 结合 WebSocket 推送相机帧，这里先占位
         logger.debug("收到相机帧（长度=%d）", len(frame_b64))
 
     tasks = [
         asyncio.create_task(start_ws_server(state_store, command_queue)),
         asyncio.create_task(_process_commands(state_store, serial_mgr, command_queue)),
         asyncio.create_task(camera_loop(on_camera_frame)),
+        asyncio.create_task(_tau_ff_loop(state_store, serial_mgr)),
     ]
 
     try:
@@ -129,4 +214,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -283,17 +283,18 @@ class SerialManager(threading.Thread):
         if not text.startswith("FB "):
             return
 
-        # 解析 FB 后前 4 个整数，作为 motors 的 4 个量
-        # 示例: FB 9280 -9192 -17655 -2196 j1:0.042 j2:1.415 ...
+        # 新协议：FB 后 4 个浮点弧度（可含尾部 j1:...）
+        # 示例: FB 3.16262 -0.20504 -0.77687 0.02613
+        # 旧协议：FB 后 4 个整数（度×100 等）仍兼容：用 float 解析即可
         try:
             head_part = text.split(" j1:", 1)[0]
             parts = head_part.split()
             if len(parts) >= 5:
-                raw4 = [int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])]
+                raw4 = [float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])]
+                self._state_store.set_fb_arm_rad((raw4[0], raw4[1], raw4[2], raw4[3]))
                 for i, value in enumerate(raw4):
                     self._state_store.update_motor(i, position=float(value))
-        except Exception:
-            # 不中断后续 j 字段解析
+        except (ValueError, TypeError):
             pass
 
         matches = FB_JOINT_PATTERN.findall(text)
