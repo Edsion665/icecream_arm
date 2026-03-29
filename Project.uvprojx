@@ -752,6 +752,11 @@
               <FilePath>.\User\MotorControl\motor_control.c</FilePath>
             </File>
             <File>
+              <FileName>gravity_pi_feedforward.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\User\MotorControl\gravity_pi_feedforward.c</FilePath>
+            </File>
+            <File>
               <FileName>motor_test.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\User\MotorControl\motor_test.c</FilePath>

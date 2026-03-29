@@ -13,6 +13,9 @@
 #include "stm32f10x_rcc.h"
 #include "fb_report_timer.h"
 #include "motor_hold_timer.h"
+#if GRAVITY_FF_PI_MODE
+#include "MotorControl/gravity_pi_feedforward.h"
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,6 +37,27 @@ static float Rpi_ClampRelDeg(float deg)
         return -RPI_REL_DEG_LIMIT;
     }
     return deg;
+}
+
+/* tmp 已为全小写；允许首尾空白，避免上位机多打空格/Tab 导致 strcmp("start") 失败 */
+static int Rpi_LineIsStartCmd(const char *tmp)
+{
+    const char *p = tmp;
+
+    if (tmp == 0) {
+        return 0;
+    }
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (strncmp(p, "start", 5) != 0) {
+        return 0;
+    }
+    p += 5;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    return *p == '\0' ? 1 : 0;
 }
 
 /*================ 处理树莓派 6 个角度：前 4 为相对零位的度×100，±180° 内 -> 绝对 rad；后 2 为舵机 ================*/
@@ -170,16 +194,16 @@ int main(void)
     Hardware_Init();
     Delay_ms(3000);
 
-#if MOTOR_DEBUG_LOG_ENABLE
-    /* 调试日志输出依赖串口初始化（USART1 波特率见 Serial.h SERIAL_USART1_BAUD） */
+#if MOTOR_DEBUG_LOG_ENABLE || GRAVITY_FF_PI_MODE
+    /* USART1：调试 FB / 树莓派 TAU 前馈（波特率见 Serial.h SERIAL_USART1_BAUD） */
     Serial_Init();
 #endif
 
     /* 串口2（USART2, PA2/PA3）：仅用于定时发送测试帧 */
     Serial2_Init();
 
-#if MOTOR_DEBUG_LOG_ENABLE
-    /* TIM2：按 FB_REPORT_HZ 置位；FB 发 USART1+2，须在两路串口均 Init 之后 */
+#if MOTOR_DEBUG_LOG_ENABLE || GRAVITY_FF_PI_MODE
+    /* TIM2：按 FB_REPORT_HZ 置位；Pi 模式下同时驱动 GravityPi_ApplyAll */
     FB_ReportTimer_Init();
 #endif
 
@@ -247,45 +271,55 @@ int main(void)
     static uint8_t s_parsing_enabled = 0;
 
     while (1) {
-        /* USART1 RX 经 DMA；此处拉数据降低行解析延迟（MIT 由 TIM4 快照发） */
+        /* USART1 RX 经 DMA；MIT 由 TIM4（量产）或 TIM2+Pi（GRAVITY_FF_PI_MODE）发 */
         Serial_ServiceRxDma();
 
-        /* 串口1：每轮主循环最多处理 1 行 */
+        /* 串口1：每轮主循环最多处理 1 行；先转发串口2 再解析（与历史版本一致） */
         {
             char line[RPI_LINE_MAX_LEN];
             if (Serial_GetNextLine(line, sizeof(line))) {
                 char tmp[RPI_LINE_MAX_LEN];
                 uint8_t i;
 
-                /* 串口2：转发串口1 接收到的内容 */
                 Serial2_SendString(line);
                 Serial2_SendString("\r\n");
 
-                /* 转小写便于比较 */
                 for (i = 0; line[i] != '\0'; i++) {
                     tmp[i] = (line[i] >= 'A' && line[i] <= 'Z') ?
                              (char)(line[i] - 'A' + 'a') : line[i];
                 }
                 tmp[i] = '\0';
 
-                if (strcmp(tmp, "start") == 0) {
-                    /* 1) 先回复 OK（串口1 + 串口2） */
+                if (Rpi_LineIsStartCmd(tmp)) {
                     Serial_SendString("OK\r\n");
                     Serial2_SendString("OK\r\n");
-                    /* 2) 开启后续电机角度解析，且不再关闭 */
                     s_parsing_enabled = 1;
-                    /* 勿用 continue：会跳过本周期 Apply_Rigid_Hold（原 while 里 continue 只取下一行） */
                 } else if (s_parsing_enabled) {
-                    /* 帧头 DATA: + 6 整数 + 校验 *XX */
                     int16_t raw6[6];
+#if GRAVITY_FF_PI_MODE
+                    {
+                        float tau4[4];
+                        if (SerialFrame_IsTauLine(line)) {
+                            if (SerialFrame_ParseTau(line, tau4)) {
+                                GravityPi_OnTorqueLine(tau4);
+                                GravityPi_NotifyTauParseResult(1);
+                            } else {
+                                GravityPi_NotifyTauParseResult(0);
+                            }
+                        } else if (SerialFrame_ParseData(line, raw6)) {
+                            Process_Rpi_Raw6(raw6);
+                        }
+                    }
+#else
                     if (SerialFrame_ParseData(line, raw6)) {
                         Process_Rpi_Raw6(raw6);
                     }
+#endif
                 }
             }
         }
 
-#if MOTOR_DEBUG_LOG_ENABLE
+#if MOTOR_DEBUG_LOG_ENABLE || GRAVITY_FF_PI_MODE
         FB_Report_ServicePending();
 #endif
 

@@ -8,9 +8,21 @@
 #include "stm32f10x_tim.h"
 #include "misc.h"
 
+#if MOTOR_HOLD_TIM4_ENABLE
 /* 定时器 ISR 只读此快照；主线程在 Publish / StreamExit(深度归零) 时更新 */
 static float s_snap_p[MOTOR_NUM];
 static uint8_t s_snap_h[MOTOR_NUM];
+
+static void copy_snap_from_targets(void)
+{
+    int i;
+    for (i = 0; i < MOTOR_NUM; i++) {
+        s_snap_p[i] = Current_Targets[i];
+        s_snap_h[i] = Motor_Homed[i];
+    }
+}
+#endif
+
 /* ISR 与主线程均访问；勿缓存 */
 static volatile uint32_t s_stream_depth;
 
@@ -23,22 +35,11 @@ uint32_t MotorHoldTimer_GetStreamDepth(void)
     return (uint32_t)s_stream_depth;
 }
 
-static void copy_snap_from_targets(void)
-{
-    int i;
-    for (i = 0; i < MOTOR_NUM; i++) {
-        s_snap_p[i] = Current_Targets[i];
-        s_snap_h[i] = Motor_Homed[i];
-    }
-}
-
 void MotorHoldTimer_PublishSnapshot(void)
 {
 #if MOTOR_HOLD_TIM4_ENABLE
     NVIC_DisableIRQ(TIM4_IRQn);
-#endif
     copy_snap_from_targets();
-#if MOTOR_HOLD_TIM4_ENABLE
     NVIC_EnableIRQ(TIM4_IRQn);
 #endif
 }
@@ -56,9 +57,11 @@ void MotorHoldTimer_StreamExit(void)
     if (s_stream_depth > 0u) {
         s_stream_depth--;
     }
+#if MOTOR_HOLD_TIM4_ENABLE
     if (s_stream_depth == 0u) {
         copy_snap_from_targets();
     }
+#endif
     __enable_irq();
 }
 

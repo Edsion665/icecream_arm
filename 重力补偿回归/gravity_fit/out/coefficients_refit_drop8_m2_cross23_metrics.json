@@ -1,0 +1,38 @@
+{
+  "motor_focus": 2,
+  "dropped_count": 8,
+  "dropped_indices": [
+    64,
+    65,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73
+  ],
+  "use_cross": true,
+  "ridge": 0.002,
+  "rmse_before_after": [
+    {
+      "motor": 0,
+      "rmse_before": 0.5204336535806896,
+      "rmse_after": 0.043569306567403196
+    },
+    {
+      "motor": 1,
+      "rmse_before": 5.220893248748614,
+      "rmse_after": 0.9950048293731774
+    },
+    {
+      "motor": 2,
+      "rmse_before": 17.795675084162852,
+      "rmse_after": 1.7648918814168453
+    },
+    {
+      "motor": 3,
+      "rmse_before": 3.82782214787785,
+      "rmse_after": 0.23548113968717999
+    }
+  ]
+}

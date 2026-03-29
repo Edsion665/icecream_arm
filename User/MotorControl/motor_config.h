@@ -53,13 +53,21 @@
     1.8f\
 }
 
-/* 到位后的前馈扭矩，用于持续托住重力 */\
+/* 到位后的前馈扭矩，用于持续托住重力（试跑可全 0 关固定前馈，恢复时取消下面注释块） */
 #define EXTREME_HOLD_TFF {\
+    0.0f,\
+    0.0f,\
+    0.0f,\
+    0.0f\
+}
+/*
+#define EXTREME_HOLD_TFF_ORIG {\
     0.0f,\
     0.45f,\
     0.85f,\
     0.0f\
 }
+*/
 
 /*================ 每轴运动参数 ================*/
 #define MOVE_KP {\
@@ -127,10 +135,11 @@
  * 机械标定零位（输入：度×100）：摆到该姿态后，上位机坐标系记为 0,0,0,0。
  * 修改标定只需改下面四个数，WORLD_HOME_ABS 会自动一致。
  */
-#define RPI_HOME_RAW_DEG100_J0  (-298)
-#define RPI_HOME_RAW_DEG100_J1  (8059)
-#define RPI_HOME_RAW_DEG100_J2  (13327)
-#define RPI_HOME_RAW_DEG100_J3  (2700)
+/* 标定更新：机械零位处 FB 相对旧 HOME 为 8976,-233,194,83(度×100) → 新 RAW = 旧 + 该校准读数 */
+#define RPI_HOME_RAW_DEG100_J0  (8678)
+#define RPI_HOME_RAW_DEG100_J1  (7826)
+#define RPI_HOME_RAW_DEG100_J2  (13521)
+#define RPI_HOME_RAW_DEG100_J3  (2783)
 
 /*
  * DATA 前 4 轴表示「相对零位的角度」（度×100），软件限制在 ±RPI_REL_DEG_LIMIT（度），
@@ -160,16 +169,33 @@
  * 须略大于典型稳态跟踪误差 + 读反馈抖动；过小则同一 DATA 反复下发仍常跑插补 → 体感像失力。
  * 若仍偶发：可再试 0.15f（约 8.6°）；过大则「已到点附近」不再纠偏，精度变差。
  */
-#define MOVE_DIST_TOL_RAD        0.9f
+#define MOVE_DIST_TOL_RAD        0.09f
 /* 运动结束后，最多做几次闭环修正（不改控制参数，只重复执行同轨迹/保持） */
 #define ARRIVAL_MAX_CORRECTIONS  2
 
 /*
+ * 树莓派重力前馈：串口 TAU: 四轴力矩(Nm)，STM32 缓冲后由 TIM2 周期发 MIT。
+ * Pi 模式为「力矩 + 阻尼」：Kp=0 关位置环；Kd 为速度阻尼；p 在固件里用反馈角（见 gravity_pi_feedforward.c），
+ * 不使用 Current_Targets，避免上位轨迹/目标角干扰。
+ */
+#ifndef GRAVITY_FF_PI_MODE
+#define GRAVITY_FF_PI_MODE       1
+#endif
+#ifndef GRAVITY_FF_GLOBAL_SCALE
+#define GRAVITY_FF_GLOBAL_SCALE  1.0f
+#endif
+#define GRAVITY_FF_PI_MIT_KP { 0.0f, 0.0f, 0.0f, 0.0f }
+#define GRAVITY_FF_PI_MIT_KD { 1.8f, 2.5f, 2.3f, 0.3f }
+
+/*
  * TIM4 周期刚性保持（ISR 内 Apply_Rigid_Hold_OnBuffers_NoPostDelay）
- * 1=开启（推荐量产）
- * 0=关闭仅做试验：无插补时 MIT 不再由 TIM4 下发，可能变软/断粮；改回 1 即可恢复
+ * GRAVITY_FF_PI_MODE=1 时强制为 0：MIT 仅由 TIM2 下发，避免与 Pi 前馈双通道。
  */
 #define MOTOR_HOLD_TIM4_ENABLE   1
+#if GRAVITY_FF_PI_MODE
+#undef MOTOR_HOLD_TIM4_ENABLE
+#define MOTOR_HOLD_TIM4_ENABLE   0
+#endif
 
 /*================ 调试日志开关 ================*/
 /*
@@ -178,8 +204,8 @@
  */
 #define MOTOR_DEBUG_LOG_ENABLE   1
 
-/* FB 行回传频率（Hz），由 TIM2 产生标志供主循环轮询（数值越小串口负载越低） */
-#define FB_REPORT_HZ             4
+/* FB 行回传频率（Hz），由 TIM2 产生标志供主循环轮询；与 Pi 前馈同节拍 */
+#define FB_REPORT_HZ             100
 
 /*================ 额外流程参数 ================*/
 #define MOTION_SPEED_SCALE       2.0f

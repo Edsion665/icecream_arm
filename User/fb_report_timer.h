@@ -7,9 +7,12 @@ void FB_ReportTimer_Init(void);
 /* 轮询 TIM2 UIF：到周期返回 1 并清标志（不在 NVIC 里依赖 TIM2 中断） */
 uint8_t FB_ReportTimer_TakePending(void);
 
-/* 发一行 FB（绝对角·度×100，与 DATA 一致）；需已 Init 串口与 TIM2 */
+/* 发一行 FB：四轴 MIT 映射弧度（与 CAN 0～65535→Runtime_P 一致）+ j1..j4 力矩(Nm)；周期=FB_REPORT_HZ */
 void FB_Report_SendLine(void);
-/* TakePending 为真则 SendLine；供插补循环内调用，避免主循环被阻塞时无 FB */
+/*
+ * TakePending 为真：可选 SendLine（MOTOR_DEBUG_LOG_ENABLE）、GravityPi_ApplyAll（GRAVITY_FF_PI_MODE）。
+ * 插补循环内亦调用，避免主循环阻塞时无 FB / 无 Pi MIT。
+ */
 void FB_Report_ServicePending(void);
 
 #endif

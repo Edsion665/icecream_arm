@@ -5,8 +5,8 @@
 #include "../motor_hold_timer.h"
 #include <math.h>
 
-/* 插补阻塞主循环期间仍需按 TIM2 周期发 FB（见 main 中 FB 说明） */
-#if MOTOR_DEBUG_LOG_ENABLE
+/* 插补阻塞主循环期间仍需按 TIM2 周期发 FB / Pi 前馈（见 main 中 TIM2 说明） */
+#if MOTOR_DEBUG_LOG_ENABLE || GRAVITY_FF_PI_MODE
 #define MOTOR_FB_AFTER_STEP()  FB_Report_ServicePending()
 #else
 #define MOTOR_FB_AFTER_STEP()  ((void)0)
@@ -70,6 +70,9 @@ float Get_Extreme_Hold_Tff(int idx)
     return extreme_hold_tff[idx];
 }
 
+/* 定义在下方 */
+static void Safe_Control_NoPostDelay(int idx, float p, float v, float kp, float kd, float t);
+
 /*================ 安全控制 ================*/
 void Safe_Control(int idx, float p, float v, float kp, float kd, float t)
 {
@@ -101,22 +104,24 @@ static void Safe_Control_NoPostDelay(int idx, float p, float v, float kp, float 
 
 void Apply_Rigid_Hold_OnBuffers_NoPostDelay(const float *pos, const uint8_t *homed)
 {
-    int i;
-
     if (pos == 0 || homed == 0) {
         return;
     }
 
-    for (i = 0; i < MOTOR_NUM; i++) {
-        if (Emergency_Stop) return;
-        if (homed[i]) {
-            Safe_Control_NoPostDelay(i, pos[i], 0.0f,
-                                     extreme_hold_kp[i], extreme_hold_kd[i],
-                                     Get_Extreme_Hold_Tff(i));
-        } else {
-            Safe_Control_NoPostDelay(i, pos[i], 0.0f,
-                                     lock_kp[i], lock_kd[i],
-                                     Get_Hold_Tff(i));
+    {
+        int i;
+
+        for (i = 0; i < MOTOR_NUM; i++) {
+            if (Emergency_Stop) return;
+            if (homed[i]) {
+                Safe_Control_NoPostDelay(i, pos[i], 0.0f,
+                                         extreme_hold_kp[i], extreme_hold_kd[i],
+                                         Get_Extreme_Hold_Tff(i));
+            } else {
+                Safe_Control_NoPostDelay(i, pos[i], 0.0f,
+                                         lock_kp[i], lock_kd[i],
+                                         Get_Hold_Tff(i));
+            }
         }
     }
 }
@@ -159,6 +164,13 @@ void Request_Motor_Feedback(int idx)
         return;
     }
 
+#if GRAVITY_FF_PI_MODE
+    /*
+     * Pi 重力模式：MIT 仅由 TIM2 周期 GravityPi_ApplyAll 下发，此处不再发第二通道。
+     */
+    (void)idx;
+    return;
+#else
     /*
      * 指令位置一律用 Current_Targets（Read_All 在清标志前/每轮重试前会把已回包轴同步为 Motor_States.pos）。
      * 切勿在 Current_Targets 仍为 0 时批量 Request——见 Read_All_Current_Positions。
@@ -178,6 +190,7 @@ void Request_Motor_Feedback(int idx)
                      lock_kd[idx],
                      Get_Hold_Tff(idx));
     }
+#endif
 }
 
 void Hold_All_Rigid(uint32_t hold_ms)
