@@ -19,10 +19,16 @@ class ServoStateDict(TypedDict, total=False):
     angle: float
 
 
+class JointStateDict(TypedDict, total=False):
+    id: int
+    angle: float
+
+
 @dataclass
 class SystemState:
     motors: Dict[int, MotorStateDict] = field(default_factory=dict)
     servos: Dict[int, ServoStateDict] = field(default_factory=dict)
+    joints: Dict[int, JointStateDict] = field(default_factory=dict)
     crc_error_count: int = 0
 
 
@@ -39,6 +45,7 @@ class StateStore:
             return SystemState(
                 motors=dict(self._state.motors),
                 servos=dict(self._state.servos),
+                joints=dict(self._state.joints),
                 crc_error_count=self._state.crc_error_count,
             )
 
@@ -58,12 +65,19 @@ class StateStore:
         with self._lock:
             self._state.crc_error_count += 1
 
+    def update_joint(self, joint_id: int, **fields: float) -> None:
+        with self._lock:
+            current = self._state.joints.get(joint_id, {"id": joint_id})
+            current.update(fields)
+            self._state.joints[joint_id] = current  # type: ignore[assignment]
+
     def to_payload(self) -> Dict[str, List[Dict[str, float]]]:
         """将内部结构转换为可 JSON 序列化的字典，用于 WebSocket 推送。"""
         snap = self.snapshot()
         return {
             "motors": list(snap.motors.values()),
             "servos": list(snap.servos.values()),
+            "joints": list(snap.joints.values()),
             "crc_error_count": snap.crc_error_count,
         }
 

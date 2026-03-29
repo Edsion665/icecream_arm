@@ -9,7 +9,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class SerialConfig:
     port: str = "/dev/ttyAMA2"
-    baudrate: int = 9600
+    baudrate: int = 115200
     bytesize: int = 8
     stopbits: int = 1
     parity: str = "N"  # N/E/O
@@ -26,6 +26,9 @@ class SerialConfig:
     # 超时后是否重连并重发（最多尝试次数 = res_retry_count + 1）
     res_retry_count: int = 1
     reconnect_wait_timeout_sec: float = 5.0
+
+    # 若握手连续失败次数超过一次（默认 2 次失败），则即使握手最终成功也不再发送 DATA
+    res_handshake_fail_stop_threshold: int = 0
 
 
 @dataclass(frozen=True)

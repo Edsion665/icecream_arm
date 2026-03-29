@@ -22,13 +22,13 @@ except ImportError:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Raspberry Pi -> STM32 串口握手 + 关节发送测试")
     parser.add_argument("--port", default="/dev/ttyAMA2", help="串口设备，例如 /dev/ttyAMA0 或 /dev/ttyUSB0")
-    parser.add_argument("--baud", type=int, default=9600, help="波特率")
+    parser.add_argument("--baud", type=int, default=115200, help="波特率")
     parser.add_argument("--timeout", type=float, default=5.0, help="握手超时秒数")
     # 关节角，单位：度×100（与 SerialProtocol.md 一致）
-    parser.add_argument("--a0", type=int, default=100, help="关节0 角度（度×100）")
-    parser.add_argument("--a1", type=int, default=200, help="关节1 角度（度×100）")
-    parser.add_argument("--a2", type=int, default=300, help="关节2 角度（度×100）")
-    parser.add_argument("--a3", type=int, default=400, help="关节3 角度（度×100）")
+    parser.add_argument("--a0", type=int, default=0, help="关节0 角度（度×100）")
+    parser.add_argument("--a1", type=int, default=0, help="关节1 角度（度×100）")
+    parser.add_argument("--a2", type=int, default=0, help="关节2 角度（度×100）")
+    parser.add_argument("--a3", type=int, default=0, help="关节3 角度（度×100）")
     parser.add_argument("--a4", type=int, default=0, help="关节4 角度（度×100）")
     parser.add_argument("--a5", type=int, default=0, help="关节5 角度（度×100）")
     return parser.parse_args()

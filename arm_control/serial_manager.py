@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
-import re
 from queue import Queue, Empty
 from typing import Callable, Optional
 
@@ -16,6 +16,7 @@ from .protocol import FrameParser, ParsedFrame, pack_frame
 from .state_store import StateStore
 
 LOGGER = logging.getLogger(__name__)
+FB_JOINT_PATTERN = re.compile(r"j(\d+):([+-]?\d+(?:\.\d+)?)")
 
 
 OnFrameCallback = Callable[[ParsedFrame], None]
@@ -47,6 +48,8 @@ class SerialManager(threading.Thread):
         self._ready_event = threading.Event()
         self._res_event = threading.Event()
         self._reconnect_event = threading.Event()
+        # 记录握手失败次数序号，用于判断“重连期间是否握手失败过多”
+        self._handshake_fail_seq = 0
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -79,11 +82,23 @@ class SerialManager(threading.Thread):
                 return True
 
             LOGGER.warning("未收到 %r 回传（%.2fs），触发重连并重发", expect_prefix, timeout)
+            # 记录此次“等待 RES 失败后”重连过程中握手失败次数
+            handshake_fail_seq_start = self._handshake_fail_seq
             self._request_reconnect()
 
             ready_timeout = float(self._cfg.reconnect_wait_timeout_sec)
             if not self._ready_event.wait(timeout=ready_timeout):
                 LOGGER.error("重连等待超时（%.2fs），放弃本次命令", ready_timeout)
+                return False
+
+            handshake_fail_seq_delta = self._handshake_fail_seq - handshake_fail_seq_start
+            if handshake_fail_seq_delta >= int(self._cfg.res_handshake_fail_stop_threshold):
+                LOGGER.error(
+                    "重连期间握手连续失败次数达到阈值（delta=%d >= %d），"
+                    "即使握手成功也不再发送 DATA",
+                    handshake_fail_seq_delta,
+                    int(self._cfg.res_handshake_fail_stop_threshold),
+                )
                 return False
 
         return False
@@ -105,6 +120,7 @@ class SerialManager(threading.Thread):
 
             if self._cfg.handshake_enabled:
                 if not self._do_handshake(ser):
+                    self._handshake_fail_seq += 1
                     LOGGER.error("握手失败，关闭串口")
                     try:
                         ser.close()
@@ -131,6 +147,9 @@ class SerialManager(threading.Thread):
 
     def _request_reconnect(self) -> None:
         """请求串口线程关闭并重新建立连接（内部会触发握手）。"""
+        # 立即清除 ready，避免发送线程误判“握手成功”
+        self._ready_event.clear()
+        self._res_event.clear()
         self._reconnect_event.set()
 
     # ---- 握手流程 ---------------------------------------------------------
@@ -259,6 +278,36 @@ class SerialManager(threading.Thread):
         for i in range(min(4, len(rel_vals))):
             self._state_store.update_motor(i, velocity=rel_vals[i])
 
+    def _try_handle_fb_line(self, text: str) -> None:
+        """解析 STM32 回传 FB 行中的 j1..jN，并写入 joints 状态。"""
+        if not text.startswith("FB "):
+            return
+
+        # 解析 FB 后前 4 个整数，作为 motors 的 4 个量
+        # 示例: FB 9280 -9192 -17655 -2196 j1:0.042 j2:1.415 ...
+        try:
+            head_part = text.split(" j1:", 1)[0]
+            parts = head_part.split()
+            if len(parts) >= 5:
+                raw4 = [int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])]
+                for i, value in enumerate(raw4):
+                    self._state_store.update_motor(i, position=float(value))
+        except Exception:
+            # 不中断后续 j 字段解析
+            pass
+
+        matches = FB_JOINT_PATTERN.findall(text)
+        if not matches:
+            return
+
+        for joint_idx_str, angle_str in matches:
+            try:
+                joint_id = int(joint_idx_str)
+                angle = float(angle_str)
+            except ValueError:
+                continue
+            self._state_store.update_joint(joint_id, angle=angle)
+
     def _log_text_lines(self, data: bytes) -> None:
         """按行提取串口文本并打印，便于联调 STM32 回传。"""
         self._rx_line_buffer.extend(data)
@@ -270,6 +319,7 @@ class SerialManager(threading.Thread):
                 LOGGER.info("[RX text] %s", text)
                 self._try_handle_data_line(text)
                 self._try_handle_res_line(text)
+                self._try_handle_fb_line(text)
 
     def run(self) -> None:  # noqa: D401 - 线程入口
         """线程主循环。"""
