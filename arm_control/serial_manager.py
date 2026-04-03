@@ -7,11 +7,19 @@ import re
 import threading
 import time
 from queue import Queue, Empty
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import serial  # type: ignore[import]
 
-from .config import CONFIG
+from .config import CONFIG, MIT_UPLINK_MODE
+from .mit_stm32_codec import (
+    MIT_CMD_FRAME_LEN,
+    UPLINK_FRAME_LEN,
+    UPLINK_HEADER,
+    build_mit_cmd_downlink_log_lines,
+    decode_uplink,
+    try_parse_uplink_hex_from_line,
+)
 from .protocol import FrameParser, ParsedFrame, pack_frame
 from .state_store import StateStore
 
@@ -44,12 +52,18 @@ class SerialManager(threading.Thread):
         self._stop_event = threading.Event()
         self._parser = FrameParser()
         self._ser: Optional[serial.Serial] = None
-        self._rx_line_buffer = bytearray()
+        self._rx_stream_buf = bytearray()
+        self._mit_mode = MIT_UPLINK_MODE
         self._ready_event = threading.Event()
         self._res_event = threading.Event()
         self._reconnect_event = threading.Event()
         # 记录握手失败次数序号，用于判断“重连期间是否握手失败过多”
         self._handshake_fail_seq = 0
+        if self._mit_mode != "none":
+            LOGGER.info(
+                "MIT 上行反馈解码已启用：mode=%s（见 RPI_STM32_PROTOCOL.md；与 TAU/FB 独立）",
+                self._mit_mode,
+            )
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -61,8 +75,39 @@ class SerialManager(threading.Thread):
 
     def send_raw(self, data: bytes) -> None:
         """直接发送原始字节（用于文本协议等场景）。"""
-        LOGGER.info("发送原始串口数据：%r", data)
+        self._log_tx_raw(data)
         self._tx_queue.put(data)
+
+    def _log_tx_raw(self, data: bytes) -> None:
+        """日志：MIT 35B 下行显示连续 HEX + 分组 HEX + p/v/kp/kd/t；文本协议显示可读字符串；其余显示 HEX。"""
+        n = len(data)
+        if (
+            n == MIT_CMD_FRAME_LEN
+            and data[0] == UPLINK_HEADER[0]
+            and data[1] == UPLINK_HEADER[1]
+        ):
+            LOGGER.info(
+                "发送 MIT 下行（35B，RPI_MIT_CMD_BINARY_ENCODE）\n%s",
+                "\n".join(build_mit_cmd_downlink_log_lines(data)),
+            )
+            return
+        try:
+            text = data.decode("ascii")
+        except UnicodeDecodeError:
+            LOGGER.info(
+                "发送原始串口数据：%d 字节，HEX=%s",
+                n,
+                data.hex().upper(),
+            )
+            return
+        if all(32 <= ord(c) < 127 or c in "\r\n\t" for c in text):
+            LOGGER.info("发送原始串口数据（ASCII 文本）: %r", text)
+            return
+        LOGGER.info(
+            "发送原始串口数据：%d 字节，HEX=%s",
+            n,
+            data.hex().upper(),
+        )
 
     def send_raw_and_wait_for_res(self, data: bytes) -> bool:
         """发送 raw 指令，并等待收到下一条 RES 回传文本。
@@ -116,19 +161,20 @@ class SerialManager(threading.Thread):
                 parity=self._cfg.parity,
                 timeout=0.05,
             )
-            LOGGER.info("串口已打开，准备握手检查")
+            LOGGER.info("串口已打开（不等待 start/ok 握手，直接就绪）")
 
-            if self._cfg.handshake_enabled:
-                if not self._do_handshake(ser):
-                    self._handshake_fail_seq += 1
-                    LOGGER.error("握手失败，关闭串口")
-                    try:
-                        ser.close()
-                    except Exception as exc:  # noqa: BLE001
-                        LOGGER.error("关闭串口失败（握手失败后）：%s", exc)
-                    return None
+            # 已注释：先发 ``start``、收到 ``ok`` 后才视为连接就绪（见 ``SerialConfig.handshake_*`` / ``_do_handshake``）
+            # if self._cfg.handshake_enabled:
+            #     if not self._do_handshake(ser):
+            #         self._handshake_fail_seq += 1
+            #         LOGGER.error("握手失败，关闭串口")
+            #         try:
+            #             ser.close()
+            #         except Exception as exc:  # noqa: BLE001
+            #             LOGGER.error("关闭串口失败（握手失败后）：%s", exc)
+            #         return None
 
-            LOGGER.info("串口握手完成，连接就绪")
+            LOGGER.info("串口连接就绪，可收发")
             self._ready_event.set()
             return ser
         except serial.SerialException as exc:  # type: ignore[attr-defined]
@@ -143,6 +189,7 @@ class SerialManager(threading.Thread):
             except Exception as exc:  # noqa: BLE001
                 LOGGER.error("关闭串口失败：%s", exc)
         self._ser = None
+        self._rx_stream_buf.clear()
         self._ready_event.clear()
 
     def _request_reconnect(self) -> None:
@@ -309,18 +356,116 @@ class SerialManager(threading.Thread):
                 continue
             self._state_store.update_joint(joint_id, angle=angle)
 
-    def _log_text_lines(self, data: bytes) -> None:
-        """按行提取串口文本并打印，便于联调 STM32 回传。"""
-        self._rx_line_buffer.extend(data)
-        while b"\n" in self._rx_line_buffer:
-            line_raw, _, rest = self._rx_line_buffer.partition(b"\n")
-            self._rx_line_buffer = bytearray(rest)
-            text = line_raw.decode(errors="ignore").strip()
-            if text:
-                LOGGER.info("[RX text] %s", text)
-                self._try_handle_data_line(text)
-                self._try_handle_res_line(text)
-                self._try_handle_fb_line(text)
+    def _log_mit_uplink_decode(self, raw: bytes, decoded: list[dict[str, Any]]) -> None:
+        """打印原始 hex 码（连续大写 + 空格分组）与协议解码后的四电机信息。"""
+        hex_compact = raw.hex().upper()
+        lines: list[str] = [
+            f"  原始上行(hex码): {hex_compact}",
+            f"  原始上行(HEX): " + " ".join(f"{b:02X}" for b in raw),
+        ]
+        for i, m in enumerate(decoded):
+            lines.append(
+                f"  M{i + 1}: err={m['err']}  p={m['p']:.6f} rad  "
+                f"v={m['v']:.6f} rad/s  t={m['t']:.6f} Nm  "
+                f"mos_temp={m['mos_temp']}  rotor_temp={m['rotor_temp']}"
+            )
+        LOGGER.info("[MIT] 上行解码（34 字节帧，RPI_STM32_PROTOCOL）\n%s", "\n".join(lines))
+
+    def _apply_mit_uplink(self, raw: bytes) -> None:
+        """解析 34 字节 MIT 上行（0xAA 0x55 + 四电机×8B CAN 反馈），写入 motors（不改 FB/TAU 弧度源）。"""
+        try:
+            decoded = decode_uplink(raw)
+        except ValueError as exc:
+            LOGGER.warning("[MIT] 上行解码跳过：%s", exc)
+            return
+        for i, m in enumerate(decoded):
+            self._state_store.update_motor(
+                i,
+                position=m["p"],
+                velocity=m["v"],
+                torque=m["t"],
+                err=m["err"],
+                mos_temp=m["mos_temp"],
+                rotor_temp=m["rotor_temp"],
+            )
+        self._state_store.set_mit_arm_rad(
+            (
+                decoded[0]["p"],
+                decoded[1]["p"],
+                decoded[2]["p"],
+                decoded[3]["p"],
+            )
+        )
+        self._log_mit_uplink_decode(raw, decoded)
+
+    def _dispatch_line(self, text: str) -> None:
+        """一行文本：可能是 34 字节上行 hex 文本、DATA/RES/FB 等。"""
+        if self._mit_mode != "none":
+            raw = try_parse_uplink_hex_from_line(text)
+            if raw is not None:
+                self._apply_mit_uplink(raw)
+                return
+
+        if text:
+            LOGGER.info("[RX text] %s", text)
+        self._try_handle_data_line(text)
+        self._try_handle_res_line(text)
+        self._try_handle_fb_line(text)
+
+    def _feed_rx_stream(self, data: bytes) -> None:
+        """字节流：先按 0xAA 0x55 截取 34 字节 MIT 上行，其余再按 \\n 切文本（避免二进制与 T12 混成一行）。
+
+        与 readline 不同：二进制帧内无 \\r\\n，必须在缓冲区中先定位帧头再读满 UPLINK_FRAME_LEN。
+        """
+        self._rx_stream_buf.extend(data)
+        buf = self._rx_stream_buf
+        while True:
+            if not buf:
+                break
+            if MIT_UPLINK_MODE == "none":
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    break
+                text = bytes(buf[:nl]).decode(errors="ignore").strip("\r\n")
+                del buf[: nl + 1]
+                if text:
+                    self._dispatch_line(text)
+                continue
+
+            p_aa = buf.find(b"\xaa\x55")
+            if p_aa < 0:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    break
+                text = bytes(buf[:nl]).decode(errors="ignore").strip("\r\n")
+                del buf[: nl + 1]
+                if text:
+                    self._dispatch_line(text)
+                continue
+
+            if p_aa > 0:
+                nl = buf.find(b"\n", 0, p_aa)
+                if nl >= 0:
+                    text = bytes(buf[:nl]).decode(errors="ignore").strip("\r\n")
+                    del buf[: nl + 1]
+                    if text:
+                        self._dispatch_line(text)
+                    continue
+                if len(buf) < p_aa + UPLINK_FRAME_LEN:
+                    break
+                LOGGER.debug(
+                    "[MIT] 帧头前有 %d 字节且无换行（视为噪声/半包），丢弃至 0xAA 0x55",
+                    p_aa,
+                )
+                del buf[:p_aa]
+                continue
+
+            if len(buf) < UPLINK_FRAME_LEN:
+                break
+            frame = bytes(buf[:UPLINK_FRAME_LEN])
+            del buf[:UPLINK_FRAME_LEN]
+            self._apply_mit_uplink(frame)
+            continue
 
     def run(self) -> None:  # noqa: D401 - 线程入口
         """线程主循环。"""
@@ -356,14 +501,15 @@ class SerialManager(threading.Thread):
         # 读取数据
         data = self._ser.read(256)
         if data:
-            # STM32 当前主要用文本协议，先按文本行打印回传
-            self._log_text_lines(data)
+            # 文本行（FB/RES/DATA/TAU 等）+ 可选 MIT 上行（hex68 或 0xAA0x55 同步 34 字节二进制）
+            self._feed_rx_stream(data)
 
-            # 兼容保留：仍尝试按旧二进制协议解帧
-            frames = self._parser.feed(data)
-            for frame in frames:
-                if self._on_frame:
-                    self._on_frame(frame)
+            # 旧二进制帧与 MIT 上行均以 0xAA 0x55 开头；MIT 启用时勿并行解帧，否则会误当 len/cmd 并 CRC 报错
+            if MIT_UPLINK_MODE == "none":
+                frames = self._parser.feed(data)
+                for frame in frames:
+                    if self._on_frame:
+                        self._on_frame(frame)
 
         # 发送队列中的数据
         try:

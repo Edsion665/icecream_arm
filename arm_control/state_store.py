@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Dict, List, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 
 class MotorStateDict(TypedDict, total=False):
@@ -12,6 +12,9 @@ class MotorStateDict(TypedDict, total=False):
     position: float
     velocity: float
     torque: float
+    err: int
+    mos_temp: int
+    rotor_temp: int
 
 
 class ServoStateDict(TypedDict, total=False):
@@ -39,6 +42,7 @@ class StateStore:
         self._state = SystemState()
         self._lock = Lock()
         self._fb_arm_rad: Optional[Tuple[float, float, float, float]] = None
+        self._mit_arm_rad: Optional[Tuple[float, float, float, float]] = None
 
     def snapshot(self) -> SystemState:
         """返回状态快照（浅拷贝字典，防止外部直接修改内部引用）。"""
@@ -50,7 +54,7 @@ class StateStore:
                 crc_error_count=self._state.crc_error_count,
             )
 
-    def update_motor(self, motor_id: int, **fields: float) -> None:
+    def update_motor(self, motor_id: int, **fields: Any) -> None:
         with self._lock:
             current = self._state.motors.get(motor_id, {"id": motor_id})
             current.update(fields)
@@ -80,6 +84,15 @@ class StateStore:
     def get_fb_arm_rad(self) -> Optional[Tuple[float, float, float, float]]:
         with self._lock:
             return self._fb_arm_rad
+
+    def set_mit_arm_rad(self, rad: Tuple[float, float, float, float]) -> None:
+        """MIT 上行解码得到的四轴电机位置 p（rad）。"""
+        with self._lock:
+            self._mit_arm_rad = rad
+
+    def get_mit_arm_rad(self) -> Optional[Tuple[float, float, float, float]]:
+        with self._lock:
+            return self._mit_arm_rad
 
     def to_payload(self) -> Dict[str, List[Dict[str, float]]]:
         """将内部结构转换为可 JSON 序列化的字典，用于 WebSocket 推送。"""

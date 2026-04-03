@@ -5,18 +5,28 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
 class TauFfRuntimeConfig:
     """力矩前馈模式可调参数（可在运行时改 `calibration_rad` 等）。"""
 
-    # 四轴标定零位（弧度），与 STM32 上报 FB 弧度同含义；默认全 0
+    # 四轴标定零位（弧度），与力矩前馈所用角度源（MIT 电机 p 或 FB）同含义
     calibration_rad: list[float] = field(default_factory=lambda: [1.57416, 1.42462,2.42676,0.47208])
-    # TAU: 下发频率（Hz）；过高可能占满 CPU / 串口带宽
+    # MIT 35B 下发频率（Hz）；过高可能占满 CPU / 串口带宽
     send_hz: float = 20.0
-    # Pinocchio 算出的四轴重力前馈 (Nm) 乘以该系数再下发 TAU:（1.0 为不缩放）
+    # Pinocchio 算出的四轴重力前馈 (Nm) 乘以该系数再下发（1.0 为不缩放）
     gain: float = 1.0
+    # 每轴 MIT 命令中的 p/v/kp（弧度、rad/s）；kd 下发时固定为 ``MIT_CMD_FIXED_KD``；力矩 t 由 Pinocchio 填入
+    mit_motor_cmd: list[dict[str, float]] = field(
+        default_factory=lambda: [
+            {"p": 0.0, "v": 0.0, "kp": 0.0, "kd": 0.0},
+            {"p": 0.0, "v": 0.0, "kp": 0.0, "kd": 0.0},
+            {"p": 0.0, "v": 0.0, "kp": 0.0, "kd": 0.0},
+            {"p": 0.0, "v": 0.0, "kp": 0.0, "kd": 0.0},
+        ]
+    )
 
 
 def _env_mode() -> str:
@@ -24,7 +34,7 @@ def _env_mode() -> str:
     return v if v in ("data", "tau_ff") else "tau_ff"
 
 
-# 控制模式：data = 仅 WebSocket set_joint 发 DATA；tau_ff = 握手后按 FB 算重力并发 TAU
+# 控制模式：data = 仅 WebSocket set_joint 发 DATA；tau_ff = 重力前馈并发 MIT 35B 二进制（角度源见 TAU_FF_INPUT）
 CONTROL_MODE: str = _env_mode()
 
 TAU_FF = TauFfRuntimeConfig()
@@ -32,7 +42,7 @@ try:
     _hz = float(os.environ.get("ARM_CONTROL_TAU_HZ", "20"))
     TAU_FF.send_hz = max(1.0, min(500.0, _hz))
 except ValueError:
-    TAU_FF.send_hz = 20.0
+    TAU_FF.send_hz = 50.0
 try:
     TAU_FF.gain = float(os.environ.get("ARM_CONTROL_TAU_GAIN", "1.0"))
 except ValueError:
@@ -47,8 +57,8 @@ class SerialConfig:
     stopbits: int = 1
     parity: str = "N"  # N/E/O
     reconnect_interval_sec: float = 2.0
-    # 握手相关配置
-    handshake_enabled: bool = True
+    # 握手相关（当前 serial_manager._open_serial 中 start/ok 逻辑已注释；若恢复该段代码再启用）
+    handshake_enabled: bool = False
     handshake_request: str = "start\r\n"
     handshake_expect: str = "ok"
     handshake_timeout_sec: float = 2.0
@@ -98,4 +108,43 @@ def set_tau_calibration_rad(r0: float, r1: float, r2: float, r3: float) -> None:
 def set_tau_gain(gain: float) -> None:
     """四轴力矩前馈总增益（与 `TAU_FF.gain` 相同）。"""
     TAU_FF.gain = float(gain)
+
+
+def set_mit_motor_cmd_params(motors: list[dict[str, Any]]) -> None:
+    """更新 MIT 命令中每轴的 p、v、kp；可选 kd 仅写入内存展示，实际下发 kd 固定为 ``MIT_CMD_FIXED_KD``。"""
+    if len(motors) != 4:
+        raise ValueError("须恰好 4 个电机，每项含 p/v/kp/kd")
+    for i, m in enumerate(motors):
+        cur = TAU_FF.mit_motor_cmd[i]
+        for k in ("p", "v", "kp"):
+            if k in m:
+                cur[k] = float(m[k])
+
+
+def mit_uplink_mode_from_env() -> str:
+    """STM32 MIT 上行：`none` | `hex68` | `binary`（34 字节帧，见 RPI_STM32_PROTOCOL.md）。"""
+    v = os.environ.get("ARM_CONTROL_MIT_UPLINK", "none").strip().lower()
+    if v in ("", "0", "false", "off", "none"):
+        return "none"
+    # hex68 = 一行 68 个十六进制字符（34 字节，含 0xAA 0x55）；hex44 等为旧名，等同 hex68
+    if v in ("hex68", "hex44", "hex40", "hex", "line"):
+        return "hex68"
+    if v in ("binary", "raw", "bin"):
+        return "binary"
+    return "none"
+
+
+MIT_UPLINK_MODE: str = mit_uplink_mode_from_env()
+
+
+def tau_ff_input_from_env() -> str:
+    """力矩前馈四轴弧度来源：`mit`=34B/hex 解码的电机 p；`fb`= FB 行四浮点。"""
+    v = os.environ.get("ARM_CONTROL_TAU_FF_INPUT", "mit").strip().lower()
+    return v if v in ("mit", "fb") else "mit"
+
+
+TAU_FF_INPUT: str = tau_ff_input_from_env()
+
+# MIT 下行四轴固定 kd（0~5，RPI_MIT_CMD_BINARY_ENCODE.md）；电机 1~4 → 索引 0~3
+MIT_CMD_FIXED_KD: tuple[float, float, float, float] = (1.8, 2.0, 1.8, 0.3)
 

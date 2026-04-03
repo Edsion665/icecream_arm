@@ -10,8 +10,17 @@ from asyncio import Queue
 from typing import Any, Dict
 
 from .camera_manager import camera_loop
-from .config import CONTROL_MODE, TAU_FF, set_tau_calibration_rad, set_tau_gain
+from .config import (
+    CONTROL_MODE,
+    MIT_CMD_FIXED_KD,
+    TAU_FF,
+    TAU_FF_INPUT,
+    set_mit_motor_cmd_params,
+    set_tau_calibration_rad,
+    set_tau_gain,
+)
 from .gravity_feedforward import compute_tau_ff_nm
+from .mit_stm32_codec import encode_mit_cmd_frame_35
 from .protocol import ParsedFrame
 from .serial_manager import SerialManager
 from .state_store import StateStore
@@ -72,7 +81,7 @@ def _build_tau_frame(t0: float, t1: float, t2: float, t3: float) -> bytes:
 
 
 async def _tau_ff_loop(state_store: StateStore, serial_mgr: SerialManager) -> None:
-    """力矩前馈：按 FB 弧度差 + Pinocchio 计算四轴 τ，按 send_hz 发 TAU:（不等待 RES）。"""
+    """力矩前馈：按四轴弧度差 + Pinocchio 算 τ，按 send_hz 发 MIT 35B（p/v/kp 见 mit_motor_cmd；kd 固定 MIT_CMD_FIXED_KD）。"""
     logger = logging.getLogger(__name__)
     logged_ff_err: str | None = None
     while True:
@@ -83,8 +92,13 @@ async def _tau_ff_loop(state_store: StateStore, serial_mgr: SerialManager) -> No
         interval = 1.0 / max(1.0, float(TAU_FF.send_hz))
         iter_start = time.monotonic()
 
-        fb = state_store.get_fb_arm_rad()
-        if fb is None:
+        if TAU_FF_INPUT == "mit":
+            arm_rad = state_store.get_mit_arm_rad()
+            if arm_rad is None:
+                arm_rad = state_store.get_fb_arm_rad()
+        else:
+            arm_rad = state_store.get_fb_arm_rad()
+        if arm_rad is None:
             await asyncio.sleep(interval)
             continue
         cal = TAU_FF.calibration_rad
@@ -92,7 +106,7 @@ async def _tau_ff_loop(state_store: StateStore, serial_mgr: SerialManager) -> No
             logger.error("TAU_FF.calibration_rad 须为 4 个浮点数")
             await asyncio.sleep(interval)
             continue
-        delta = tuple(fb[i] - cal[i] for i in range(4))
+        delta = tuple(arm_rad[i] - cal[i] for i in range(4))
         try:
             t0, t1, t2, t3 = compute_tau_ff_nm(delta)
         except Exception as exc:  # noqa: BLE001
@@ -105,8 +119,24 @@ async def _tau_ff_loop(state_store: StateStore, serial_mgr: SerialManager) -> No
         logged_ff_err = None
         g = float(TAU_FF.gain)
         t0, t1, t2, t3 = t0 * g, t1 * g, t2 * g, t3 * g
-        raw = _build_tau_frame(t0, t1, t2, t3)
+        taus = (t0, t1, t2, t3)
+        cmds: list[dict[str, float]] = []
+        for i in range(4):
+            m = TAU_FF.mit_motor_cmd[i]
+            cmds.append(
+                {
+                    "p": float(m["p"]),
+                    "v": float(m["v"]),
+                    "kp": float(m["kp"]),
+                    "kd": MIT_CMD_FIXED_KD[i],
+                    "t": float(taus[i]),
+                }
+            )
+        raw = encode_mit_cmd_frame_35(cmds)
         serial_mgr.send_raw(raw)
+        # 原 TAU 文本下发（已改为 MIT 35 字节二进制，见 RPI_MIT_CMD_BINARY_ENCODE.md）：
+        # raw = _build_tau_frame(t0, t1, t2, t3)
+        # serial_mgr.send_raw(raw)
 
         elapsed = time.monotonic() - iter_start
         remain = interval - elapsed
@@ -152,6 +182,19 @@ async def _process_commands(
             elif cmd_name == "set_tau_gain":
                 set_tau_gain(float(data.get("gain", 1.0)))
                 logger.info("已更新力矩前馈增益: %s", TAU_FF.gain)
+            elif cmd_name == "set_mit_motor_cmd":
+                motors = data.get("motors")
+                if not isinstance(motors, list) or len(motors) != 4:
+                    logger.warning(
+                        "set_mit_motor_cmd 需要 data.motors 为长度 4 的列表，每项 p/v/kp（kd 固定见 MIT_CMD_FIXED_KD）"
+                    )
+                    continue
+                try:
+                    set_mit_motor_cmd_params(motors)
+                except ValueError as exc:
+                    logger.warning("%s", exc)
+                    continue
+                logger.info("已更新 MIT 命令 p/v/kp: %s", TAU_FF.mit_motor_cmd)
             else:
                 raw = json.dumps({"cmd": cmd_name, "data": data}).encode("utf-8")
                 logger.info(
@@ -185,7 +228,7 @@ async def _run_async() -> None:
                 lambda: compute_tau_ff_nm((0.0, 0.0, 0.0, 0.0))
             )
             logger.info(
-                "Pinocchio 预热完成，TAU 目标频率 %.1f Hz",
+                "Pinocchio 预热完成，MIT 命令下发目标频率 %.1f Hz",
                 float(TAU_FF.send_hz),
             )
         except Exception as exc:  # noqa: BLE001
