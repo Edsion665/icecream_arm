@@ -13,12 +13,12 @@ class TauFfRuntimeConfig:
     """力矩前馈模式可调参数（可在运行时改 `calibration_rad` 等）。"""
 
     # 四轴标定零位（弧度），与力矩前馈所用角度源（MIT 电机 p 或 FB）同含义
-    calibration_rad: list[float] = field(default_factory=lambda: [1.57416, 1.42462,2.42676,0.47208])
+    calibration_rad: list[float] = field(default_factory=lambda: [1.57416, 1.360151,2.380980,0.490005])
     # MIT 35B 下发频率（Hz）；过高可能占满 CPU / 串口带宽
     send_hz: float = 20.0
     # Pinocchio 算出的四轴重力前馈 (Nm) 乘以该系数再下发（1.0 为不缩放）
     gain: float = 1.0
-    # 每轴 MIT 命令中的 p/v/kp（弧度、rad/s）；kd 下发时固定为 ``MIT_CMD_FIXED_KD``；力矩 t 由 Pinocchio 填入
+    # 每轴 MIT 命令中的 p、v（弧度、rad/s）；kp/kd 下发时由 ``MIT_CMD_*`` 固定；力矩 t 由 Pinocchio 填入
     mit_motor_cmd: list[dict[str, float]] = field(
         default_factory=lambda: [
             {"p": 0.0, "v": 0.0, "kp": 0.0, "kd": 0.0},
@@ -42,7 +42,7 @@ try:
     _hz = float(os.environ.get("ARM_CONTROL_TAU_HZ", "20"))
     TAU_FF.send_hz = max(1.0, min(500.0, _hz))
 except ValueError:
-    TAU_FF.send_hz = 50.0
+    TAU_FF.send_hz = 25.0
 try:
     TAU_FF.gain = float(os.environ.get("ARM_CONTROL_TAU_GAIN", "1.0"))
 except ValueError:
@@ -111,12 +111,12 @@ def set_tau_gain(gain: float) -> None:
 
 
 def set_mit_motor_cmd_params(motors: list[dict[str, Any]]) -> None:
-    """更新 MIT 命令中每轴的 p、v、kp；可选 kd 仅写入内存展示，实际下发 kd 固定为 ``MIT_CMD_FIXED_KD``。"""
+    """更新 MIT 命令中每轴的 p、v；实际下发 kp/kd 见 ``MIT_CMD_KP_FLOAT_MODE`` / ``MIT_CMD_FIXED_*``。"""
     if len(motors) != 4:
-        raise ValueError("须恰好 4 个电机，每项含 p/v/kp/kd")
+        raise ValueError("须恰好 4 个电机，每项含 p、v")
     for i, m in enumerate(motors):
         cur = TAU_FF.mit_motor_cmd[i]
-        for k in ("p", "v", "kp"):
+        for k in ("p", "v"):
             if k in m:
                 cur[k] = float(m[k])
 
@@ -145,6 +145,21 @@ def tau_ff_input_from_env() -> str:
 
 TAU_FF_INPUT: str = tau_ff_input_from_env()
 
-# MIT 下行四轴固定 kd（0~5，RPI_MIT_CMD_BINARY_ENCODE.md）；电机 1~4 → 索引 0~3
+
+def mit_cmd_kp_float_mode_from_env() -> bool:
+    """True=浮游模式：MIT 下发四轴 kp=0；False=正常模式：kp 为 ``MIT_CMD_FIXED_KP_NORMAL``。"""
+    v = os.environ.get("ARM_CONTROL_MIT_CMD_KP_FLOAT", "0").strip().lower()
+    return v in ("1", "true", "yes", "on", "float")
+
+
+# --- kp：浮游(kp=0) / 正常( MIT_CMD_FIXED_KP_NORMAL ) ---
+# 环境变量 ARM_CONTROL_MIT_CMD_KP_FLOAT=1 → 浮游；未设或 0 → 正常。
+# 代码内写死：将下一行改为 ``MIT_CMD_KP_FLOAT_MODE = True`` 或 ``False``，并删掉右侧 ``mit_cmd_kp_float_mode_from_env()``。
+MIT_CMD_KP_FLOAT_MODE: bool = mit_cmd_kp_float_mode_from_env()
+
+# MIT 下行四轴固定 kp（0~500，RPI_MIT_CMD_BINARY_ENCODE.md）；正常模式、电机 1~4 → 索引 0~3
+MIT_CMD_FIXED_KP_NORMAL: tuple[float, float, float, float] = (10.0, 16.0, 20.0, 10)
+#MIT_CMD_FIXED_KP_NORMAL: tuple[float, float, float, float] = (10.0, 16.0, 20.0, 10.0)
+# MIT 下行四轴固定 kd（0~5）；电机 1~4 → 索引 0~3
 MIT_CMD_FIXED_KD: tuple[float, float, float, float] = (1.8, 2.0, 1.8, 0.3)
 

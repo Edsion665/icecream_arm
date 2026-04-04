@@ -6,18 +6,19 @@ import logging
 import re
 import threading
 import time
-from queue import Queue, Empty
+from queue import Empty, Queue
 from typing import Any, Callable, Optional
 
 import serial  # type: ignore[import]
 
-from .config import CONFIG, MIT_UPLINK_MODE
+from .config import CONFIG, MIT_UPLINK_MODE, TAU_FF
 from .mit_stm32_codec import (
     MIT_CMD_FRAME_LEN,
     UPLINK_FRAME_LEN,
     UPLINK_HEADER,
     build_mit_cmd_downlink_log_lines,
     decode_uplink,
+    motor_p_terminal_str,
     try_parse_uplink_hex_from_line,
 )
 from .protocol import FrameParser, ParsedFrame, pack_frame
@@ -25,6 +26,9 @@ from .state_store import StateStore
 
 LOGGER = logging.getLogger(__name__)
 FB_JOINT_PATTERN = re.compile(r"j(\d+):([+-]?\d+(?:\.\d+)?)")
+
+# 串口 RX 字节流缓冲上限（异常/无帧头长流时防止内存无限增长）
+_RX_STREAM_BUF_MAX = 65536
 
 
 OnFrameCallback = Callable[[ParsedFrame], None]
@@ -74,21 +78,56 @@ class SerialManager(threading.Thread):
         self._tx_queue.put(frame)
 
     def send_raw(self, data: bytes) -> None:
-        """直接发送原始字节（用于文本协议等场景）。"""
+        """直接发送原始字节（用于文本协议等场景）。
+
+        MIT 35B 力矩帧为实时控制：发送前会丢弃队列中尚未写出的 **旧 MIT 帧**，
+        避免串口线程跟不上时积压导致「力矩滞后于当前姿态」。
+        """
         self._log_tx_raw(data)
+        if self._is_mit_cmd_downlink(data):
+            self._drop_pending_mit_frames()
         self._tx_queue.put(data)
 
+    @staticmethod
+    def _is_mit_cmd_downlink(data: bytes) -> bool:
+        return (
+            len(data) == MIT_CMD_FRAME_LEN
+            and data[0] == UPLINK_HEADER[0]
+            and data[1] == UPLINK_HEADER[1]
+        )
+
+    def _drop_pending_mit_frames(self) -> None:
+        """从 TX 队列取出所有待发送项，丢弃其中 MIT 下行帧，其余按原顺序放回。"""
+        pending: list[bytes] = []
+        dropped = 0
+        while True:
+            try:
+                pending.append(self._tx_queue.get_nowait())
+            except Empty:
+                break
+        for x in pending:
+            if self._is_mit_cmd_downlink(x):
+                dropped += 1
+            else:
+                self._tx_queue.put(x)
+        if dropped:
+            LOGGER.debug("串口 TX 丢弃 %d 帧积压的 MIT 力矩（仅保留最新计算结果）", dropped)
+
     def _log_tx_raw(self, data: bytes) -> None:
-        """日志：MIT 35B 下行显示连续 HEX + 分组 HEX + p/v/kp/kd/t；文本协议显示可读字符串；其余显示 HEX。"""
+        """日志：MIT 35B 下行详细内容默认 DEBUG；文本协议显示可读字符串；其余显示 HEX。"""
         n = len(data)
         if (
             n == MIT_CMD_FRAME_LEN
             and data[0] == UPLINK_HEADER[0]
             and data[1] == UPLINK_HEADER[1]
         ):
-            LOGGER.info(
+            LOGGER.debug(
                 "发送 MIT 下行（35B，RPI_MIT_CMD_BINARY_ENCODE）\n%s",
-                "\n".join(build_mit_cmd_downlink_log_lines(data)),
+                "\n".join(
+                    build_mit_cmd_downlink_log_lines(
+                        data, tuple(TAU_FF.calibration_rad)
+                    )
+                ),
             )
             return
         try:
@@ -364,8 +403,9 @@ class SerialManager(threading.Thread):
             f"  原始上行(HEX): " + " ".join(f"{b:02X}" for b in raw),
         ]
         for i, m in enumerate(decoded):
+            p_show = motor_p_terminal_str(m["p"], i, TAU_FF.calibration_rad)
             lines.append(
-                f"  M{i + 1}: err={m['err']}  p={m['p']:.6f} rad  "
+                f"  M{i + 1}: err={m['err']}  {p_show}  "
                 f"v={m['v']:.6f} rad/s  t={m['t']:.6f} Nm  "
                 f"mos_temp={m['mos_temp']}  rotor_temp={m['rotor_temp']}"
             )
@@ -419,6 +459,14 @@ class SerialManager(threading.Thread):
         """
         self._rx_stream_buf.extend(data)
         buf = self._rx_stream_buf
+        if len(buf) > _RX_STREAM_BUF_MAX:
+            trim = len(buf) - _RX_STREAM_BUF_MAX
+            LOGGER.warning(
+                "RX 缓冲超过 %d 字节，丢弃最前 %d 字节（异常输入或长期无换行/帧头）",
+                _RX_STREAM_BUF_MAX,
+                trim,
+            )
+            del buf[:trim]
         while True:
             if not buf:
                 break

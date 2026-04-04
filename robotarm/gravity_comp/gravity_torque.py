@@ -116,6 +116,7 @@ def get_gravity_torques(q: Sequence[float] | np.ndarray) -> np.ndarray:
     model, data = _model_and_data()
     q = np.asarray(q, dtype=float).reshape(model.nq)
     pin.computeGeneralizedGravity(model, data, q)
+    # data.g 每帧由 Pinocchio 覆写；返回副本，调用方无跨帧累积或「缓冲溢出」
     return data.g.copy()
 
 

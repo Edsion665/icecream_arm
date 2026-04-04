@@ -7,12 +7,14 @@ import json
 import logging
 import time
 from asyncio import Queue
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .camera_manager import camera_loop
 from .config import (
     CONTROL_MODE,
     MIT_CMD_FIXED_KD,
+    MIT_CMD_FIXED_KP_NORMAL,
+    MIT_CMD_KP_FLOAT_MODE,
     TAU_FF,
     TAU_FF_INPUT,
     set_mit_motor_cmd_params,
@@ -20,8 +22,11 @@ from .config import (
     set_tau_gain,
 )
 from .gravity_feedforward import compute_tau_ff_nm
+from .m23_gravity_traj import M23GravityTraj
 from .mit_stm32_codec import encode_mit_cmd_frame_35
 from .protocol import ParsedFrame
+from .rpi_udp_joint_source import RpiUdpJointSource
+from .rpi_udp_premove import rpi_premove_should_run, run_rpi_udp_premove
 from .serial_manager import SerialManager
 from .state_store import StateStore
 from .ws_server import start_ws_server
@@ -80,17 +85,30 @@ def _build_tau_frame(t0: float, t1: float, t2: float, t3: float) -> bytes:
     return line.encode("ascii")
 
 
-async def _tau_ff_loop(state_store: StateStore, serial_mgr: SerialManager) -> None:
-    """力矩前馈：按四轴弧度差 + Pinocchio 算 τ，按 send_hz 发 MIT 35B（p/v/kp 见 mit_motor_cmd；kd 固定 MIT_CMD_FIXED_KD）。"""
+async def _tau_ff_loop(
+    state_store: StateStore,
+    serial_mgr: SerialManager,
+    m23_traj: M23GravityTraj,
+    rpi_udp: Optional[RpiUdpJointSource],
+) -> None:
+    """力矩前馈：按四轴弧度差 + Pinocchio 算 τ，按 send_hz 发 MIT 35B（p/v 见 mit_motor_cmd；kp 见 MIT_CMD_KP_FLOAT_MODE / MIT_CMD_FIXED_KP_NORMAL；kd 见 MIT_CMD_FIXED_KD）。
+
+    可选：``ARM_CONTROL_M23_GRAVITY_TRAJ=1`` 时 M2/M3 目标角走离散步进，力矩 t 仍由当前反馈弧度算重力。
+
+    可选：``ARM_CONTROL_RPI_UDP=1`` 时 p/v 来自 PC UDP（与 rpi_receiver 同包）；关节 5 不用；1/3/4 位置与速度取反、2 不变。
+    无包或包过期时不回退 ``mit_motor_cmd``（其默认 p=0 会导致甩动），而是 **p=当前反馈、v=0** 保持位姿。不与 M23 轨迹叠加。
+    """
     logger = logging.getLogger(__name__)
     logged_ff_err: str | None = None
+    next_tick = time.monotonic()
     while True:
         if CONTROL_MODE != "tau_ff":
             await asyncio.sleep(0.05)
+            next_tick = time.monotonic()
             continue
 
         interval = 1.0 / max(1.0, float(TAU_FF.send_hz))
-        iter_start = time.monotonic()
+        next_tick += interval
 
         if TAU_FF_INPUT == "mit":
             arm_rad = state_store.get_mit_arm_rad()
@@ -99,11 +117,13 @@ async def _tau_ff_loop(state_store: StateStore, serial_mgr: SerialManager) -> No
         else:
             arm_rad = state_store.get_fb_arm_rad()
         if arm_rad is None:
+            next_tick = time.monotonic()
             await asyncio.sleep(interval)
             continue
         cal = TAU_FF.calibration_rad
         if len(cal) != 4:
             logger.error("TAU_FF.calibration_rad 须为 4 个浮点数")
+            next_tick = time.monotonic()
             await asyncio.sleep(interval)
             continue
         delta = tuple(arm_rad[i] - cal[i] for i in range(4))
@@ -114,20 +134,55 @@ async def _tau_ff_loop(state_store: StateStore, serial_mgr: SerialManager) -> No
             if msg != logged_ff_err:
                 logged_ff_err = msg
                 logger.warning("重力前馈计算失败（缺 numpy/pinocchio 或 URDF？）：%s", exc)
+            next_tick = time.monotonic()
             await asyncio.sleep(interval)
             continue
         logged_ff_err = None
         g = float(TAU_FF.gain)
         t0, t1, t2, t3 = t0 * g, t1 * g, t2 * g, t3 * g
         taus = (t0, t1, t2, t3)
+
+        traj_active = (
+            rpi_udp is None
+            and m23_traj.enabled
+            and m23_traj.tick(interval, arm_rad)
+        )
+        p1_traj = p2_traj = v1_traj = v2_traj = 0.0
+        if traj_active:
+            p1_traj, p2_traj, v1_traj, v2_traj = m23_traj.p_v_for_motor_1_2(interval)
+
+        udp_pv = (
+            rpi_udp.get_motor_p_v_rad(TAU_FF.calibration_rad)
+            if rpi_udp is not None
+            else None
+        )
+
         cmds: list[dict[str, float]] = []
         for i in range(4):
             m = TAU_FF.mit_motor_cmd[i]
+            kp_send = 0.0 if MIT_CMD_KP_FLOAT_MODE else MIT_CMD_FIXED_KP_NORMAL[i]
+            p_cmd = float(m["p"])
+            v_cmd = float(m["v"])
+            if udp_pv is not None:
+                p_cmd = float(udp_pv[0][i])
+                v_cmd = float(udp_pv[1][i])
+            elif rpi_udp is not None:
+                # 已启用 UDP 流但尚未收到或已超时：勿用 mit_motor_cmd 默认 p=0（会猛甩到错误绝对角）
+                p_cmd = float(arm_rad[i])
+                v_cmd = 0.0
+            elif traj_active:
+                if i in (0, 3):
+                    p_cmd = float(arm_rad[i])
+                    v_cmd = 0.0
+                elif i == 1:
+                    p_cmd, v_cmd = p1_traj, v1_traj
+                elif i == 2:
+                    p_cmd, v_cmd = p2_traj, v2_traj
             cmds.append(
                 {
-                    "p": float(m["p"]),
-                    "v": float(m["v"]),
-                    "kp": float(m["kp"]),
+                    "p": p_cmd,
+                    "v": v_cmd,
+                    "kp": kp_send,
                     "kd": MIT_CMD_FIXED_KD[i],
                     "t": float(taus[i]),
                 }
@@ -138,10 +193,12 @@ async def _tau_ff_loop(state_store: StateStore, serial_mgr: SerialManager) -> No
         # raw = _build_tau_frame(t0, t1, t2, t3)
         # serial_mgr.send_raw(raw)
 
-        elapsed = time.monotonic() - iter_start
-        remain = interval - elapsed
-        if remain > 0:
-            await asyncio.sleep(remain)
+        sleep_for = next_tick - time.monotonic()
+        if sleep_for < 0:
+            logger.debug("tau_ff 周期滞后 %.3fs，重置调度基准（避免长期欠账）", -sleep_for)
+            next_tick = time.monotonic()
+        else:
+            await asyncio.sleep(sleep_for)
 
 
 async def _process_commands(
@@ -186,7 +243,7 @@ async def _process_commands(
                 motors = data.get("motors")
                 if not isinstance(motors, list) or len(motors) != 4:
                     logger.warning(
-                        "set_mit_motor_cmd 需要 data.motors 为长度 4 的列表，每项 p/v/kp（kd 固定见 MIT_CMD_FIXED_KD）"
+                        "set_mit_motor_cmd 需要 data.motors 为长度 4 的列表，每项 p/v（kp/kd 下发固定见 config）"
                     )
                     continue
                 try:
@@ -194,7 +251,7 @@ async def _process_commands(
                 except ValueError as exc:
                     logger.warning("%s", exc)
                     continue
-                logger.info("已更新 MIT 命令 p/v/kp: %s", TAU_FF.mit_motor_cmd)
+                logger.info("已更新 MIT 命令 p/v: %s", TAU_FF.mit_motor_cmd)
             else:
                 raw = json.dumps({"cmd": cmd_name, "data": data}).encode("utf-8")
                 logger.info(
@@ -217,7 +274,16 @@ async def _run_async() -> None:
 
     serial_mgr = SerialManager(state_store=state_store, on_frame=on_frame)
     serial_mgr.start()
+    m23_traj = M23GravityTraj.from_env()
+    rpi_udp = RpiUdpJointSource.from_env()
     logger.info("串口管理线程已启动，控制模式=%s", CONTROL_MODE)
+    if m23_traj.enabled:
+        logger.info(
+            "M2/M3 重力协同轨迹已启用：M2 %+g° M3 %+g°，v_max=%g rad/s（ARM_CONTROL_M23_DEG_M2/M3、M23_V_MAX）",
+            m23_traj.deg_m2,
+            m23_traj.deg_m3,
+            m23_traj.v_max,
+        )
 
     if CONTROL_MODE == "tau_ff":
         logger.info(
@@ -234,6 +300,13 @@ async def _run_async() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Pinocchio 预热失败（运行中仍会重试）：%s", exc)
 
+        if rpi_premove_should_run():
+            logger.info("RPI UDP 预移动：到位后再 bind 接收线程…")
+            await run_rpi_udp_premove(state_store, serial_mgr)
+
+    if rpi_udp is not None:
+        rpi_udp.start()
+
     def on_camera_frame(frame_b64: str) -> None:
         logger.debug("收到相机帧（长度=%d）", len(frame_b64))
 
@@ -241,12 +314,16 @@ async def _run_async() -> None:
         asyncio.create_task(start_ws_server(state_store, command_queue)),
         asyncio.create_task(_process_commands(state_store, serial_mgr, command_queue)),
         asyncio.create_task(camera_loop(on_camera_frame)),
-        asyncio.create_task(_tau_ff_loop(state_store, serial_mgr)),
+        asyncio.create_task(
+            _tau_ff_loop(state_store, serial_mgr, m23_traj, rpi_udp)
+        ),
     ]
 
     try:
         await asyncio.gather(*tasks)
     finally:
+        if rpi_udp is not None:
+            rpi_udp.stop()
         serial_mgr.stop()
         logger.info("程序退出，已请求串口线程停止")
 

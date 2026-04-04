@@ -48,12 +48,12 @@ def pinocchio_tau_to_four_motor_nm(tau: Sequence[float]) -> Tuple[float, float, 
     )
 
 
-def compute_tau_ff_nm(
+def compute_tau_joint_nm(
     delta_rad: Sequence[float],
     finger_l_m: float = 0.0,
     finger_r_m: float = 0.0,
 ) -> Tuple[float, float, float, float]:
-    """输入四轴相对标定零位的弧度差，返回四路重力前馈力矩 (Nm)。"""
+    """四轴相对标定零位弧度差 → URDF joint1..4 重力矩 (Nm)，与广义重力向量前 4 维一致。"""
     if len(delta_rad) != 4:
         raise ValueError("delta_rad 须为 4 个弧度值")
     d0, d1, d2, d3 = (float(x) for x in delta_rad)
@@ -62,4 +62,17 @@ def compute_tau_ff_nm(
     from gravity_comp.gravity_torque import get_gravity_torques_arm_deg_x100
 
     tau = get_gravity_torques_arm_deg_x100(joint_deg_x100, finger_l_m, finger_r_m)
-    return pinocchio_tau_to_four_motor_nm(tau)
+    n = len(tau)
+    if n < 4:
+        raise ValueError(f"广义重力维数不足 4：got {n}")
+    return tuple(float(tau[i]) for i in range(4))
+
+
+def compute_tau_ff_nm(
+    delta_rad: Sequence[float],
+    finger_l_m: float = 0.0,
+    finger_r_m: float = 0.0,
+) -> Tuple[float, float, float, float]:
+    """输入四轴相对标定零位的弧度差，返回四路重力前馈力矩 (Nm)。"""
+    tau_joint = compute_tau_joint_nm(delta_rad, finger_l_m, finger_r_m)
+    return pinocchio_tau_to_four_motor_nm(tau_joint)

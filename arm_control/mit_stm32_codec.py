@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import math
+from typing import Any, Sequence
 
 # 各电机 P/V/T 物理范围（与协议表一致；解码必须按电机索引选用）
 MOTOR_PARAMS: list[dict[str, tuple[float, float]]] = [
@@ -28,6 +29,16 @@ MIT_CMD_P_MIN, MIT_CMD_P_MAX = -12.5, 12.5
 MIT_CMD_V_MIN, MIT_CMD_V_MAX = -45.0, 45.0
 MIT_CMD_T_MIN, MIT_CMD_T_MAX = -18.0, 18.0
 MIT_CMD_FRAME_LEN: int = 35
+
+
+def motor_p_terminal_str(
+    p_rad: float, motor_idx: int, calibration_rad: Sequence[float] | None
+) -> str:
+    """终端日志专用：相对 ``calibration_rad`` 的转角（度）；无有效标定表则仍打印解码弧度。"""
+    if calibration_rad is not None and len(calibration_rad) > motor_idx:
+        rel_deg = math.degrees(p_rad - float(calibration_rad[motor_idx]))
+        return f"p_rel={rel_deg:.6f} °"
+    return f"p={p_rad:.6f} rad"
 
 
 def uint_to_float(x: int, x_min: float, x_max: float, bits: int) -> float:
@@ -156,8 +167,10 @@ def decode_mit_cmd_frame_35(data: bytes) -> tuple[list[dict[str, float]], bool]:
     return motors, chk_ok
 
 
-def build_mit_cmd_downlink_log_lines(raw: bytes) -> list[str]:
-    """与 `serial_manager._log_mit_uplink_decode` 风格一致：连续 hex、空格 HEX、解码四电机 p/v/kp/kd/t。"""
+def build_mit_cmd_downlink_log_lines(
+    raw: bytes, calibration_rad: Sequence[float] | None = None
+) -> list[str]:
+    """与 `serial_manager._log_mit_uplink_decode` 风格一致；``p`` 在终端以相对标定零位角度（度）显示。"""
     hex_compact = raw.hex().upper()
     lines: list[str] = [
         f"  原始下行(hex码): {hex_compact}",
@@ -167,8 +180,9 @@ def build_mit_cmd_downlink_log_lines(raw: bytes) -> list[str]:
         motors, xor_ok = decode_mit_cmd_frame_35(raw)
         lines.append(f"  xor_ok={xor_ok}")
         for i, m in enumerate(motors):
+            p_show = motor_p_terminal_str(m["p"], i, calibration_rad)
             lines.append(
-                f"  M{i + 1}: p={m['p']:.6f} rad  v={m['v']:.6f} rad/s  "
+                f"  M{i + 1}: {p_show}  v={m['v']:.6f} rad/s  "
                 f"kp={m['kp']:.6f}  kd={m['kd']:.6f}  t={m['t']:.6f} Nm"
             )
     except (ValueError, RuntimeError) as exc:
