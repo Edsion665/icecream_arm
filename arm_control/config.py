@@ -158,8 +158,14 @@ def mit_cmd_kp_float_mode_from_env() -> bool:
 MIT_CMD_KP_FLOAT_MODE: bool = mit_cmd_kp_float_mode_from_env()
 
 # MIT 下行四轴固定 kp（0~500，RPI_MIT_CMD_BINARY_ENCODE.md）；正常模式、电机 1~4 → 索引 0~3
-MIT_CMD_FIXED_KP_NORMAL: tuple[float, float, float, float] = (10.0, 16.0, 20.0, 10)
+MIT_CMD_FIXED_KP_NORMAL: tuple[float, float, float, float] = (10.0, 25.0, 28.0, 15)
 #MIT_CMD_FIXED_KP_NORMAL: tuple[float, float, float, float] = (10.0, 16.0, 20.0, 10.0)
 # MIT 下行四轴固定 kd（0~5）；电机 1~4 → 索引 0~3
 MIT_CMD_FIXED_KD: tuple[float, float, float, float] = (1.8, 2.0, 1.8, 0.3)
 
+
+
+def set_kp_float_mode(enabled: bool) -> None:
+    """动态切换 kp 浮游模式（True=kp=0，False=正常kp）。"""
+    global MIT_CMD_KP_FLOAT_MODE
+    MIT_CMD_KP_FLOAT_MODE = bool(enabled)

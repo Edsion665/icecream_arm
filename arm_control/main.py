@@ -20,11 +20,16 @@ from .config import (
     set_mit_motor_cmd_params,
     set_tau_calibration_rad,
     set_tau_gain,
+    set_kp_float_mode,
 )
 from .gravity_feedforward import compute_tau_ff_nm
 from .m23_gravity_traj import M23GravityTraj
 from .mit_stm32_codec import encode_mit_cmd_frame_35
 from .protocol import ParsedFrame
+from .init_pose_actions import (
+    InitPoseController,
+    boot_pose_mode_from_env,
+)
 from .rpi_udp_joint_source import RpiUdpJointSource
 from .rpi_udp_premove import rpi_premove_should_run, run_rpi_udp_premove
 from .serial_manager import SerialManager
@@ -90,6 +95,7 @@ async def _tau_ff_loop(
     serial_mgr: SerialManager,
     m23_traj: M23GravityTraj,
     rpi_udp: Optional[RpiUdpJointSource],
+    pose_ctrl: InitPoseController,
 ) -> None:
     """力矩前馈：按四轴弧度差 + Pinocchio 算 τ，按 send_hz 发 MIT 35B（p/v 见 mit_motor_cmd；kp 见 MIT_CMD_KP_FLOAT_MODE / MIT_CMD_FIXED_KP_NORMAL；kd 见 MIT_CMD_FIXED_KD）。
 
@@ -142,7 +148,11 @@ async def _tau_ff_loop(
         t0, t1, t2, t3 = t0 * g, t1 * g, t2 * g, t3 * g
         taus = (t0, t1, t2, t3)
 
+        pose_pv = pose_ctrl.step(arm_rad, interval)
+
         traj_active = (
+            pose_pv is None
+            and
             rpi_udp is None
             and m23_traj.enabled
             and m23_traj.tick(interval, arm_rad)
@@ -160,14 +170,21 @@ async def _tau_ff_loop(
         cmds: list[dict[str, float]] = []
         for i in range(4):
             m = TAU_FF.mit_motor_cmd[i]
-            kp_send = 0.0 if MIT_CMD_KP_FLOAT_MODE else MIT_CMD_FIXED_KP_NORMAL[i]
+            import arm_control.config as _cfg; kp_send = 0.0 if _cfg.MIT_CMD_KP_FLOAT_MODE else MIT_CMD_FIXED_KP_NORMAL[i]
             p_cmd = float(m["p"])
             v_cmd = float(m["v"])
-            if udp_pv is not None:
+            if pose_pv is not None:
+                p_cmd = float(pose_pv[0][i])
+                v_cmd = float(pose_pv[1][i])
+            elif udp_pv is not None:
                 p_cmd = float(udp_pv[0][i])
                 v_cmd = float(udp_pv[1][i])
             elif rpi_udp is not None:
                 # 已启用 UDP 流但尚未收到或已超时：勿用 mit_motor_cmd 默认 p=0（会猛甩到错误绝对角）
+                p_cmd = float(arm_rad[i])
+                v_cmd = 0.0
+            elif not traj_active:
+                # 无任何主动控制源时，跟随当前反馈角保持位姿，避免 p=0 默认值导致甩动
                 p_cmd = float(arm_rad[i])
                 v_cmd = 0.0
             elif traj_active:
@@ -205,6 +222,7 @@ async def _process_commands(
     state_store: StateStore,
     serial_mgr: SerialManager,
     command_queue: "Queue[Dict[str, Any]]",
+    pose_ctrl: InitPoseController,
 ) -> None:
     """处理从 WebSocket 收到的控制指令，并转发到串口。"""
     logger = logging.getLogger(__name__)
@@ -252,6 +270,14 @@ async def _process_commands(
                     logger.warning("%s", exc)
                     continue
                 logger.info("已更新 MIT 命令 p/v: %s", TAU_FF.mit_motor_cmd)
+            elif cmd_name == "goto_home_pose":
+                set_kp_float_mode(False)
+                pose_ctrl.request_home()
+                logger.info("已受理 goto_home_pose，切换正常kp（在 tau_ff 主循环内执行）")
+            elif cmd_name == "goto_work_pose":
+                set_kp_float_mode(False)
+                pose_ctrl.request_work()
+                logger.info("已受理 goto_work_pose，切换正常kp（在 tau_ff 主循环内执行并保持）")
             else:
                 raw = json.dumps({"cmd": cmd_name, "data": data}).encode("utf-8")
                 logger.info(
@@ -276,6 +302,7 @@ async def _run_async() -> None:
     serial_mgr.start()
     m23_traj = M23GravityTraj.from_env()
     rpi_udp = RpiUdpJointSource.from_env()
+    pose_ctrl = InitPoseController()
     logger.info("串口管理线程已启动，控制模式=%s", CONTROL_MODE)
     if m23_traj.enabled:
         logger.info(
@@ -300,7 +327,14 @@ async def _run_async() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Pinocchio 预热失败（运行中仍会重试）：%s", exc)
 
-        if rpi_premove_should_run():
+        boot_pose = boot_pose_mode_from_env()
+        if boot_pose == "home":
+            pose_ctrl.request_home()
+            logger.info("启动姿态：归位请求已下发到主循环（ARM_CONTROL_BOOT_POSE=home）")
+        elif boot_pose == "work":
+            pose_ctrl.request_work()
+            logger.info("启动姿态：工作位请求已下发到主循环（ARM_CONTROL_BOOT_POSE=work）")
+        elif rpi_premove_should_run():
             logger.info("RPI UDP 预移动：到位后再 bind 接收线程…")
             await run_rpi_udp_premove(state_store, serial_mgr)
 
@@ -312,10 +346,10 @@ async def _run_async() -> None:
 
     tasks = [
         asyncio.create_task(start_ws_server(state_store, command_queue)),
-        asyncio.create_task(_process_commands(state_store, serial_mgr, command_queue)),
+        asyncio.create_task(_process_commands(state_store, serial_mgr, command_queue, pose_ctrl)),
         asyncio.create_task(camera_loop(on_camera_frame)),
         asyncio.create_task(
-            _tau_ff_loop(state_store, serial_mgr, m23_traj, rpi_udp)
+            _tau_ff_loop(state_store, serial_mgr, m23_traj, rpi_udp, pose_ctrl)
         ),
     ]
 
