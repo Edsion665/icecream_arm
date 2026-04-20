@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>sim_test — 4轴主臂 + claw</title>
+  <style>
+    :root { font-family: system-ui, "Segoe UI", sans-serif; background: #1a1d23; color: #e8eaed; }
+    body { max-width: 560px; margin: 1.5rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.1rem; font-weight: 600; }
+    h2 { font-size: 0.95rem; font-weight: 600; margin: 1.25rem 0 0.5rem; padding-bottom: 0.35rem; border-bottom: 1px solid #3c4043; color: #8ab4f8; }
+    p.hint { font-size: 0.8rem; color: #9aa0a6; line-height: 1.45; margin: 0.35rem 0 0.75rem; }
+    label { display: block; font-size: 0.75rem; color: #bdc1c6; margin-top: 0.5rem; }
+    input[type="number"], input[type="text"] { width: 100%; box-sizing: border-box; padding: 0.4rem 0.45rem; border-radius: 6px; border: 1px solid #444; background: #2d3139; color: #e8eaed; margin-top: 0.2rem; }
+    .row4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.45rem; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem; }
+    button { margin-top: 0.75rem; padding: 0.5rem 0.85rem; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; background: #1a73e8; color: #fff; width: 100%; }
+    button.secondary { background: #3c4043; }
+    button.warn { background: #5f6368; }
+    #log { margin-top: 1rem; padding: 0.65rem; border-radius: 8px; background: #0e1014; font-family: ui-monospace, monospace; font-size: 0.72rem; white-space: pre-wrap; word-break: break-all; min-height: 3rem; color: #81c995; }
+    section.card { background: #252a32; border-radius: 10px; padding: 0.85rem 1rem; margin-top: 0.75rem; }
+  </style>
+</head>
+<body>
+  <h1>sim_test 测试页</h1>
+  <p class="hint">主臂为 4 轴：关节模式独立指定 J1~J4。仅「笛卡尔 pose」时内部 IK 使用几何解耦 q4=120°−(q2+q3)。claw 独立通道。</p>
+  <label>API 基址</label>
+  <input type="text" id="base" value="" />
+  <section class="card">
+    <h2>① 绝对关节目标（相对标定零位，度）</h2>
+    <p class="hint">相对标定零位的绝对目标角（度），四轴均有效。</p>
+    <div class="row4">
+      <div><label>J1°</label><input type="number" id="j1" step="5" value="0" /></div>
+      <div><label>J2°</label><input type="number" id="j2" step="5" value="10" /></div>
+      <div><label>J3°</label><input type="number" id="j3" step="5" value="-90" /></div>
+      <div><label>J4°</label><input type="number" id="j4" step="5" value="-70" /></div>
+    </div>
+    <button type="button" id="btnJoints">POST /api/joints</button>
+  </section>
+  <section class="card">
+    <h2>② claw（仅实机）</h2>
+    <div class="row3">
+      <div><label>wrist_deg</label><input type="number" id="wrist" step="1" value="0" /></div>
+      <div><label>grip(0~1)</label><input type="number" id="grip" step="0.1" value="0" /></div>
+      <div></div>
+    </div>
+    <button type="button" id="btnClaw" class="secondary">POST /api/claw</button>
+  </section>
+  <section class="card">
+    <h2>③ 笛卡尔目标（link4 原点，米）</h2>
+    <p class="hint">此处 x,y,z（米）为基座系 link4 目标，无额外偏置。</p>
+    <div class="row3">
+      <div><label>X</label><input type="number" id="x" step="0.01" value="0.35" /></div>
+      <div><label>Y</label><input type="number" id="y" step="0.01" value="0.20" /></div>
+      <div><label>Z</label><input type="number" id="z" step="0.01" value="0.25" /></div>
+    </div>
+    <button type="button" id="sendAbs" class="warn">POST /api/pose</button>
+  </section>
+  <div id="log"></div>
+  <script>
+    const logEl = document.getElementById("log");
+    const baseInput = document.getElementById("base");
+    baseInput.value = window.location.origin || "http://127.0.0.1:8765";
+    function log(msg, isErr) {
+      const t = new Date().toISOString().slice(11, 23);
+      logEl.textContent = (isErr ? "[ERR] " : "") + t + " " + msg + "\n" + logEl.textContent;
+    }
+    async function post(path, body) {
+      const base = baseInput.value.replace(/\/$/, "");
+      const r = await fetch(base + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) throw new Error(j.error || r.statusText);
+      return j;
+    }
+    document.getElementById("btnJoints").onclick = async () => {
+      const axes_rel_deg = [+j1.value, +j2.value, +j3.value, +j4.value];
+      try { await post("/api/joints", { axes_rel_deg }); log("joints ok " + JSON.stringify(axes_rel_deg)); } catch (e) { log(String(e), true); }
+    };
+    document.getElementById("btnClaw").onclick = async () => {
+      const wrist_deg = +wrist.value; const grip = +grip.value;
+      try { await post("/api/claw", { wrist_deg, grip }); log("claw ok " + JSON.stringify({ wrist_deg, grip })); } catch (e) { log(String(e), true); }
+    };
+    document.getElementById("sendAbs").onclick = async () => {
+      const body = { x: +x.value, y: +y.value, z: +z.value };
+      try { await post("/api/pose", body); log("pose ok " + JSON.stringify(body)); } catch (e) { log(String(e), true); }
+    };
+  </script>
+</body>
+</html>
