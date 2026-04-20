@@ -12,7 +12,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# 运动学（仅 link4 几何解耦 IK / FK 所需；sim_test 独立，不依赖 sim_code）
+# 运动学（仅 link4 几何解耦 IK / FK 所需；arm_control_bridge 独立，不依赖 sim_code）
 # ---------------------------------------------------------------------------
 JOINT_NAMES = ["joint1", "joint2", "joint3", "joint4", "joint5"]
 NUM_JOINTS = 5
@@ -131,7 +131,7 @@ def q4_geometric_decouple(q: np.ndarray) -> float:
 
 
 class URDFKinematics:
-    """link0→link5：仅实现 link4 原点 FK 与几何解耦 IK（与 sim_test 控制一致）。"""
+    """link0→link5：仅实现 link4 原点 FK 与几何解耦 IK（与 arm_control_bridge 控制一致）。"""
 
     def __init__(self, urdf_path: Optional[str] = None):
         self._joints: List[dict] = []

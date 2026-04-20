@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>sim_test — 4轴主臂 + claw</title>
+  <title>arm_control_bridge — 4轴主臂 + claw</title>
   <style>
     :root { font-family: system-ui, "Segoe UI", sans-serif; background: #1a1d23; color: #e8eaed; }
     body { max-width: 560px; margin: 1.5rem auto; padding: 0 1rem; }
@@ -22,7 +22,7 @@
   </style>
 </head>
 <body>
-  <h1>sim_test 测试页</h1>
+  <h1>arm_control_bridge 测试页</h1>
   <p class="hint">主臂为 4 轴：关节模式独立指定 J1~J4。仅「笛卡尔 pose」时内部 IK 使用几何解耦 q4=120°−(q2+q3)。claw 独立通道。</p>
   <label>API 基址</label>
   <input type="text" id="base" value="" />

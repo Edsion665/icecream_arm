@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# PC 端启动脚本（适配 PC_RPI_UDP_PROTOCOL.md）
 # 用法：
-#   ./sim_test/start_pc_control.sh sim 192.168.1.100
-#   ./sim_test/start_pc_control.sh nosim 192.168.1.100
+#   ./start_pc_control.sh sim 192.168.1.100
+#   ./start_pc_control.sh nosim 192.168.1.100
 
 MODE="${1:-sim}"          # sim | nosim
 RPI_IP="${2:-}"           # 必填：树莓派 IP
@@ -33,10 +32,10 @@ COMMON_ARGS=(
 
 if [[ "${MODE}" == "sim" ]]; then
   echo "[start_pc_control] Launch SIM mode -> udp://${RPI_IP}:${RPI_PORT}"
-  ~/isaac-sim/python.sh -m sim_test.run_control --sim "${COMMON_ARGS[@]}"
+  ~/isaac-sim/python.sh -m arm_control_bridge.run_control --sim "${COMMON_ARGS[@]}"
 elif [[ "${MODE}" == "nosim" ]]; then
   echo "[start_pc_control] Launch NOSIM mode -> udp://${RPI_IP}:${RPI_PORT}"
-  python3 -m sim_test.run_control "${COMMON_ARGS[@]}"
+  python3 -m arm_control_bridge.run_control "${COMMON_ARGS[@]}"
 else
   echo "Invalid mode: ${MODE}. Use sim or nosim."
   exit 1

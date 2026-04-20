@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-sim_test 入口：新架构启动入口（4轴主臂 + claw独立通道）。
+arm_control_bridge 入口：新架构启动入口（4轴主臂 + claw独立通道）。
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def run_loop(
     log_print: bool = True,
 ) -> None:
     import numpy as np
-    from sim_test.calculator import CalculatorEngine, CalculatorState, URDFKinematics
+    from .calculator import CalculatorEngine, CalculatorState, URDFKinematics
 
     from .PiController import RPiUDPStreamer, RpiProtocolAdapter, motor, servoMotor
     from .config import CONTROL_DT, CONTROL_HZ, load_calibration_deg
@@ -430,9 +430,9 @@ def run_sim_loop(
 
 
 def main() -> None:
-    from sim_test.config import DEFAULT_TCP_PORT, DEFAULT_UDP_PORT
+    from .config import DEFAULT_TCP_PORT, DEFAULT_UDP_PORT
 
-    p = argparse.ArgumentParser(description="sim_test 新架构：网络指令 + 可选 Isaac Sim")
+    p = argparse.ArgumentParser(description="arm_control_bridge 新架构：网络指令 + 可选 Isaac Sim")
     p.add_argument("--listen", default="0.0.0.0", help="TCP 监听地址")
     p.add_argument("--port", type=int, default=DEFAULT_TCP_PORT, help="TCP 端口（JSON 行指令）")
     p.add_argument("--rpi-ip", default=None, help="树莓派 IP；不填则不发送 UDP")
@@ -454,7 +454,7 @@ def main() -> None:
         "--sim-usd",
         type=str,
         default=None,
-        help="机械臂 USD（仅 --sim）；未指定时依次尝试本包目录 sim_test/、再 sim_code/：ice_cream_v8_arm.usd、ice_cream_single_arm.usd、ice_cream_arm.usd",
+        help="机械臂 USD（仅 --sim）；未指定时依次尝试本包目录 arm_control_bridge/、再 sim_code/：ice_cream_v8_arm.usd、ice_cream_single_arm.usd、ice_cream_arm.usd",
     )
     p.add_argument("--ik-rate", type=float, default=25.0, help="控制/IK 更新频率 Hz（仅 --sim）")
     p.add_argument(
