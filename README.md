@@ -53,7 +53,7 @@ python3 -m arm_control_bridge.run_control \
 ./arm_control_bridge/start_pc_control.sh nosim 192.168.1.100
 ```
 
-## 最小联调（TCP）
+## 最小联调
 
 ```bash
 python3 - <<'PY'
