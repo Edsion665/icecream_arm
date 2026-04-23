@@ -1,4 +1,4 @@
-# bridge2pi API 规范（v2）
+# bridge2pi API 规范（arm_control_bridge ie v1）
 
 - 文档状态：stable
 - 适用模块：`arm_control_bridge/PiController.py`
@@ -58,7 +58,7 @@
 抓手字段说明：
 
 - `frame.servo_deg` 只在适配器内部缓存为 `_last_servo`。
-- 当前 V2 帧**不含** `servo_deg` 字段。
+- 当前 V2 帧不含 `servo_deg` 字段。
 - `servoMotor.send()` 仅刷新缓存，不改变 UDP 帧结构。
 
 ### 4.2 接收侧约定（兼容历史）
@@ -116,4 +116,3 @@ def decode(pkt: bytes):
 - 关键代码：
   - `arm_control_bridge/PiController.py`
   - `arm_control_bridge/calculator.py`（`JointFrame` 定义）
-

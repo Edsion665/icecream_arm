@@ -1,6 +1,6 @@
-# arm_control_bridge
+# arm_control_bridge IE 独立版
 
-`arm_control_bridge` 是 4 轴主臂 + 抓手通道的控制桥接模块，提供：
+`arm_control_bridge` 是 4 轴主臂 + 抓手通道的控制桥接模块（IE 独立版本），提供：
 
 - 上层到 bridge 的 TCP/HTTP 命令入口
 - bridge 到树莓派的 UDP 二进制下发
@@ -10,10 +10,19 @@
 
 - 上层 -> bridge 接口规范：`doc/head2bridge.md`
 - bridge -> Pi 接口规范：`doc/bridge2pi.md`
+- 兼容旧文档：`head2controller_doc.md`、`PC_RPI_UDP_PROTOCOL.md`
+
+## 独立性说明
+
+- 本版本已去除对 `sim_code` 的运行时依赖。
+- `--sim` 模式下 USD 自动查找仅覆盖：
+  - `arm_control_bridge/` 目录
+  - `icecream_arm/` 项目根目录
+- 若自动查找不到 USD，请显式传入 `--sim-usd <path>`。
 
 ## 快速启动
 
-在仓库根目录执行。
+在 `icecream_arm/` 目录执行。
 
 ### 无仿真（开环 + UDP 下发）
 
@@ -55,9 +64,8 @@ for cmd in [
     {"cmd":"joints","axes_rel_deg":[0,0,5,0]},
     {"cmd":"claw","wrist_deg":15,"grip":0.5},
 ]:
-    s.sendall((json.dumps(cmd) + "\\n").encode("utf-8"))
+    s.sendall((json.dumps(cmd) + "\n").encode("utf-8"))
 s.close()
 print("done")
 PY
 ```
-

@@ -19,10 +19,12 @@ POSE_VEL_MAX_M_S = 0.1
 
 
 def frontend_pose_to_internal_m(x: float, y: float, z: float) -> tuple[float, float, float]:
-    """前端输入的 link4 目标 (x,y,z) 米 → 与 IK 使用同一基座系。
+    """前端输入的 link4 目标 (x,y,z) 米（父节点 local）→ IK local。
 
-    点为 **link4 原点在 URDF 基座 link0 系**下的坐标；Isaac 中机械臂根在 world 原点且未绕世界轴旋转时，
-    与方块/标记的世界坐标数值相同。
+    约定：
+    - 前端发送的是机械臂父节点坐标系（local）下的位置；
+    - IK 也使用同一 local（URDF 基座 link0）求解；
+    - 这里不做坐标变换，保持数值一一对应。
     """
     return (float(x), float(y), float(z))
 

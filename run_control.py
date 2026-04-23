@@ -13,9 +13,8 @@ import time
 from typing import Optional
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_SIM_TEST_DIR = os.path.dirname(os.path.abspath(__file__))
-_SIM_CODE = os.path.join(_ROOT, "sim_code")
-for _p in (_SIM_CODE, _ROOT):
+_PKG_DIR = os.path.dirname(os.path.abspath(__file__))
+for _p in (_ROOT,):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -63,7 +62,7 @@ def run_loop(
     log_print: bool = True,
 ) -> None:
     import numpy as np
-    from .calculator import CalculatorEngine, CalculatorState, URDFKinematics
+    from arm_control_bridge.calculator import CalculatorEngine, CalculatorState, URDFKinematics
 
     from .PiController import RPiUDPStreamer, RpiProtocolAdapter, motor, servoMotor
     from .config import CONTROL_DT, CONTROL_HZ, load_calibration_deg
@@ -229,7 +228,7 @@ def run_sim_loop(
     engine = CalculatorEngine(kin)
 
     ik_follow_hz = float(ik_rate)
-    # 与 sim_code/cartesian_ik_verify 一致：每控制周期一次 world.step，physics_dt = 1/ik_follow_hz
+    # 与验证脚本一致：每控制周期一次 world.step，physics_dt = 1/ik_follow_hz
     physics_hz_eff = ik_follow_hz
     n_physics_substeps = 1
     physics_dt = 1.0 / ik_follow_hz
@@ -271,6 +270,23 @@ def run_sim_loop(
     TARGET_MARKER_PATH = "/World/TargetJoint4Marker"
     MARKER_Z_LIFT = 0.04
 
+    def _log_prim_world_pose(stage, prim_path: str, tag: str) -> None:
+        try:
+            from pxr import Usd, UsdGeom
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                log(f"[sim][frame] {tag}: prim not found: {prim_path}")
+                return
+            xf = UsdGeom.Xformable(prim)
+            m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            t = m.ExtractTranslation()
+            # 只打印平移；目前问题先聚焦「原点不一致」
+            log(
+                f"[sim][frame] {tag}: path={prim_path} world_t=({float(t[0]):+.4f}, {float(t[1]):+.4f}, {float(t[2]):+.4f})"
+            )
+        except Exception as ex:
+            log(f"[sim][frame] {tag}: failed to read world pose: {ex}")
+
     def _find_articulation_root(stage, under_path: str):
         try:
             from pxr import UsdPhysics
@@ -301,13 +317,10 @@ def run_sim_loop(
             "ice_cream_single_arm.usd",
             "ice_cream_arm.usd",
         ):
-            p = os.path.join(_SIM_TEST_DIR, name)
+            p = os.path.join(_PKG_DIR, name)
             if os.path.isfile(p):
                 return p
-            p = os.path.join(_SIM_CODE, name)
-            if os.path.isfile(p):
-                return p
-            p = os.path.join(_ROOT, "sim_code", name)
+            p = os.path.join(_ROOT, name)
             if os.path.isfile(p):
                 return p
         raise FileNotFoundError(
@@ -335,6 +348,9 @@ def run_sim_loop(
     articulation_path = found_root if found_root else ARM_PRIM_PATH
     arm = world.scene.add(SingleArticulation(articulation_path, name="ice_cream_arm"))
     world.reset()
+    _log_prim_world_pose(stage, ARM_PRIM_PATH, "arm_prim")
+    if articulation_path != ARM_PRIM_PATH:
+        _log_prim_world_pose(stage, articulation_path, "articulation_root")
 
     q0 = arm.get_joint_positions()
     n_dof = len(q0) if q0 is not None else 0
@@ -388,6 +404,10 @@ def run_sim_loop(
             log(f"[sim] recv {c.kind}: {c.payload}")
             engine.apply_command(c, state)
             if c.kind in ("pose", "pose_delta"):
+                log(
+                    "[sim][frame] pose target interpreted as link0/local = "
+                    + f"({float(state.pose_xyz[0]):+.4f}, {float(state.pose_xyz[1]):+.4f}, {float(state.pose_xyz[2]):+.4f})"
+                )
                 _set_marker_xyz(stage, state.pose_xyz)
 
         for _ in range(n_physics_substeps):
@@ -430,7 +450,7 @@ def run_sim_loop(
 
 
 def main() -> None:
-    from .config import DEFAULT_TCP_PORT, DEFAULT_UDP_PORT
+    from arm_control_bridge.config import DEFAULT_TCP_PORT, DEFAULT_UDP_PORT
 
     p = argparse.ArgumentParser(description="arm_control_bridge 新架构：网络指令 + 可选 Isaac Sim")
     p.add_argument("--listen", default="0.0.0.0", help="TCP 监听地址")
@@ -454,7 +474,7 @@ def main() -> None:
         "--sim-usd",
         type=str,
         default=None,
-        help="机械臂 USD（仅 --sim）；未指定时依次尝试本包目录 arm_control_bridge/、再 sim_code/：ice_cream_v8_arm.usd、ice_cream_single_arm.usd、ice_cream_arm.usd",
+        help="机械臂 USD（仅 --sim）；未指定时依次尝试本包目录 arm_control_bridge/、再项目根目录：ice_cream_v8_arm.usd、ice_cream_single_arm.usd、ice_cream_arm.usd",
     )
     p.add_argument("--ik-rate", type=float, default=25.0, help="控制/IK 更新频率 Hz（仅 --sim）")
     p.add_argument(

@@ -1,4 +1,4 @@
-# head2bridge API 规范（v2）
+# head2bridge API 规范（arm_control_bridge ie v1）
 
 - 文档状态：stable
 - 适用模块：`arm_control_bridge/listener.py`、`arm_control_bridge/calculator.py`
@@ -7,7 +7,7 @@
 
 ## 1. 范围（Scope）
 
-本文档定义上层到 control bridge 的输入接口，包括：
+本文档定义上层到 `arm_control_bridge` 控制桥的输入接口，包括：
 
 - TCP JSON 行协议
 - HTTP JSON API
@@ -96,7 +96,7 @@
 可选输入组合（满足其一即可）：
 
 1. `wrist_deg` + `grip`
-2. `servo_deg=[wrist_deg, grip]`（长度 >=2）
+2. `servo_deg=[wrist_deg, grip]`（长度 >= 2）
 
 缺字段错误：`missing_field: claw 需要 wrist_deg/grip/servo_deg`。
 

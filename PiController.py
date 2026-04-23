@@ -12,7 +12,7 @@ from typing import Literal, Sequence
 
 from .calculator import JointFrame
 
-# 协议文档：doc/bridge2pi.md
+# 协议文档：PC_RPI_UDP_PROTOCOL.md
 # 固定 92B: =Idddddddddd  (seq, ts, p_rel_deg[5], omega_rad_s[5])
 _FMT_V2 = "=Id" + "d" * 10
 PACKET_V2_SIZE = struct.calcsize(_FMT_V2)

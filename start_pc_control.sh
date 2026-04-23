@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# PC 端启动脚本（适配 PC_RPI_UDP_PROTOCOL.md）
 # 用法：
 #   ./start_pc_control.sh sim 192.168.1.100
 #   ./start_pc_control.sh nosim 192.168.1.100
@@ -11,7 +12,7 @@ RPI_PORT="${RPI_PORT:-9870}"
 LISTEN_HOST="${LISTEN_HOST:-0.0.0.0}"
 TCP_PORT="${TCP_PORT:-9888}"
 WEB_HOST="${WEB_HOST:-127.0.0.1}"
-WEB_PORT="${WEB_PORT:-8765}"
+WEB_PORT="${WEB_PORT:-8877}"
 
 if [[ -z "${RPI_IP}" ]]; then
   echo "Usage: $0 <sim|nosim> <rpi_ip>"
