@@ -1,6 +1,6 @@
-# arm_control_bridge IE 独立版
+# arm_control_bridge 独立版
 
-`arm_control_bridge` 是 4 轴主臂 + 抓手通道的控制桥接模块（IE 独立版本），提供：
+`arm_control_bridge` 是 4 轴主臂 + 抓手通道的控制桥接模块（独立版本），提供：
 
 - 上层到 bridge 的 TCP/HTTP 命令入口
 - bridge 到树莓派的 UDP 二进制下发
