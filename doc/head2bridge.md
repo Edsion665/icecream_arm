@@ -78,7 +78,8 @@
 | `axes_rel_deg` | array[number] | 是 | deg | 长度 4 或 5 |
 
 语义：相对标定零位的绝对目标角。  
-兼容：长度为 5 时仅使用前 4 个元素。  
+长度为 4：更新 J1~J4；J5 保持当前值。  
+长度为 5：更新 J1~J5（第 5 个元素对应 J5）。  
 长度错误：`invalid_length: axes_rel_deg 必须长度 4 或 5`。
 
 #### `joints_delta`（别名：`delta_joints`、`axes_delta`）
@@ -88,8 +89,11 @@
 | `deltas_rel_deg` | array[number] | 是 | deg | 长度 4 或 5 |
 
 语义：在当前关节目标上做增量。  
-兼容：长度为 5 时仅使用前 4 个元素。  
+长度为 4：仅对 J1~J4 做增量；J5 保持当前值。  
+长度为 5：对 J1~J5 做增量（第 5 个元素对应 J5 增量）。  
 长度错误：`invalid_length: deltas_rel_deg 必须长度 4 或 5`。
+
+补充：在 `pose`（笛卡尔）模式下，J5 使用当前内部目标值；当收到包含 J5 的 `joints/joints_delta` 后，该值会被覆盖并持续生效，未收到新的 J5 输入时保持不变。
 
 #### `claw`（别名：`wrist`、`gripper`）
 
@@ -150,7 +154,7 @@
 ## 6. 兼容性与版本演进
 
 - 兼容旧命令别名：`set_pose`、`delta_pose`、`set_joints` 等。
-- 兼容 5 轴数组输入，但当前控制仅使用前 4 轴。
+- 兼容 5 轴数组输入；当提供第 5 轴时会写入 J5 目标。
 - `stop` 预留为后续安全态扩展点。
 
 ## 7. 最小联调示例

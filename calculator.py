@@ -31,6 +31,7 @@ from .config import (
     MAX_TARGET_RATE_RAD_S,
     POSE_VEL_MAX_M_S,
     POSE_Q5_EXTRA_DEG,
+    Q4_BLEND_TIME_S,
     Q4_GEOMETRIC_OFFSET_DEG,
     Q4_GEOMETRIC_Q23_COEFF,
     Q4_SAFE_MAX,
@@ -326,6 +327,9 @@ class CalculatorState:
     q_cmd: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     initialized: bool = False
     sing_hold: bool = False
+    q4_blend_active: bool = False
+    q4_blend_start_rad: float = 0.0
+    q4_blend_t: float = 1.0
 
     def reset_command(self) -> None:
         # 标定零点不变（q_calib）；启动姿态由 DEFAULT_INITIAL_JOINT_REL_DEG_4 给出相对标定的前四轴角。
@@ -336,6 +340,9 @@ class CalculatorState:
         self.mode = MotionMode.JOINTS
         self.initialized = True
         self.prev_pose_xyz = None
+        self.q4_blend_active = False
+        self.q4_blend_start_rad = float(self.q_cmd[3])
+        self.q4_blend_t = 1.0
 
     def sync_from_articulation_rad(self, q_joint_rad: np.ndarray, n_dof: int) -> None:
         """用仿真/实机读到的关节角（弧度）覆盖 q_full/q_cmd/joint_rel，使控制层与物理姿态一致。"""
@@ -351,6 +358,9 @@ class CalculatorState:
         self.mode = MotionMode.JOINTS
         self.initialized = True
         self.prev_pose_xyz = None
+        self.q4_blend_active = False
+        self.q4_blend_start_rad = float(self.q_cmd[3])
+        self.q4_blend_t = 1.0
 
 
 class IK_calculator:
@@ -426,12 +436,17 @@ class CalculatorEngine:
     def apply_command(self, cmd: MotionCommand4Axis, state: CalculatorState) -> None:
         p = cmd.payload
         if cmd.kind == "pose":
+            prev_mode = state.mode
             state.mode = MotionMode.POSE
             xi, yi, zi = frontend_pose_to_internal_m(float(p["x"]), float(p["y"]), float(p["z"]))
             state.pose_xyz = np.array([xi, yi, zi], dtype=float)
             # 始终从当前末端 FK 作为限速起点；若在 POSE 下再次发绝对 pose，旧逻辑 prev=None
             # 会跳过笛卡尔渐变，IK 每帧对准「很远」的目标，q3 等轴会像一步飞过去。
             state.prev_pose_xyz = self._kin.forward_kinematics_position_link4(state.q_full).copy()
+            if prev_mode != MotionMode.POSE:
+                state.q4_blend_active = True
+                state.q4_blend_start_rad = float(state.q_cmd[3])
+                state.q4_blend_t = 0.0
         elif cmd.kind == "pose_delta":
             state.mode = MotionMode.POSE
             state.pose_xyz[0] += float(p["dx"])
@@ -442,11 +457,17 @@ class CalculatorEngine:
             state.mode = MotionMode.JOINTS
             arr = p["axes_rel_deg"]
             state.joint_rel_deg_4 = np.array([float(arr[i]) for i in range(ARM_AXES)], dtype=float)
+            if len(arr) >= 5:
+                q5_abs = state.q_calib_rad[4] + np.deg2rad(float(arr[4]))
+                state.q5_fixed_rad = float(np.clip(q5_abs, JOINT_LIMITS_LOWER[4], JOINT_LIMITS_UPPER[4]))
         elif cmd.kind == "joints_delta":
             state.mode = MotionMode.JOINTS
             arr = p["deltas_rel_deg"]
             for i in range(min(len(arr), ARM_AXES)):
                 state.joint_rel_deg_4[i] += float(arr[i])
+            if len(arr) >= 5:
+                q5_next = state.q5_fixed_rad + np.deg2rad(float(arr[4]))
+                state.q5_fixed_rad = float(np.clip(q5_next, JOINT_LIMITS_LOWER[4], JOINT_LIMITS_UPPER[4]))
 
     def step(self, command: Optional[MotionCommand4Axis], state: CalculatorState, dt: float = CONTROL_DT) -> JointFrame:
         if not state.initialized:
@@ -470,10 +491,37 @@ class CalculatorEngine:
                 )
             )
             state.q_full[4] = q5_pose_tgt
+        else:
+            state.q_full[4] = float(np.clip(state.q5_fixed_rad, JOINT_LIMITS_LOWER[4], JOINT_LIMITS_UPPER[4]))
+            state.q_cmd[4] = state.q_full[4]
+
+        q4_pose_target: float | None = None
+        if state.mode == MotionMode.POSE:
+            q4_geo_target = float(
+                np.clip(
+                    Q4_OFFSET_RAD + Q4_Q23_COEFF * (state.q_full[1] + state.q_full[2]),
+                    Q4_SAFE_MIN,
+                    Q4_SAFE_MAX,
+                )
+            )
+            if state.q4_blend_active:
+                blend_time = max(float(Q4_BLEND_TIME_S), 1e-6)
+                state.q4_blend_t = min(1.0, state.q4_blend_t + dt / blend_time)
+                s = state.q4_blend_t * state.q4_blend_t * (3.0 - 2.0 * state.q4_blend_t)
+                q4_pose_target = float((1.0 - s) * state.q4_blend_start_rad + s * q4_geo_target)
+                if state.q4_blend_t >= 1.0:
+                    state.q4_blend_active = False
+            else:
+                q4_pose_target = q4_geo_target
+            state.q_full[3] = q4_pose_target
 
         # 参考 sim_code/cartesian_ik_verify.py:
         # q_error -> dq_desired -> 仅向量范数限幅 -> q_cmd 递推（与 cartesian 一致，无逐轴 clip）
+        q4_cmd_prev = float(state.q_cmd[3])
         q_err = state.q_full[:ARM_AXES] - state.q_cmd[:ARM_AXES]
+        if state.mode == MotionMode.POSE:
+            # q4 由几何目标（及切换平滑器）单独控制，不参与 q1~q3 的速度限幅分配。
+            q_err[3] = 0.0
         dq_des = q_err * APPROACH_GAIN
 
         dq_n = float(np.linalg.norm(dq_des))
@@ -482,11 +530,8 @@ class CalculatorEngine:
 
         state.q_cmd[:ARM_AXES] += dq_des * dt
         if state.mode == MotionMode.POSE:
-            state.q_cmd[3] = np.clip(
-                Q4_OFFSET_RAD + Q4_Q23_COEFF * (state.q_cmd[1] + state.q_cmd[2]),
-                Q4_SAFE_MIN,
-                Q4_SAFE_MAX,
-            )
+            if q4_pose_target is not None:
+                state.q_cmd[3] = q4_pose_target
             if q5_pose_tgt is not None:
                 state.q_cmd[4] = q5_pose_tgt
 
@@ -494,7 +539,7 @@ class CalculatorEngine:
         omega_arm = np.zeros(ARM_AXES, dtype=float)
         omega_arm[:ARM_AXES] = dq_des
         if state.mode == MotionMode.POSE:
-            omega_arm[3] = Q4_Q23_COEFF * (dq_des[1] + dq_des[2])
+            omega_arm[3] = (float(state.q_cmd[3]) - q4_cmd_prev) / max(dt, 1e-6)
 
         p_rel_deg = np.rad2deg(state.q_cmd[:ARM_AXES]) - state.q_calib_deg[:ARM_AXES]
         j5_rel = float(np.rad2deg(state.q_cmd[4]) - state.q_calib_deg[4])

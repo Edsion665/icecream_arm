@@ -62,9 +62,8 @@ class CommandNormalizer:
             arr = obj["axes_rel_deg"]
             if not isinstance(arr, (list, tuple)) or len(arr) not in (4, 5):
                 raise ValueError("invalid_length: axes_rel_deg 必须长度 4 或 5")
-            # 迁移期兼容长度 5，只使用前 4 轴
             obj2 = dict(obj)
-            obj2["axes_rel_deg"] = [float(arr[i]) for i in range(4)]
+            obj2["axes_rel_deg"] = [float(arr[i]) for i in range(len(arr))]
             return MotionCommand4Axis(kind="joints", payload=obj2)
         if k in ("joints_delta", "delta_joints", "axes_delta"):
             if "deltas_rel_deg" not in obj:
@@ -73,7 +72,7 @@ class CommandNormalizer:
             if not isinstance(arr, (list, tuple)) or len(arr) not in (4, 5):
                 raise ValueError("invalid_length: deltas_rel_deg 必须长度 4 或 5")
             obj2 = dict(obj)
-            obj2["deltas_rel_deg"] = [float(arr[i]) for i in range(4)]
+            obj2["deltas_rel_deg"] = [float(arr[i]) for i in range(len(arr))]
             return MotionCommand4Axis(kind="joints_delta", payload=obj2)
         if k in ("claw", "wrist", "gripper"):
             wrist = obj.get("wrist_deg")

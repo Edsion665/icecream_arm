@@ -36,6 +36,7 @@ Q4_GEOMETRIC_Q23_COEFF = -1.0
 # 笛卡尔下末节朝向：link4 位置 IK 与 q5 无关，在 q5_fixed 上叠加偏置可绕 joint5 翻转工具（通常改为朝 -Z）。
 # 单位：度；实机/UDP 通过 JointFrame.joint5_rel_deg 下发第 5 轴相对角。
 POSE_Q5_EXTRA_DEG = 0
+Q4_BLEND_TIME_S = 2
 
 IK_DAMPING = 1e-2
 IK_MAX_ITER = 80
