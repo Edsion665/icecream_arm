@@ -42,7 +42,7 @@ class show:
         except Exception:
             pass
 
-    def apply(self, frame: JointFrame, q5_fixed_rad: float = 0.0) -> np.ndarray:
+    def apply(self, frame: JointFrame) -> np.ndarray:
         if frame is None:
             return self._q_cmd.copy()
         # 仅覆盖受控关节，其余关节保持仿真当前值，避免被强行写零导致发散。
@@ -53,7 +53,8 @@ class show:
         q[:n] = np.deg2rad(frame.arm_rel_deg[:n] + self._q_calib_deg[:n])
         omega[:n] = frame.arm_omega_rad_s[:n]
         if self._controlled_dof >= 5:
-            q[4] = q5_fixed_rad
+            # 第5关节在仿真中直接跟随 wrist_rel_deg（相对标定角）。
+            q[4] = np.deg2rad(float(getattr(frame, "wrist_rel_deg", 0.0)) + float(self._q_calib_deg[4]))
         self._q_cmd = q.copy()
         try:
             from isaacsim.core.utils.types import ArticulationAction

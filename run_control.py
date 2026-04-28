@@ -64,13 +64,28 @@ def run_loop(
     import numpy as np
     from arm_control_bridge.calculator import CalculatorEngine, CalculatorState, URDFKinematics
 
-    from .PiController import RPiUDPStreamer, RpiProtocolAdapter, motor, servoMotor
+    from .PiController import RPiUDPStreamer, RpiProtocolAdapter, motor
     from .config import CONTROL_DT, CONTROL_HZ, load_calibration_deg
     from .listener import ClawCommand, MotionCommand4Axis, claw_listener, network_listener, start_http_server
 
     def log(msg: str) -> None:
         if log_print:
             print(msg, flush=True)
+
+    def _log_udp_frame_preview(frame) -> None:
+        p6 = np.zeros(6, dtype=float)
+        w6 = np.zeros(6, dtype=float)
+        p6[:4] = frame.arm_rel_deg[:4]
+        w6[:4] = frame.arm_omega_rad_s[:4]
+        p6[4] = float(getattr(frame, "wrist_rel_deg", 0.0))
+        w6[4] = float(getattr(frame, "wrist_omega_rad_s", 0.0))
+        p6[5] = float(getattr(frame, "grip_state", 0.0))
+        w6[5] = 0.0
+        log(
+            "[runner][UDP] 即将发送一帧: "
+            + f"p_rel_deg={np.array2string(p6, precision=3)} "
+            + f"omega_rad_s={np.array2string(w6, precision=3)}"
+        )
 
     q_calib_deg = np.array(load_calibration_deg(calib_file or ""), dtype=float)
     q_calib_rad = np.deg2rad(q_calib_deg)
@@ -86,6 +101,13 @@ def run_loop(
     state.reset_command()
     state.pose_xyz = kin.forward_kinematics_position_link4(state.q_full).copy()
     engine = CalculatorEngine(kin)
+    log(
+        "[runner] NOSIM 启动：无关节反馈回读，内部初始目标仅由 reset_command() 给定。"
+    )
+    log(
+        "[runner] 初始目标关节 (deg): "
+        + f"{np.array2string(np.rad2deg(state.q_cmd[:4]), precision=2)}"
+    )
 
     cmd_q: "queue.Queue[Optional[MotionCommand4Axis | ClawCommand]]" = queue.Queue()
     claw_q: "queue.Queue[Optional[ClawCommand]]" = queue.Queue()
@@ -98,13 +120,11 @@ def run_loop(
         start_http_server(cmd_q, host=web_host, port=web_port, web_dir=_web_dir, on_log=log)
 
     arm_motor: Optional[motor] = None
-    claw_motor: Optional[servoMotor] = None
     adapter: Optional[RpiProtocolAdapter] = None
     if rpi_ip:
         streamer = RPiUDPStreamer(rpi_ip, rpi_port, fmt="v2" if udp_format == "v2" else "v1")
         adapter = RpiProtocolAdapter(streamer)
         arm_motor = motor(adapter)
-        claw_motor = servoMotor(adapter)
 
     log(
         f"[runner] 控制频率 {CONTROL_HZ} Hz | URDF: {getattr(kin, '_source', '?')} | "
@@ -112,6 +132,7 @@ def run_loop(
     )
 
     try:
+        dump_next_udp_frame = False
         next_t = time.monotonic()
         while True:
             while True:
@@ -130,7 +151,9 @@ def run_loop(
                 if c.kind == "stop":
                     log("[runner] estop（当前仅记录，可扩展为保持当前角）")
                     continue
+                log(f"[runner] recv {c.kind}: {c.payload}")
                 engine.apply_command(c, state)
+                dump_next_udp_frame = True
 
             while True:
                 try:
@@ -140,20 +163,18 @@ def run_loop(
                 if cc is None:
                     continue
                 payload = cc.payload
-                if "servo_deg" in payload and isinstance(payload["servo_deg"], (list, tuple)):
-                    sd = payload["servo_deg"]
-                    if len(sd) >= 2:
-                        state.servo_deg = np.array([float(sd[0]), float(sd[1])], dtype=float)
-                else:
-                    wrist = float(payload.get("wrist_deg", state.servo_deg[0]))
-                    grip = float(payload.get("grip", state.servo_deg[1]))
-                    state.servo_deg = np.array([wrist, grip], dtype=float)
+                state.wrist_rel_deg = float(payload.get("wrist_deg", state.wrist_rel_deg))
+                state.grip_state = 1.0 if float(payload.get("grip_state", state.grip_state)) >= 0.5 else 0.0
+                state.servo_deg = np.array([state.wrist_rel_deg, state.grip_state], dtype=float)
+                log(f"[runner] recv claw: wrist={state.wrist_rel_deg:.3f}, grip_state={state.grip_state:.0f}")
+                dump_next_udp_frame = True
 
             frame = engine.step(None, state, dt=CONTROL_DT)
+            if dump_next_udp_frame:
+                _log_udp_frame_preview(frame)
+                dump_next_udp_frame = False
             if arm_motor is not None:
                 arm_motor.send(frame)
-            if claw_motor is not None:
-                claw_motor.send(state.servo_deg)
 
             next_t += CONTROL_DT
             sleep_t = next_t - time.monotonic()
@@ -210,6 +231,21 @@ def run_sim_loop(
     def log(msg: str) -> None:
         if log_print:
             print(msg, flush=True)
+
+    def _log_udp_frame_preview(frame) -> None:
+        p6 = np.zeros(6, dtype=float)
+        w6 = np.zeros(6, dtype=float)
+        p6[:4] = frame.arm_rel_deg[:4]
+        w6[:4] = frame.arm_omega_rad_s[:4]
+        p6[4] = float(getattr(frame, "wrist_rel_deg", 0.0))
+        w6[4] = float(getattr(frame, "wrist_omega_rad_s", 0.0))
+        p6[5] = float(getattr(frame, "grip_state", 0.0))
+        w6[5] = 0.0
+        log(
+            "[sim][UDP] 即将发送一帧: "
+            + f"p_rel_deg={np.array2string(p6, precision=3)} "
+            + f"omega_rad_s={np.array2string(w6, precision=3)}"
+        )
 
     q_calib_deg = np.array(load_calibration_deg(calib_file or ""), dtype=float)
     q_calib_rad = np.deg2rad(q_calib_deg)
@@ -385,6 +421,7 @@ def run_sim_loop(
             log(f"[sim] set_gains 跳过: {ex}")
 
     frame_rx = receiver()
+    dump_next_udp_frame = False
 
     ik_dt = 1.0 / ik_follow_hz
     while simulation_app.is_running():
@@ -398,11 +435,14 @@ def run_sim_loop(
             if isinstance(c, ClawCommand):
                 log(f"[sim] recv claw: {c.payload}")
                 payload = c.payload
-                if "servo_deg" in payload and isinstance(payload["servo_deg"], (list, tuple)) and len(payload["servo_deg"]) >= 2:
-                    state.servo_deg = np.array([float(payload["servo_deg"][0]), float(payload["servo_deg"][1])], dtype=float)
+                state.wrist_rel_deg = float(payload.get("wrist_deg", state.wrist_rel_deg))
+                state.grip_state = 1.0 if float(payload.get("grip_state", state.grip_state)) >= 0.5 else 0.0
+                state.servo_deg = np.array([state.wrist_rel_deg, state.grip_state], dtype=float)
+                dump_next_udp_frame = True
                 continue
             log(f"[sim] recv {c.kind}: {c.payload}")
             engine.apply_command(c, state)
+            dump_next_udp_frame = True
             if c.kind in ("pose", "pose_delta"):
                 log(
                     "[sim][frame] pose target interpreted as link0/local = "
@@ -438,8 +478,11 @@ def run_sim_loop(
                         )
 
         frame = engine.step(None, state, dt=ik_dt)
+        if dump_next_udp_frame:
+            _log_udp_frame_preview(frame)
+            dump_next_udp_frame = False
         frame_rx.accept(frame)
-        viewer.apply(frame_rx.latest(), q5_fixed_rad=float(state.q_cmd[4]))
+        viewer.apply(frame_rx.latest())
         if arm_motor is not None:
             arm_motor.send(frame)
 

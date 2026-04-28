@@ -307,6 +307,9 @@ class JointFrame:
     arm_rel_deg: np.ndarray
     arm_omega_rad_s: np.ndarray
     servo_deg: np.ndarray
+    wrist_rel_deg: float
+    wrist_omega_rad_s: float
+    grip_state: float
     mode: str
     timestamp: float
     # 第 5 轴相对标定角（度）；笛卡尔下含 POSE_Q5_EXTRA_DEG，供仿真/UDP 与 q_cmd[4] 一致
@@ -323,6 +326,8 @@ class CalculatorState:
     prev_pose_xyz: Optional[np.ndarray] = None
     joint_rel_deg_4: np.ndarray = field(default_factory=lambda: np.zeros(ARM_AXES, dtype=float))
     servo_deg: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
+    wrist_rel_deg: float = 0.0
+    grip_state: float = 0.0
     q_full: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     q_cmd: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     initialized: bool = False
@@ -457,17 +462,11 @@ class CalculatorEngine:
             state.mode = MotionMode.JOINTS
             arr = p["axes_rel_deg"]
             state.joint_rel_deg_4 = np.array([float(arr[i]) for i in range(ARM_AXES)], dtype=float)
-            if len(arr) >= 5:
-                q5_abs = state.q_calib_rad[4] + np.deg2rad(float(arr[4]))
-                state.q5_fixed_rad = float(np.clip(q5_abs, JOINT_LIMITS_LOWER[4], JOINT_LIMITS_UPPER[4]))
         elif cmd.kind == "joints_delta":
             state.mode = MotionMode.JOINTS
             arr = p["deltas_rel_deg"]
             for i in range(min(len(arr), ARM_AXES)):
                 state.joint_rel_deg_4[i] += float(arr[i])
-            if len(arr) >= 5:
-                q5_next = state.q5_fixed_rad + np.deg2rad(float(arr[4]))
-                state.q5_fixed_rad = float(np.clip(q5_next, JOINT_LIMITS_LOWER[4], JOINT_LIMITS_UPPER[4]))
 
     def step(self, command: Optional[MotionCommand4Axis], state: CalculatorState, dt: float = CONTROL_DT) -> JointFrame:
         if not state.initialized:
@@ -547,6 +546,9 @@ class CalculatorEngine:
             arm_rel_deg=p_rel_deg.copy(),
             arm_omega_rad_s=omega_arm.copy(),
             servo_deg=state.servo_deg.copy(),
+            wrist_rel_deg=float(state.wrist_rel_deg),
+            wrist_omega_rad_s=0.0,
+            grip_state=float(state.grip_state),
             mode=state.mode.value,
             timestamp=time.monotonic(),
             joint5_rel_deg=j5_rel,

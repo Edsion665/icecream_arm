@@ -1,22 +1,22 @@
-# head2bridge API 规范（arm_control_bridge ie v1）
+# head2bridge API 规范（上位机 -> arm_control_bridge，v2.1）
 
 - 文档状态：stable
 - 适用模块：`arm_control_bridge/listener.py`、`arm_control_bridge/calculator.py`
-- 对端：上层应用（UI/策略/脚本）-> `arm_control_bridge`
-- 相关文档：`doc/bridge2pi.md`
+- 对端：上位机（UI/策略/脚本）-> `arm_control_bridge`
+- 相关文档：`docs/bridge2pi.md`
 
 ## 1. 范围（Scope）
 
-本文档定义上层到 `arm_control_bridge` 控制桥的输入接口，包括：
+本文档定义上位机到 bridge 的输入接口，包括：
 
 - TCP JSON 行协议
 - HTTP JSON API
-- 命令字段、错误语义、兼容规则
+- 6 维控制语义（4 电机 + 手腕 + 夹爪状态）
 
 不包含：
 
-- bridge 到树莓派 UDP 二进制帧（见 `doc/bridge2pi.md`）
-- Pi 端电机控制内部实现细节
+- bridge 到 Pi 的二进制 UDP 帧细节（见 `docs/bridge2pi.md`）
+- Pi 到 STM32 串口协议（见 `docs/pi2stm.md`）
 
 ## 2. 传输与端点
 
@@ -24,18 +24,31 @@
 
 - 默认监听：`0.0.0.0:9888`
 - 编码：UTF-8
-- 边界：每条命令一行 JSON（`\n` 分隔）
+- 每行一条 JSON（`\n` 分隔）
 
 ### 2.2 HTTP（JSON）
 
 - 默认服务：`127.0.0.1:8765`
 - 仅在 `--web-port > 0` 时启用
 - `Content-Type: application/json`
-- CORS：`Access-Control-Allow-Origin: *`
 
-## 3. 数据结构
+## 3. 接口总览（必须提供的三类接口）
 
-### 3.1 通用请求体
+本协议对上位机明确三类控制接口：
+
+1. **关节信息接口（4电机）**
+   - 目标：直接控制 4 个电机（J1~J4）的角度。
+   - 命令：`joints` / `joints_delta`
+2. **舵机信息接口（手腕 + 夹爪）**
+   - 目标：控制手腕角度与夹爪开合状态（0/1）。
+   - 命令：`claw`
+3. **位置控制接口（笛卡尔）**
+   - 目标：控制 4 电机到指定末端位置（即笛卡尔模式）。
+   - 命令：`pose` / `pose_delta`
+
+## 4. 命令结构
+
+### 4.1 通用请求体
 
 | 字段 | 类型 | 必选 | 说明 |
 |---|---|---:|---|
@@ -44,79 +57,90 @@
 
 约束：
 
-- 命令名大小写不敏感，内部统一转小写。
-- `cmd/type` 都缺失时报错：`missing_field: 缺少字段 cmd 或 type`。
+- 命令名大小写不敏感。
+- `cmd/type` 都缺失：`missing_field: 缺少字段 cmd 或 type`。
 
-### 3.2 命令定义
+### 4.2 关节信息接口（4电机）：`joints`
 
-#### `pose`（别名：`set_pose`、`xyz`）
-
-| 字段 | 类型 | 必选 | 单位 | 约束 |
-|---|---|---:|---|---|
-| `x` | number | 是 | m | 任意实数 |
-| `y` | number | 是 | m | 任意实数 |
-| `z` | number | 是 | m | 任意实数 |
-
-语义：基座系下 `link4` 原点绝对目标。  
-缺字段错误：`missing_field: pose 缺少 x|y|z`。
-
-#### `pose_delta`（别名：`delta_pose`、`nudge`）
+别名：`joint`、`axes`、`set_joints`
 
 | 字段 | 类型 | 必选 | 单位 | 约束 |
 |---|---|---:|---|---|
-| `dx` | number | 是 | m | 任意实数 |
-| `dy` | number | 是 | m | 任意实数 |
-| `dz` | number | 是 | m | 任意实数 |
+| `axes_rel_deg` | array[number] | 是 | deg | 长度必须为 4 |
 
-语义：在当前 `pose_xyz` 基础上做增量。  
-缺字段错误：`missing_field: pose_delta 需要 dx,dy,dz`。
+语义：直接更新 J1~J4 的相对标定角（绝对目标）。
 
-#### `joints`（别名：`joint`、`axes`、`set_joints`）
+错误：
 
-| 字段 | 类型 | 必选 | 单位 | 约束 |
-|---|---|---:|---|---|
-| `axes_rel_deg` | array[number] | 是 | deg | 长度 4 或 5 |
+- 长度非法：`invalid_length: axes_rel_deg 必须长度 4`。
 
-语义：相对标定零位的绝对目标角。  
-长度为 4：更新 J1~J4；J5 保持当前值。  
-长度为 5：更新 J1~J5（第 5 个元素对应 J5）。  
-长度错误：`invalid_length: axes_rel_deg 必须长度 4 或 5`。
+### 4.3 关节增量接口（4电机）：`joints_delta`
 
-#### `joints_delta`（别名：`delta_joints`、`axes_delta`）
+别名：`delta_joints`、`axes_delta`
 
 | 字段 | 类型 | 必选 | 单位 | 约束 |
 |---|---|---:|---|---|
-| `deltas_rel_deg` | array[number] | 是 | deg | 长度 4 或 5 |
+| `deltas_rel_deg` | array[number] | 是 | deg | 长度必须为 4 |
 
-语义：在当前关节目标上做增量。  
-长度为 4：仅对 J1~J4 做增量；J5 保持当前值。  
-长度为 5：对 J1~J5 做增量（第 5 个元素对应 J5 增量）。  
-长度错误：`invalid_length: deltas_rel_deg 必须长度 4 或 5`。
+语义：仅对 J1~J4 做增量控制。
 
-补充：在 `pose`（笛卡尔）模式下，J5 使用当前内部目标值；当收到包含 J5 的 `joints/joints_delta` 后，该值会被覆盖并持续生效，未收到新的 J5 输入时保持不变。
+错误：
 
-#### `claw`（别名：`wrist`、`gripper`）
+- 长度非法：`invalid_length: deltas_rel_deg 必须长度 4`。
 
-可选输入组合（满足其一即可）：
+### 4.4 舵机信息接口：`claw`
 
-1. `wrist_deg` + `grip`
-2. `servo_deg=[wrist_deg, grip]`（长度 >= 2）
+别名：`wrist`、`gripper`
 
-缺字段错误：`missing_field: claw 需要 wrist_deg/grip/servo_deg`。
+输入要求（必须同时提供）：
 
-#### 其他命令
+1. `wrist_deg`（手腕角度，单位度）
+2. 夹爪状态（`grip_state` 或 `open_close`），最终归一到 `0/1`
 
-- `stop`（别名：`estop`、`halt`）：当前实现仅记录，不执行硬停。
+映射到 bridge->pi 帧：
+
+- `wrist_deg -> p_rel_deg[4]`（仅角度）
+- `grip_state/open_close -> p_rel_deg[5]`（仅状态：`0=open, 1=close`）
+
+约束：
+
+- 缺字段：`missing_field: claw 需要 wrist_deg + (grip_state/open_close)`。
+
+### 4.5 位置控制接口（笛卡尔）：`pose` / `pose_delta`
+
+`pose`（别名：`set_pose`、`xyz`）
+
+| 字段 | 类型 | 必选 | 单位 |
+|---|---|---:|---|
+| `x` | number | 是 | m |
+| `y` | number | 是 | m |
+| `z` | number | 是 | m |
+
+语义：控制 4 电机进入笛卡尔模式，驱动末端（link4）到指定位置。
+
+`pose_delta`（别名：`delta_pose`、`nudge`）
+
+| 字段 | 类型 | 必选 | 单位 |
+|---|---|---:|---|
+| `dx` | number | 是 | m |
+| `dy` | number | 是 | m |
+| `dz` | number | 是 | m |
+
+语义：在当前笛卡尔目标上做增量。
+
+### 4.6 其他命令
+
+- `stop`（别名 `estop/halt`）：当前仅记录，不执行硬停。
 - `ping`：连通性检查。
 
-## 4. 请求与响应
+## 5. 请求与响应
 
-### 4.1 TCP
+### 5.1 TCP
 
 - 输入：每行一条 JSON。
 - 输出：无协议级响应（仅日志）。
 
-### 4.2 HTTP
+### 5.2 HTTP
 
 路由映射：
 
@@ -126,58 +150,47 @@
 - `POST /api/joints_delta` -> `cmd=joints_delta`
 - `POST /api/claw` -> `cmd=claw`
 
-成功响应：
+成功：
 
 ```json
 {"ok": true}
 ```
 
-失败响应：
+失败：
 
 ```json
 {"ok": false, "error": "错误描述"}
 ```
 
-## 5. 错误模型
+## 6. 错误模型
 
 | 场景 | HTTP | 错误字符串示例 |
 |---|---:|---|
 | JSON 解析失败 | 400 | `invalid json` |
 | 缺少 `cmd/type` | 400 | `missing_field: 缺少字段 cmd 或 type` |
-| 参数缺失 | 400 | `missing_field: pose_delta 需要 dx,dy,dz` |
-| 数组长度非法 | 400 | `invalid_length: axes_rel_deg 必须长度 4 或 5` |
+| 数组长度非法 | 400 | `invalid_length: axes_rel_deg 必须长度 4` |
+| 第 6 维非法 | 400 | `invalid_value: grip_state 必须为 0/1` |
 | 未知命令 | 400 | `unknown_cmd: xxx` |
-| 路由不存在 | 404 | `{"ok": false}` |
 
-说明：TCP 路径中的错误会记录日志并忽略当前命令，不中断服务。
-
-## 6. 兼容性与版本演进
-
-- 兼容旧命令别名：`set_pose`、`delta_pose`、`set_joints` 等。
-- 兼容 5 轴数组输入；当提供第 5 轴时会写入 J5 目标。
-- `stop` 预留为后续安全态扩展点。
+说明：TCP 路径中的错误会记录并忽略当前命令，不中断服务。
 
 ## 7. 最小联调示例
 
-### 7.1 TCP 示例
-
 ```json
-{"cmd":"pose","x":0.35,"y":0.20,"z":0.25}
 {"cmd":"joints","axes_rel_deg":[0,10,-90,-70]}
-{"cmd":"claw","wrist_deg":20,"grip":0.7}
+{"cmd":"joints_delta","deltas_rel_deg":[0,0,2,-1]}
+{"cmd":"claw","wrist_deg":20,"open_close":"close"}
+{"cmd":"pose","x":0.35,"y":0.20,"z":0.25}
 ```
 
-### 7.2 HTTP 示例
+## 8. 迁移说明（旧版 -> 新版）
 
-```bash
-curl -X POST "http://127.0.0.1:8765/api/joints" \
-  -H "Content-Type: application/json" \
-  -d '{"axes_rel_deg":[0,10,-90,-70]}'
-```
+- 旧版仅明确到 4/5 维。
+- 新版统一到 6 维语义，新增第 6 维 `grip_state`。
+- 若上位机仍发送旧版 4/5 维，bridge 应按兼容规则工作（未提供的维度保持上次值）。
 
-## 8. 交叉引用
+## 9. 交叉引用
 
-- 下游协议：`doc/bridge2pi.md`
-- 关键代码：
-  - `arm_control_bridge/listener.py`
-  - `arm_control_bridge/calculator.py`
+- 下游协议：`docs/bridge2pi.md`
+- 相机链路协议：`docs/pi2camera.md`
+- 串口链路协议：`docs/pi2stm.md`

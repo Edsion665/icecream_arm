@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>arm_control_bridge — 5轴主臂 + claw</title>
+  <title>arm_control_bridge — 三类接口测试页</title>
   <style>
     :root { font-family: system-ui, "Segoe UI", sans-serif; background: #1a1d23; color: #e8eaed; }
     body { max-width: 560px; margin: 1.5rem auto; padding: 0 1rem; }
@@ -12,7 +12,7 @@
     p.hint { font-size: 0.8rem; color: #9aa0a6; line-height: 1.45; margin: 0.35rem 0 0.75rem; }
     label { display: block; font-size: 0.75rem; color: #bdc1c6; margin-top: 0.5rem; }
     input[type="number"], input[type="text"] { width: 100%; box-sizing: border-box; padding: 0.4rem 0.45rem; border-radius: 6px; border: 1px solid #444; background: #2d3139; color: #e8eaed; margin-top: 0.2rem; }
-    .row5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.45rem; }
+    .row4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.45rem; }
     .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem; }
     button { margin-top: 0.75rem; padding: 0.5rem 0.85rem; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; background: #1a73e8; color: #fff; width: 100%; }
     button.secondary { background: #3c4043; }
@@ -23,26 +23,25 @@
 </head>
 <body>
   <h1>arm_control_bridge 测试页</h1>
-  <p class="hint">主臂为 5 轴：关节模式可指定 J1~J5。仅「笛卡尔 pose」时内部 IK 约束 q4=120°−(q2+q3)，J5 采用当前目标值。</p>
+  <p class="hint">三类接口：关节控制（J1~J4）、舵机控制（wrist+open_close）、位置控制（笛卡尔）。</p>
   <label>API 基址</label>
   <input type="text" id="base" value="" />
   <section class="card">
     <h2>① 绝对关节目标（相对标定零位，度）</h2>
-    <p class="hint">相对标定零位的绝对目标角（度），支持 J1~J5。</p>
-    <div class="row5">
+    <p class="hint">关节信息接口：仅接收 J1~J4（度），直接控制 4 个电机。</p>
+    <div class="row4">
       <div><label>J1°</label><input type="number" id="j1" step="5" value="0" /></div>
       <div><label>J2°</label><input type="number" id="j2" step="5" value="10" /></div>
       <div><label>J3°</label><input type="number" id="j3" step="5" value="-90" /></div>
       <div><label>J4°</label><input type="number" id="j4" step="5" value="-30" /></div>
-      <div><label>J5°</label><input type="number" id="j5" step="5" value="0" /></div>
     </div>
     <button type="button" id="btnJoints">POST /api/joints</button>
   </section>
   <section class="card">
-    <h2>② claw（仅实机）</h2>
+    <h2>② 舵机信息接口（仅实机）</h2>
     <div class="row3">
       <div><label>wrist_deg</label><input type="number" id="wrist" step="1" value="0" /></div>
-      <div><label>grip(0~1)</label><input type="number" id="grip" step="0.1" value="0" /></div>
+      <div><label>open_close</label><input type="text" id="claw" value="1" /></div>
       <div></div>
     </div>
     <button type="button" id="btnClaw" class="secondary">POST /api/claw</button>
@@ -51,9 +50,9 @@
     <h2>③ 笛卡尔目标（link4 原点，米）</h2>
     <p class="hint">此处 x,y,z（米）为基座系 link4 目标，无额外偏置。</p>
     <div class="row3">
-      <div><label>X</label><input type="number" id="x" step="0.01" value="0.35" /></div>
-      <div><label>Y</label><input type="number" id="y" step="0.01" value="0.20" /></div>
-      <div><label>Z</label><input type="number" id="z" step="0.01" value="0.25" /></div>
+      <div><label>X</label><input type="number" id="x" step="0.01" value="0.45" /></div>
+      <div><label>Y</label><input type="number" id="y" step="0.01" value="0" /></div>
+      <div><label>Z</label><input type="number" id="z" step="0.01" value="0.45" /></div>
     </div>
     <button type="button" id="sendAbs" class="warn">POST /api/pose</button>
   </section>
@@ -74,12 +73,12 @@
       return j;
     }
     document.getElementById("btnJoints").onclick = async () => {
-      const axes_rel_deg = [+j1.value, +j2.value, +j3.value, +j4.value, +j5.value];
+      const axes_rel_deg = [+j1.value, +j2.value, +j3.value, +j4.value];
       try { await post("/api/joints", { axes_rel_deg }); log("joints ok " + JSON.stringify(axes_rel_deg)); } catch (e) { log(String(e), true); }
     };
     document.getElementById("btnClaw").onclick = async () => {
-      const wrist_deg = +wrist.value; const grip = +grip.value;
-      try { await post("/api/claw", { wrist_deg, grip }); log("claw ok " + JSON.stringify({ wrist_deg, grip })); } catch (e) { log(String(e), true); }
+      const wrist_deg = +wrist.value; const open_close = String(openclose.value || "open");
+      try { await post("/api/claw", { wrist_deg, open_close }); log("claw ok " + JSON.stringify({ wrist_deg, open_close })); } catch (e) { log(String(e), true); }
     };
     document.getElementById("sendAbs").onclick = async () => {
       const body = { x: +x.value, y: +y.value, z: +z.value };

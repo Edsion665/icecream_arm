@@ -7,17 +7,12 @@ set -euo pipefail
 #   ./start_pc_control.sh nosim 192.168.1.100
 
 MODE="${1:-sim}"          # sim | nosim
-RPI_IP="${2:-}"           # 必填：树莓派 IP
+RPI_IP="${2:-192.168.31.211}"           # 默认 head 地址，可被参数覆盖
 RPI_PORT="${RPI_PORT:-9870}"
 LISTEN_HOST="${LISTEN_HOST:-0.0.0.0}"
 TCP_PORT="${TCP_PORT:-9888}"
-WEB_HOST="${WEB_HOST:-127.0.0.1}"
+WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-8877}"
-
-if [[ -z "${RPI_IP}" ]]; then
-  echo "Usage: $0 <sim|nosim> <rpi_ip>"
-  exit 1
-fi
 
 cd "$(dirname "$0")/.."
 

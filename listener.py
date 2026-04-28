@@ -43,6 +43,21 @@ class CommandNormalizer:
             raise ValueError("missing_field: 缺少字段 cmd 或 type")
         return str(cmd).lower()
 
+    @staticmethod
+    def _normalize_grip_state(v: Any) -> float:
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("open", "0", "false"):
+                return 0.0
+            if s in ("close", "closed", "1", "true"):
+                return 1.0
+            raise ValueError("invalid_value: grip_state 必须为 0/1")
+        try:
+            x = float(v)
+        except (TypeError, ValueError) as ex:
+            raise ValueError("invalid_value: grip_state 必须为 0/1") from ex
+        return 1.0 if x >= 0.5 else 0.0
+
     @classmethod
     def normalize_obj(cls, obj: dict[str, Any]) -> NormalizedCommand:
         k = cls._command_from_obj(obj)
@@ -60,33 +75,30 @@ class CommandNormalizer:
             if "axes_rel_deg" not in obj:
                 raise ValueError("missing_field: joints 需要 axes_rel_deg")
             arr = obj["axes_rel_deg"]
-            if not isinstance(arr, (list, tuple)) or len(arr) not in (4, 5):
-                raise ValueError("invalid_length: axes_rel_deg 必须长度 4 或 5")
+            if not isinstance(arr, (list, tuple)) or len(arr) != 4:
+                raise ValueError("invalid_length: axes_rel_deg 必须长度 4")
             obj2 = dict(obj)
-            obj2["axes_rel_deg"] = [float(arr[i]) for i in range(len(arr))]
+            obj2["axes_rel_deg"] = [float(arr[i]) for i in range(4)]
             return MotionCommand4Axis(kind="joints", payload=obj2)
         if k in ("joints_delta", "delta_joints", "axes_delta"):
             if "deltas_rel_deg" not in obj:
                 raise ValueError("missing_field: joints_delta 需要 deltas_rel_deg")
             arr = obj["deltas_rel_deg"]
-            if not isinstance(arr, (list, tuple)) or len(arr) not in (4, 5):
-                raise ValueError("invalid_length: deltas_rel_deg 必须长度 4 或 5")
+            if not isinstance(arr, (list, tuple)) or len(arr) != 4:
+                raise ValueError("invalid_length: deltas_rel_deg 必须长度 4")
             obj2 = dict(obj)
-            obj2["deltas_rel_deg"] = [float(arr[i]) for i in range(len(arr))]
+            obj2["deltas_rel_deg"] = [float(arr[i]) for i in range(4)]
             return MotionCommand4Axis(kind="joints_delta", payload=obj2)
         if k in ("claw", "wrist", "gripper"):
             wrist = obj.get("wrist_deg")
-            grip = obj.get("grip")
-            servo = obj.get("servo_deg")
-            if wrist is None and grip is None and not isinstance(servo, (list, tuple)):
-                raise ValueError("missing_field: claw 需要 wrist_deg/grip/servo_deg")
+            grip_state = obj.get("grip_state")
+            open_close = obj.get("open_close")
+            if wrist is None or (grip_state is None and open_close is None):
+                raise ValueError("missing_field: claw 需要 wrist_deg + (grip_state/open_close)")
             payload = dict(obj)
-            if isinstance(servo, (list, tuple)) and len(servo) >= 2:
-                payload["servo_deg"] = [float(servo[0]), float(servo[1])]
-            if wrist is not None:
-                payload["wrist_deg"] = float(wrist)
-            if grip is not None:
-                payload["grip"] = float(grip)
+            payload["wrist_deg"] = float(wrist)
+            grip_src = grip_state if grip_state is not None else open_close
+            payload["grip_state"] = cls._normalize_grip_state(grip_src)
             return ClawCommand(kind="claw", payload=payload)
         if k in ("stop", "estop", "halt"):
             return MotionCommand4Axis(kind="stop", payload=obj)
@@ -318,6 +330,7 @@ def start_http_server(
             except ValueError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
                 return
+            on_log(f"[HTTP] recv {routes[path]}: {obj}")
             self._send_json(200, {"ok": True})
 
     def _run() -> None:

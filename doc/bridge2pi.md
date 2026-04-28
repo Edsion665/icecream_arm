@@ -1,69 +1,80 @@
-# bridge2pi API 规范（arm_control_bridge ie v1）
+# bridge2pi API 规范（arm_control_bridge -> icecreamPi，v2.1）
 
 - 文档状态：stable
-- 适用模块：`arm_control_bridge/PiController.py`
+- 适用模块：`arm_control_bridge/PiController.py`、`icecreamPi/listener.py`
 - 对端：`arm_control_bridge` -> 树莓派（UDP）
-- 相关文档：`doc/head2bridge.md`
+- 相关文档：`docs/head2bridge.md`、`docs/pi2camera.md`
 
 ## 1. 范围（Scope）
 
-本文档定义 control bridge 到 Pi 的 UDP 下发协议，包括：
+本文档定义 bridge 到 Pi 的 UDP 下发协议，包括：
 
 - UDP 传输参数
-- 二进制帧结构
-- 字段语义与映射
-- 兼容与演进规则
+- 二进制帧结构（6 维语义）
+- 字段装载与控制映射
+- 兼容迁移说明（5 维 -> 6 维）
 
 不包含：
 
 - Pi 端控制律内部实现
-- 上层到 bridge 的命令语义（见 `doc/head2bridge.md`）
+- Pi 到 STM32 的串口帧（见 `docs/pi2stm.md`）
 
 ## 2. 传输与端点
 
 - 协议：UDP（单向，无 ACK）
 - 目标端口：默认 `9870`（可由 `--rpi-port` 修改）
+- 发包频率：默认 `25Hz`
 - 发包端：`RPiUDPStreamer`
-- 发包频率：跟随控制循环（默认约 25Hz）
-
-说明：`--udp-format v1|v2` 当前都发送同一 V2 固定帧。
 
 ## 3. 数据结构
 
-### 3.1 固定帧格式
+### 3.1 固定帧格式（V2.1，6 维）
 
-- Python `struct`：`=Idddddddddd`
-- 总长度：`92` 字节
+- Python `struct`：`=Id` + `d*12`
+- 展开后：`=Idddddddddddd`
+- 总长度：`108` 字节
 
-| 顺序 | 字段 | 类型 | 单位 | 约束 | 说明 |
-|---:|---|---|---|---|---|
-| 1 | `seq` | `uint32` | - | 每帧自增 | 帧序号 |
-| 2 | `ts` | `float64` | s | `time.monotonic()` | 发送时间 |
-| 3~7 | `p_rel_deg[5]` | `float64[5]` | deg | 固定 5 维 | 相对标定角 |
-| 8~12 | `omega_rad_s[5]` | `float64[5]` | rad/s | 固定 5 维 | 关节角速度 |
+字节布局（小端，`=` 无对齐填充）：
 
-### 3.2 字段装载规则（当前实现）
+| 字节范围 | 字段 | 类型 | 说明 |
+|---|---|---|---|
+| `0..3` | `seq` | `uint32` | 帧序号 |
+| `4..11` | `ts` | `float64` | 发送时间戳（秒） |
+| `12..59` | `p_rel_deg[0..5]` | `float64[6]` | 6 维位置语义 |
+| `60..107` | `omega_rad_s[0..5]` | `float64[6]` | 6 维速度语义 |
+
+| 顺序 | 字段 | 类型 | 单位 | 说明 |
+|---:|---|---|---|---|
+| 1 | `seq` | `uint32` | - | 帧序号，每帧自增 |
+| 2 | `ts` | `float64` | s | 发送时间戳 |
+| 3~8 | `p_rel_deg[6]` | `float64[6]` | deg | 6 维目标角语义 |
+| 9~14 | `omega_rad_s[6]` | `float64[6]` | rad/s | 6 维角速度语义 |
+
+### 3.2 6 维语义定义
+
+- `0..3`：4 电机关节（J1~J4）
+- `4`：手腕舵机关节角（`wrist_deg`）
+- `5`：夹爪状态（`grip_state`，推荐 `0=open, 1=close`）
+
+### 3.3 字段装载规则
 
 - `p_rel_deg[0:4] <- JointFrame.arm_rel_deg[0:4]`
 - `omega_rad_s[0:4] <- JointFrame.arm_omega_rad_s[0:4]`
-- `p_rel_deg[4] <- JointFrame.joint5_rel_deg`
-- `omega_rad_s[4]` 当前通常为 `0.0`（预留）
+- `p_rel_deg[4] <- wrist_deg`（手腕舵机角度）
+- `omega_rad_s[4] <- 0.0`（手腕当前不发送角速度，固定保留 0）
+- `p_rel_deg[5] <- grip_state`（夹爪离散状态：`0=open, 1=close`）
+- `omega_rad_s[5] <- 0.0`（夹爪无角速度语义，固定保留 0）
 
-## 4. 发送与接收语义
+即：
+- **4 个电机**：发送位置 + 角速度；
+- **手腕舵机**：只发送角度（速度位填 `0.0`）；
+- **夹爪舵机**：只发送 `0/1` 状态（速度位填 `0.0`）。
 
-### 4.1 发送语义
+## 4. 接收与控制语义（Pi 侧）
 
-`RpiProtocolAdapter.send_frame(frame)` 会将 `JointFrame` 适配为 5 轴数组后发包。
+### 4.1 四电机映射
 
-抓手字段说明：
-
-- `frame.servo_deg` 只在适配器内部缓存为 `_last_servo`。
-- 当前 V2 帧不含 `servo_deg` 字段。
-- `servoMotor.send()` 仅刷新缓存，不改变 UDP 帧结构。
-
-### 4.2 接收侧约定（兼容历史）
-
-若 Pi 端沿用历史映射，前 4 轴可按如下符号关系转电机角：
+前 4 轴映射保持不变：
 
 - motor1 = `calibration[0] + (-1) * rad(p_rel_deg[0])`
 - motor2 = `calibration[1] + (+1) * rad(p_rel_deg[1])`
@@ -72,47 +83,47 @@
 
 速度使用相同符号关系。
 
-## 5. 错误模型
+### 4.2 手腕与夹爪语义
 
-发送端行为（`PiController.py`）：
+- `p_rel_deg[4]` 作为手腕关节角参与末端姿态估计（FK）。
+- `p_rel_deg[5]` 表示夹爪开合状态，不参与 FK。
 
-- `sendto()` 失败：捕获 `OSError` 并忽略（不中断主循环）。
-- 本协议无应用层 ACK/错误回包。
+## 5. 错误模型与建议校验
 
-接收端建议最小校验：
+发送端（bridge）：
 
-- 帧长必须为 92 字节
-- `seq` 连续性检查
-- 超时降级策略（保持/置零）
+- `sendto()` 异常：捕获 `OSError` 并忽略（不中断主循环）。
 
-## 6. 兼容性与版本演进
+接收端（Pi）建议最小校验：
 
-- 当前版本：V2（固定 92 字节）
-- 向后兼容：保留 `--udp-format` 参数名，但底层统一 V2
-- 演进建议：
-  - 若需下发抓手，可扩展 V3（增加 `servo_deg` 字段）
-  - 或使用独立第二路 UDP 通道下发抓手
+- 帧长必须为 `108` 字节。
+- `seq` 连续性检查。
+- `p_rel_deg[5]` 非 `0/1` 时可采用阈值归一（如 `<0.5 -> 0`, `>=0.5 -> 1`）。
+- 超时进入 hold 策略。
 
-## 7. 最小联调示例
-
-Python 解析示例（Pi 侧）：
+## 6. 最小联调示例
 
 ```python
 import struct
 
-FMT = "=Id" + "d" * 10
-assert struct.calcsize(FMT) == 92
+FMT = "=Id" + "d" * 12
+assert struct.calcsize(FMT) == 108
 
 def decode(pkt: bytes):
     seq, ts, *rest = struct.unpack(FMT, pkt)
-    p_rel_deg = rest[:5]
-    omega_rad_s = rest[5:]
+    p_rel_deg = rest[:6]
+    omega_rad_s = rest[6:12]
     return seq, ts, p_rel_deg, omega_rad_s
 ```
 
+## 7. 迁移说明（旧版 -> 新版）
+
+- 旧版（v2）为 5 维（92 字节）：`p_rel_deg[5] + omega_rad_s[5]`。
+- 新版（v2.1）为 6 维（108 字节）：新增第 6 维夹爪状态语义。
+- 若接收端仍按 92 字节解析，将直接丢帧；升级时需同步修改帧长与数组维度。
+
 ## 8. 交叉引用
 
-- 上游命令协议：`doc/head2bridge.md`
-- 关键代码：
-  - `arm_control_bridge/PiController.py`
-  - `arm_control_bridge/calculator.py`（`JointFrame` 定义）
+- 上游命令协议：`docs/head2bridge.md`
+- 相机链路协议：`docs/pi2camera.md`
+- 串口链路协议：`docs/pi2stm.md`
