@@ -1,59 +1,103 @@
-# arm_control_bridge 独立版
+# arm_control_bridge
 
-`arm_control_bridge` 是 4 轴主臂 + 抓手通道的控制桥接模块（独立版本），提供：
+`arm_control_bridge` is the control bridge for a 4-axis arm plus claw channel:
 
-- 上层到 bridge 的 TCP/HTTP 命令入口
-- bridge 到树莓派的 UDP 二进制下发
-- 可选 Isaac Sim 仿真运行路径
+- Upper layer -> Bridge: TCP/HTTP commands
+- Bridge -> Raspberry Pi: UDP binary frames
+- Optional Isaac Sim runtime (`--sim`)
 
-## 文档索引
+## Architecture
 
-- 上层 -> bridge 接口规范：`doc/head2bridge.md`
-- bridge -> Pi 接口规范：`doc/bridge2pi.md`
-- 兼容旧文档：`head2controller_doc.md`、`PC_RPI_UDP_PROTOCOL.md`
+Upper layer sends commands (`pose/joints/claw`) -> `listener.py` normalizes them ->
+`calculator.py` generates joint targets -> `PiController.py` sends V2.1 UDP frames ->
+Pi side executes motor/servo actions. In simulation mode, the same command stream also drives Isaac Sim.
 
-## 独立性说明
+## Interfaces
 
-- 本版本已去除对 `sim_code` 的运行时依赖。
-- `--sim` 模式下 USD 自动查找仅覆盖：
-  - `arm_control_bridge/` 目录
-  - `icecream_arm/` 项目根目录
-- 若自动查找不到 USD，请显式传入 `--sim-usd <path>`。
+### 1) TCP (JSON lines)
 
-## 快速启动
+- Default listen: `0.0.0.0:9888`
+- One JSON object per line (`\n`)
+- Main options: `--listen`, `--port`
 
-在 `icecream_arm/` 目录执行。
+### 2) HTTP (JSON)
 
-### 无仿真（开环 + UDP 下发）
+- Enabled when `--web-port > 0`
+- Default from `run_control.py`: `127.0.0.1:8765`
+- Script default from `start_pc_control.sh`: `0.0.0.0:8877`
+- Routes:
+  - `POST /api/pose`
+  - `POST /api/pose_delta`
+  - `POST /api/joints`
+  - `POST /api/joints_delta`
+  - `POST /api/claw`
 
-```bash
-python3 -m arm_control_bridge.run_control \
-  --listen 0.0.0.0 \
-  --port 9888 \
-  --rpi-ip 192.168.1.100 \
-  --udp-format v2
+### 3) UDP to Pi
+
+- Default target port: `9870` (`--rpi-port`)
+- Protocol: V2.1 fixed `108B` frame (`=Id + d*12`)
+- Default control loop: `25Hz`
+
+For detailed protocol fields, see `doc/head2bridge.md` and `doc/bridge2pi.md`.
+
+## Command Schema (High-frequency summary)
+
+- `pose`: required `x, y, z` (meters)
+- `pose_delta`: required `dx, dy, dz` (meters)
+- `joints`: required `axes_rel_deg` (array length 4)
+- `joints_delta`: required `deltas_rel_deg` (array length 4)
+- `claw`: required `wrist_deg` + (`grip_state` or `open_close`)
+- `stop` / `ping`: accepted by TCP command path
+
+Minimal TCP example:
+
+```json
+{"cmd":"joints","axes_rel_deg":[0,10,-90,-70]}
+{"cmd":"claw","wrist_deg":20,"open_close":"close"}
+{"cmd":"pose","x":0.35,"y":0.20,"z":0.25}
 ```
 
-### Isaac Sim 仿真
+## File & Folder Responsibilities
+
+### Core runtime
+
+- `run_control.py`: main entrypoint, CLI args, sim/nosim loop orchestration
+- `start_pc_control.sh`: one-click launcher (sim or nosim)
+
+### Command ingress and protocol I/O
+
+- `listener.py`: TCP/HTTP server and command normalization
+- `PiController.py`: UDP packet packing and downstream sending
+
+### Kinematics and control
+
+- `calculator.py`: IK/FK, command application, frame generation
+- `shower.py`: simulation-side visualization/state display helpers
+
+### Configuration and assets
+
+- `config.py`: default ports, rates, limits, calibration loading
+- `configuration/`: runtime assets (e.g., default URDF files)
+- `web/`: test web UI (`index.html`)
+
+### Documentation
+
+- `doc/head2bridge.md`: upper-layer -> bridge API spec
+- `doc/bridge2pi.md`: bridge -> Pi UDP spec
+- `doc/pi2camera.md`: camera-side related protocol note
+
+
+### One-click script
 
 ```bash
-~/isaac-sim/python.sh -m arm_control_bridge.run_control \
-  --sim \
-  --web-port 8765 \
-  --web-host 127.0.0.1
-```
-
-### 一键脚本
-
-```bash
-# 仿真 + 下发
+# simulation + downlink
 ./arm_control_bridge/start_pc_control.sh sim 192.168.1.100
 
-# 无仿真开环下发
+# open-loop downlink without simulation
 ./arm_control_bridge/start_pc_control.sh nosim 192.168.1.100
 ```
 
-## 最小联调
+## Minimal Integration
 
 ```bash
 python3 - <<'PY'
