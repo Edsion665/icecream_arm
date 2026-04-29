@@ -19,27 +19,39 @@ for _p in (_ROOT,):
         sys.path.insert(0, _p)
 
 _ICECREAM_ROOT = _ROOT
-# 优先 v8 URDF，否则 SINGLE；均不存在则为 None（IK 用 calculator 内硬编码关节参数）
-_DEFAULT_V8_URDF = os.path.join(
-    _ICECREAM_ROOT,
-    "icecream_model_v8",
-    "ice_cream_v8.SLDASM",
-    "urdf",
-    "ice_cream_v8.SLDASM.urdf",
-)
-_DEFAULT_SINGLE_URDF = os.path.join(
-    _ICECREAM_ROOT,
-    "ice_cream_SINGLE.SLDASM",
-    "urdf",
-    "ice_cream_SINGLE.SLDASM.urdf",
-)
+# 优先 URDF 放在 arm_control_bridge/configuration/，否则回退到旧的 icecream_model_* 路径；
+# 均不存在则为 None（IK 用 calculator 内硬编码关节参数）
+_CONFIG_DIR = os.path.join(_PKG_DIR, "configuration")
+
+_DEFAULT_V8_URDF_CANDIDATES = [
+    os.path.join(_CONFIG_DIR, "ice_cream_v8.SLDASM.urdf"),
+    os.path.join(
+        _ICECREAM_ROOT,
+        "icecream_model_v8",
+        "ice_cream_v8.SLDASM",
+        "urdf",
+        "ice_cream_v8.SLDASM.urdf",
+    ),
+]
+
+_DEFAULT_SINGLE_URDF_CANDIDATES = [
+    os.path.join(_CONFIG_DIR, "ice_cream_SINGLE.SLDASM.urdf"),
+    os.path.join(
+        _ICECREAM_ROOT,
+        "ice_cream_SINGLE.SLDASM",
+        "urdf",
+        "ice_cream_SINGLE.SLDASM.urdf",
+    ),
+]
 
 
 def _default_urdf_path() -> Optional[str]:
-    if os.path.isfile(_DEFAULT_V8_URDF):
-        return _DEFAULT_V8_URDF
-    if os.path.isfile(_DEFAULT_SINGLE_URDF):
-        return _DEFAULT_SINGLE_URDF
+    for p in _DEFAULT_V8_URDF_CANDIDATES:
+        if os.path.isfile(p):
+            return p
+    for p in _DEFAULT_SINGLE_URDF_CANDIDATES:
+        if os.path.isfile(p):
+            return p
     return None
 
 
