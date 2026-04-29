@@ -1,5 +1,7 @@
 # arm_control_bridge
 
+[English](./README.md) | [中文](./README_zh.md)
+
 `arm_control_bridge` is the control bridge for a 4-axis arm plus claw channel:
 
 - Upper layer -> Bridge: TCP/HTTP commands
@@ -35,10 +37,23 @@ Pi side executes motor/servo actions. In simulation mode, the same command strea
 ### 3) UDP to Pi
 
 - Default target port: `9870` (`--rpi-port`)
-- Protocol: V2.1 fixed `108B` frame (`=Id + d*12`)
+- Protocol: fixed V2.1 `108B` frame (`=Id + d*12`)
 - Default control loop: `25Hz`
+- No UDP v1 path is kept.
 
 For detailed protocol fields, see `doc/head2bridge.md` and `doc/bridge2pi.md`.
+
+## Resource Loading Policy (configuration-only)
+
+- Default URDF is loaded only from `arm_control_bridge/configuration/`:
+  - `ice_cream_v8.SLDASM.urdf` (preferred)
+  - `ice_cream_SINGLE.SLDASM.urdf`
+- Default USD (for `--sim`) is loaded only from `arm_control_bridge/configuration/`:
+  - `ice_cream_v8_arm.usd`
+  - `ice_cream_single_arm.usd`
+  - `ice_cream_arm.usd`
+- Explicit `--urdf` and `--sim-usd` overrides are still supported.
+- If default files are missing and no override is provided, startup fails fast with a clear error.
 
 ## Command Schema (High-frequency summary)
 

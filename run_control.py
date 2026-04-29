@@ -19,29 +19,15 @@ for _p in (_ROOT,):
         sys.path.insert(0, _p)
 
 _ICECREAM_ROOT = _ROOT
-# 优先 URDF 放在 arm_control_bridge/configuration/，否则回退到旧的 icecream_model_* 路径；
-# 均不存在则为 None（IK 用 calculator 内硬编码关节参数）
+# URDF 默认仅从 arm_control_bridge/configuration/ 读取（V8 优先，其次 SINGLE）。
 _CONFIG_DIR = os.path.join(_PKG_DIR, "configuration")
 
 _DEFAULT_V8_URDF_CANDIDATES = [
     os.path.join(_CONFIG_DIR, "ice_cream_v8.SLDASM.urdf"),
-    os.path.join(
-        _ICECREAM_ROOT,
-        "icecream_model_v8",
-        "ice_cream_v8.SLDASM",
-        "urdf",
-        "ice_cream_v8.SLDASM.urdf",
-    ),
 ]
 
 _DEFAULT_SINGLE_URDF_CANDIDATES = [
     os.path.join(_CONFIG_DIR, "ice_cream_SINGLE.SLDASM.urdf"),
-    os.path.join(
-        _ICECREAM_ROOT,
-        "ice_cream_SINGLE.SLDASM",
-        "urdf",
-        "ice_cream_SINGLE.SLDASM.urdf",
-    ),
 ]
 
 
@@ -65,7 +51,6 @@ def run_loop(
     listen_port: int,
     rpi_ip: Optional[str],
     rpi_port: int,
-    udp_format: str,
     urdf_path: Optional[str],
     calib_file: Optional[str],
     q5_deg: float,
@@ -134,7 +119,7 @@ def run_loop(
     arm_motor: Optional[motor] = None
     adapter: Optional[RpiProtocolAdapter] = None
     if rpi_ip:
-        streamer = RPiUDPStreamer(rpi_ip, rpi_port, fmt="v2" if udp_format == "v2" else "v1")
+        streamer = RPiUDPStreamer(rpi_ip, rpi_port)
         adapter = RpiProtocolAdapter(streamer)
         arm_motor = motor(adapter)
 
@@ -208,7 +193,6 @@ def run_sim_loop(
     listen_port: int,
     rpi_ip: Optional[str],
     rpi_port: int,
-    udp_format: str,
     urdf_path: Optional[str],
     calib_file: Optional[str],
     q5_deg: float,
@@ -301,7 +285,7 @@ def run_sim_loop(
     arm_motor: Optional[motor] = None
     adapter: Optional[RpiProtocolAdapter] = None
     if rpi_ip:
-        streamer = RPiUDPStreamer(rpi_ip, rpi_port, fmt="v2" if udp_format == "v2" else "v1")
+        streamer = RPiUDPStreamer(rpi_ip, rpi_port)
         adapter = RpiProtocolAdapter(streamer)
         arm_motor = motor(adapter)
 
@@ -365,14 +349,11 @@ def run_sim_loop(
             "ice_cream_single_arm.usd",
             "ice_cream_arm.usd",
         ):
-            p = os.path.join(_PKG_DIR, name)
-            if os.path.isfile(p):
-                return p
-            p = os.path.join(_ROOT, name)
+            p = os.path.join(_PKG_DIR, "configuration", name)
             if os.path.isfile(p):
                 return p
         raise FileNotFoundError(
-            "未找到 ice_cream_v8_arm.usd / ice_cream_single_arm.usd / ice_cream_arm.usd，请用 --sim-usd 指定。"
+            "未在 arm_control_bridge/configuration/ 找到 ice_cream_v8_arm.usd / ice_cream_single_arm.usd / ice_cream_arm.usd，请用 --sim-usd 指定。"
         )
 
     def _set_marker_xyz(stage, xyz: np.ndarray) -> None:
@@ -512,14 +493,13 @@ def main() -> None:
     p.add_argument("--port", type=int, default=DEFAULT_TCP_PORT, help="TCP 端口（JSON 行指令）")
     p.add_argument("--rpi-ip", default=None, help="树莓派 IP；不填则不发送 UDP")
     p.add_argument("--rpi-port", type=int, default=DEFAULT_UDP_PORT, help="树莓派 UDP 端口")
-    p.add_argument("--udp-format", choices=("v1", "v2"), default="v2", help="UDP 帧格式")
     p.add_argument(
         "--urdf",
         type=str,
         nargs="?",
         default=DEFAULT_URDF,
         const=DEFAULT_URDF,
-        help="运动学 URDF；默认优先 icecream_model_v8/.../ice_cream_v8.SLDASM.urdf，否则 SINGLE；不填且无文件时用内置硬编码",
+        help="运动学 URDF；默认仅从 arm_control_bridge/configuration/ 读取（V8 优先，其次 SINGLE）；若缺失则报错退出",
     )
     p.add_argument("--calib-file", type=str, default=None)
     p.add_argument("--q5-deg", type=float, default=0.0, help="pose IK 中 q5 固定角（度）")
@@ -529,7 +509,7 @@ def main() -> None:
         "--sim-usd",
         type=str,
         default=None,
-        help="机械臂 USD（仅 --sim）；未指定时依次尝试本包目录 arm_control_bridge/、再项目根目录：ice_cream_v8_arm.usd、ice_cream_single_arm.usd、ice_cream_arm.usd",
+        help="机械臂 USD（仅 --sim）；未指定时仅从本包目录 arm_control_bridge/configuration/ 查找：ice_cream_v8_arm.usd、ice_cream_single_arm.usd、ice_cream_arm.usd",
     )
     p.add_argument("--ik-rate", type=float, default=25.0, help="控制/IK 更新频率 Hz（仅 --sim）")
     p.add_argument(
@@ -561,6 +541,11 @@ def main() -> None:
     if urdf and not os.path.isfile(urdf):
         print(f"错误：URDF 不存在: {urdf}")
         sys.exit(1)
+    if urdf is None:
+        print(
+            "错误：未在 arm_control_bridge/configuration/ 找到默认 URDF（ice_cream_v8.SLDASM.urdf 或 ice_cream_SINGLE.SLDASM.urdf），请补齐文件或显式传 --urdf。"
+        )
+        sys.exit(1)
     calib = args.calib_file or _INITIAL_POSITION_MD
 
     if args.sim:
@@ -569,7 +554,6 @@ def main() -> None:
             listen_port=args.port,
             rpi_ip=args.rpi_ip,
             rpi_port=args.rpi_port,
-            udp_format=args.udp_format,
             urdf_path=urdf,
             calib_file=calib,
             q5_deg=args.q5_deg,
@@ -592,7 +576,6 @@ def main() -> None:
             listen_port=args.port,
             rpi_ip=args.rpi_ip,
             rpi_port=args.rpi_port,
-            udp_format=args.udp_format,
             urdf_path=urdf,
             calib_file=calib,
             q5_deg=args.q5_deg,

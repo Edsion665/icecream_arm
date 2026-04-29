@@ -11,9 +11,6 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# 运动学（仅 link4 几何解耦 IK / FK 所需；arm_control_bridge 独立，不依赖 sim_code）
-# ---------------------------------------------------------------------------
 JOINT_NAMES = ["joint1", "joint2", "joint3", "joint4", "joint5"]
 NUM_JOINTS = 5
 
@@ -312,7 +309,6 @@ class JointFrame:
     grip_state: float
     mode: str
     timestamp: float
-    # 第 5 轴相对标定角（度）；笛卡尔下含 POSE_Q5_EXTRA_DEG，供仿真/UDP 与 q_cmd[4] 一致
     joint5_rel_deg: float = 0.0
 
 

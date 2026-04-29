@@ -8,7 +8,7 @@ import numpy as np
 import socket
 import struct
 import time
-from typing import Literal, Sequence
+from typing import Sequence
 
 from .calculator import JointFrame
 
@@ -23,17 +23,15 @@ class RPiUDPStreamer:
         self,
         rpi_ip: str,
         port: int = 9870,
-        fmt: Literal["v1", "v2"] = "v2",
     ):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
         self.addr = (rpi_ip, port)
-        self.fmt = fmt
         self._seq = 0
-        # 兼容参数名：当前 v1/v2 都按文档 V2.1 的 108B 帧发送。
+        # 固定使用协议 V2.1 的 108B 帧。
         self._ps = PACKET_V2_SIZE
         print(
-            f"[RPiUDPStreamer] udp://{rpi_ip}:{port} | 格式={fmt}->protocol_v2.1_108B | "
+            f"[RPiUDPStreamer] udp://{rpi_ip}:{port} | protocol_v2.1_108B | "
             f"{self._ps} B/帧 @ 25Hz ≈ {self._ps * 25 / 1024:.1f} KB/s"
         )
 

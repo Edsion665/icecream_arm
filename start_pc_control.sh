@@ -21,7 +21,6 @@ COMMON_ARGS=(
   --port "${TCP_PORT}"
   --rpi-ip "${RPI_IP}"
   --rpi-port "${RPI_PORT}"
-  --udp-format v2
   --web-host "${WEB_HOST}"
   --web-port "${WEB_PORT}"
 )

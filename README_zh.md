@@ -1,5 +1,7 @@
 # arm_control_bridge
 
+[English](./README.md) | [中文](./README_zh.md)
+
 `arm_control_bridge` 是 4 轴主臂 + 抓手通道的控制桥接模块：
 
 - 上层 -> Bridge：TCP/HTTP 命令
@@ -35,10 +37,23 @@ Pi 侧执行电机/舵机控制。仿真模式下，同一命令流也驱动 Isa
 ### 3) 下发到 Pi 的 UDP
 
 - 默认目标端口：`9870`（`--rpi-port`）
-- 协议：V2.1 固定 `108B`（`=Id + d*12`）
+- 协议：固定 V2.1 `108B`（`=Id + d*12`）
 - 默认控制频率：`25Hz`
+- 已移除 UDP v1 路径。
 
 详细字段请看：`doc/head2bridge.md` 与 `doc/bridge2pi.md`。
+
+## 资源加载策略（仅 configuration）
+
+- 默认 URDF 仅从 `arm_control_bridge/configuration/` 加载：
+  - `ice_cream_v8.SLDASM.urdf`（优先）
+  - `ice_cream_SINGLE.SLDASM.urdf`
+- 默认 USD（`--sim`）仅从 `arm_control_bridge/configuration/` 加载：
+  - `ice_cream_v8_arm.usd`
+  - `ice_cream_single_arm.usd`
+  - `ice_cream_arm.usd`
+- 仍支持显式 `--urdf`、`--sim-usd` 覆盖路径。
+- 若默认文件缺失且未显式覆盖，启动会快速失败并给出明确报错。
 
 ## 命令格式（高频摘要）
 
