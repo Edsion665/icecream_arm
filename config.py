@@ -49,6 +49,17 @@ SV_CRIT = 0.005
 # --sim：‖q_actual−q_cmd‖ 超阈值时把仿真关节对齐到 q_cmd（不把 q_cmd 拉回滞后仿真，避免「往回拽」）
 SIM_TRACK_SNAP_THRESHOLD_RAD = 0.35
 
+# 到位判定
+REACHED_JOINTS_TOL_DEG = 5.0       # joints 模式：每轴误差阈值（度），任一轴超出即不到位
+REACHED_POSE_TOL_M = 0.005         # pose 模式：link4 位置误差范数阈值（米）
+REACHED_WRIST_TOL_DEG = 5.0        # wrist 到位阈值（度）
+REACHED_CLAW_DELAY_S = 2.0         # claw 无硬件回传时的定时到位延迟（秒）
+REACHED_TIMEOUT_S = 10.0           # 状态机等待到位的最大超时（秒）
+REACHED_STABLE_FRAMES = 5          # 稳定缓冲区帧数（@25Hz ≈ 200ms，全帧满足才触发到位）
+
+# 树莓派 WebSocket 回传（pi2camera 协议）
+RPI_WS_PORT = 8765
+
 # 协议「相对标定」的基准角（度）：与 initial_position.md 一致。当前 v8 URDF 以关节全 0 为伸直/设计零位，不再单独做一组「姿态标定」变换。
 DEFAULT_Q_CALIB_DEG_LIST = [0.0, 0.0, 0.0, 0.0, 0.0]
 

@@ -1,4 +1,4 @@
-# head2bridge API 规范（上位机 -> arm_control_bridge，v2.1）
+# head2bridge API 规范（上位机 -> arm_control_bridge，v2.2）
 
 - 文档状态：stable
 - 适用模块：`arm_control_bridge/listener.py`、`arm_control_bridge/calculator.py`
@@ -7,10 +7,10 @@
 
 ## 1. 范围（Scope）
 
-本文档定义上位机到 bridge 的输入接口，包括：
+本文档定义上位机与 bridge 之间的**控制与响应**约定，包括：
 
-- TCP JSON 行协议
-- HTTP JSON API
+- TCP JSON 行协议（上行命令；v2.2 起笛卡尔命令支持下行到位反馈）
+- HTTP JSON API（含 `pose` / `pose_delta` 成功时的实际位姿回传）
 - 6 维控制语义（4 电机 + 手腕 + 夹爪状态）
 
 不包含：
@@ -118,6 +118,8 @@
 
 语义：控制 4 电机进入笛卡尔模式，驱动末端（link4）到指定位置。
 
+**到达确认（v2.2）**：运动结束且判定已到达目标工作区后，bridge 须在响应中携带**实际末端位姿**（与命令同一坐标系、单位 m），供上位机确认“已到位”。详见 §5。
+
 `pose_delta`（别名：`delta_pose`、`nudge`）
 
 | 字段 | 类型 | 必选 | 单位 |
@@ -128,6 +130,8 @@
 
 语义：在当前笛卡尔目标上做增量。
 
+**到达确认（v2.2）**：与 `pose` 相同，到位后响应中返回 `actual_pose`（或等价字段），表示本次增量运动完成后的实测末端位置。
+
 ### 4.6 其他命令
 
 - `stop`（别名 `estop/halt`）：当前仅记录，不执行硬停。
@@ -135,12 +139,33 @@
 
 ## 5. 请求与响应
 
-### 5.1 TCP
+### 5.1 到达反馈字段（笛卡尔，`pose` / `pose_delta`）
+
+上位机通过下列字段识别“已到达且带回实测位姿”（推荐字段名为 `actual_pose`；若实现使用等价别名，应在集成说明中列出映射）：
+
+| 字段 | 类型 | 出现时机 | 说明 |
+|---|---|---|---|
+| `actual_pose` | object | `ok: true` 且笛卡尔运动完成 | 实测末端位置，`x`/`y`/`z`，单位 **m**，与 §4.5 命令坐标系一致 |
+| `reached` | boolean | 可选 | `true` 表示本次判定已到达目标（可与容差策略配合） |
+| `error_pose_m` | number | 可选 | 末端位置误差范数（m），便于上位机记录或告警 |
+
+约定：
+
+- **仅**对 `pose`、`pose_delta`（及 HTTP 同源路由）要求在上行成功路径中返回 `actual_pose`；其它命令（`joints`、`claw` 等）成功时仍可仅为 `{"ok": true}`，除非另有扩展约定。
+- 若运动失败、超时或不可达，应 `ok: false` 并在 `error` 中说明，不强制携带 `actual_pose`。
+
+### 5.2 TCP
 
 - 输入：每行一条 JSON。
-- 输出：无协议级响应（仅日志）。
+- 输出（v2.2）：对 `pose` / `pose_delta` 等与运动相关的命令，在动作完成并判定到位后，**输出一行 JSON**（UTF-8，`\n` 结尾），语义与 §5.3 HTTP 成功体一致，便于 head 同步读取“已到达 + 实际位姿”。非运动类命令或仅日志路径可由实现决定是否与 HTTP 对齐。
 
-### 5.2 HTTP
+示例（到位后下行一行）：
+
+```json
+{"ok": true, "reached": true, "actual_pose": {"x": 0.349, "y": 0.201, "z": 0.248}}
+```
+
+### 5.3 HTTP
 
 路由映射：
 
@@ -150,7 +175,18 @@
 - `POST /api/joints_delta` -> `cmd=joints_delta`
 - `POST /api/claw` -> `cmd=claw`
 
-成功：
+**笛卡尔**（`pose` / `pose_delta`）成功且已到达时，响应体示例：
+
+```json
+{
+  "ok": true,
+  "reached": true,
+  "actual_pose": {"x": 0.349, "y": 0.201, "z": 0.248},
+  "error_pose_m": 0.002
+}
+```
+
+**其它命令**成功（无位姿回传要求时）：
 
 ```json
 {"ok": true}
@@ -188,6 +224,7 @@
 - 旧版仅明确到 4/5 维。
 - 新版统一到 6 维语义，新增第 6 维 `grip_state`。
 - 若上位机仍发送旧版 4/5 维，bridge 应按兼容规则工作（未提供的维度保持上次值）。
+- **v2.1 → v2.2**：`pose` / `pose_delta`（及 `POST /api/pose`、`/api/pose_delta`）在成功且判定到位时，响应体须包含 `actual_pose`（及可选 `reached`、`error_pose_m`）；TCP 同命令在到位后应输出一行与 HTTP 成功体语义一致的 JSON，供 head 同步确认已到达与实际末端坐标。仅依赖 `{"ok": true}` 判断笛卡尔到位的上位机应改为解析 `actual_pose`（或约定别名）。
 
 ## 9. 交叉引用
 

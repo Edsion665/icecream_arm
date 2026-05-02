@@ -33,6 +33,8 @@ from .config import (
     Q4_GEOMETRIC_Q23_COEFF,
     Q4_SAFE_MAX,
     Q4_SAFE_MIN,
+    REACHED_JOINTS_TOL_DEG,
+    REACHED_POSE_TOL_M,
     SV_CRIT,
     SV_WARN,
     frontend_pose_to_internal_m,
@@ -549,3 +551,45 @@ class CalculatorEngine:
             timestamp=time.monotonic(),
             joint5_rel_deg=j5_rel,
         )
+
+    def is_reached(
+        self,
+        state: CalculatorState,
+        *,
+        fb_arm_rad: Optional[np.ndarray] = None,
+        joints_tol_deg: float = REACHED_JOINTS_TOL_DEG,
+        pose_tol_m: float = REACHED_POSE_TOL_M,
+    ) -> Tuple[bool, float]:
+        """到位判定。返回 (reached, error)。
+
+        数据源优先级：fb_arm_rad（实机/仿真回传）> state.q_cmd（内部指令角）。
+
+        joints 模式：逐轴比较，任一轴误差（度）超 joints_tol_deg 即返回 False。
+                     error = 误差范数（度）。
+        pose 模式：link4 FK 位置与 state.pose_xyz 的欧氏距离。
+                   error = 距离（米）。
+        """
+        if state.mode == MotionMode.JOINTS:
+            if fb_arm_rad is not None:
+                q_actual = np.asarray(fb_arm_rad, dtype=float).ravel()[:ARM_AXES]
+            else:
+                q_actual = state.q_cmd[:ARM_AXES].copy()
+            q_target = state.q_calib_rad[:ARM_AXES] + np.deg2rad(state.joint_rel_deg_4)
+            err_rad = q_actual - q_target
+            err_deg = np.rad2deg(np.abs(err_rad))
+            error = float(np.linalg.norm(err_deg))
+            reached = bool(np.all(err_deg < joints_tol_deg))
+            return reached, error
+        else:
+            if fb_arm_rad is not None:
+                q_fb = np.asarray(fb_arm_rad, dtype=float).ravel()
+                q_full = np.zeros(NUM_JOINTS, dtype=float)
+                n = min(len(q_fb), NUM_JOINTS)
+                q_full[:n] = q_fb[:n]
+                q_full[4] = float(state.q_cmd[4])
+            else:
+                q_full = state.q_cmd.copy()
+            p_actual = self._kin.forward_kinematics_position_link4(q_full)
+            error = float(np.linalg.norm(p_actual - state.pose_xyz))
+            reached = error < pose_tol_m
+            return reached, error

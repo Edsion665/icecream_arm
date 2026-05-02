@@ -6,9 +6,11 @@ arm_control_bridge 入口：新架构启动入口（4轴主臂 + claw独立通�
 from __future__ import annotations
 
 import argparse
+import collections
 import os
 import queue
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -45,6 +47,34 @@ DEFAULT_URDF = _default_urdf_path()
 _INITIAL_POSITION_MD = os.path.join(_ICECREAM_ROOT, "initial_position.md")
 
 
+def _ensure_v8_arm_payload_symlinks(usd_path: str) -> None:
+    """保证 ice_cream_v8_arm.usd 内 @configuration/*.usd@ payload 能解析。
+
+    该资源从 Omniverse 导出时，payload 路径为相对于 composer 目录的
+    configuration/ice_cream_v8_arm_{physics,sensor}.usd，即要求存在
+    configuration/configuration/*.usd。将三个分块放在同一目录时，需额外建
+    configuration/ 子目录链并链回同级文件，否则 PhysX 层永不加载，场景中无关节链。
+    """
+    if os.path.basename(usd_path) != "ice_cream_v8_arm.usd":
+        return
+    parent = os.path.dirname(os.path.abspath(usd_path))
+    nested = os.path.join(parent, "configuration")
+    for name in (
+        "ice_cream_v8_arm_physics.usd",
+        "ice_cream_v8_arm_sensor.usd",
+        "ice_cream_v8_arm_base.usd",
+    ):
+        src = os.path.join(parent, name)
+        dst = os.path.join(nested, name)
+        if not os.path.isfile(src) or os.path.lexists(dst):
+            continue
+        try:
+            os.makedirs(nested, exist_ok=True)
+            os.symlink(os.path.join("..", name), dst)
+        except OSError:
+            pass
+
+
 def run_loop(
     *,
     listen_host: str,
@@ -62,12 +92,101 @@ def run_loop(
     from arm_control_bridge.calculator import CalculatorEngine, CalculatorState, URDFKinematics
 
     from .PiController import RPiUDPStreamer, RpiProtocolAdapter, motor
-    from .config import CONTROL_DT, CONTROL_HZ, load_calibration_deg
-    from .listener import ClawCommand, MotionCommand4Axis, claw_listener, network_listener, start_http_server
+    from .config import (
+        CONTROL_DT, CONTROL_HZ, REACHED_CLAW_DELAY_S, REACHED_STABLE_FRAMES,
+        REACHED_TIMEOUT_S, load_calibration_deg,
+    )
+    from .listener import ClawCommand, MotionCommand4Axis, ReplySlot, claw_listener, network_listener, start_http_server
+    from .pi_feedback import PiFeedbackClient
 
     def log(msg: str) -> None:
         if log_print:
             print(msg, flush=True)
+
+    # ------------------------------------------------------------------
+    # 到位追踪器（内联，无锁，仅控制循环访问）
+    # ------------------------------------------------------------------
+    class _ReachTracker:
+        def __init__(self) -> None:
+            self.waiting = False
+            self.cmd_kind = ""
+            self._buf: collections.deque[bool] = collections.deque(maxlen=REACHED_STABLE_FRAMES)
+            self._deadline = 0.0
+            self._tcp_conn: Optional[object] = None
+            self._http_slot: Optional[ReplySlot] = None
+            self._claw_timer: Optional[threading.Timer] = None
+            # 回传队列：控制循环 put，回传线程 get
+            self.reply_q: queue.Queue = queue.Queue()
+
+        def register_pending(self, *, tcp_conn=None, http_slot=None) -> None:
+            """listener 线程调用，仅写 pending 字段（原子赋值，无锁）。"""
+            self._pending_tcp = tcp_conn
+            self._pending_slot = http_slot
+
+        def accept(self, kind: str) -> None:
+            """控制循环处理命令时调用。"""
+            if self._claw_timer is not None:
+                self._claw_timer.cancel()
+                self._claw_timer = None
+            self.waiting = True
+            self.cmd_kind = kind
+            self._buf.clear()
+            self._deadline = time.monotonic() + REACHED_TIMEOUT_S
+            self._tcp_conn = getattr(self, "_pending_tcp", None)
+            self._http_slot = getattr(self, "_pending_slot", None)
+            self._pending_tcp = None
+            self._pending_slot = None
+            if kind == "claw":
+                t = threading.Timer(REACHED_CLAW_DELAY_S, self._claw_done)
+                t.daemon = True
+                t.start()
+                self._claw_timer = t
+
+        def feed(self, reached: bool, result: dict) -> None:
+            """控制循环每帧调用（claw 跳过）。"""
+            if not self.waiting or self.cmd_kind == "claw":
+                return
+            if time.monotonic() > self._deadline:
+                self._finish({"ok": False, "reached": False, "error": "timeout"})
+                return
+            self._buf.append(reached)
+            if len(self._buf) == REACHED_STABLE_FRAMES and all(self._buf):
+                self._finish(result)
+
+        def _claw_done(self) -> None:
+            self._finish({"ok": True, "reached": True})
+
+        def _finish(self, result: dict) -> None:
+            self.waiting = False
+            self._claw_timer = None
+            self.reply_q.put_nowait((result, self._tcp_conn, self._http_slot))
+            self._tcp_conn = None
+            self._http_slot = None
+
+    tracker = _ReachTracker()
+
+    def _on_pending(*, tcp_conn=None, http_slot=None) -> None:
+        tracker.register_pending(tcp_conn=tcp_conn, http_slot=http_slot)
+
+    # 回传线程：异步发送，不阻塞控制循环
+    def _reply_worker() -> None:
+        import json
+        while True:
+            item = tracker.reply_q.get()
+            if item is None:
+                break
+            result, tcp_conn, http_slot = item
+            if tcp_conn is not None:
+                try:
+                    tcp_conn.sendall((json.dumps(result) + "\n").encode())
+                except OSError:
+                    pass
+            if http_slot is not None:
+                http_slot.result = result
+                http_slot.event.set()
+
+    reply_thread = threading.Thread(target=_reply_worker, daemon=True)
+    reply_thread.start()
 
     def _log_udp_frame_preview(frame) -> None:
         p6 = np.zeros(6, dtype=float)
@@ -108,20 +227,22 @@ def run_loop(
 
     cmd_q: "queue.Queue[Optional[MotionCommand4Axis | ClawCommand]]" = queue.Queue()
     claw_q: "queue.Queue[Optional[ClawCommand]]" = queue.Queue()
-    server = network_listener(listen_host, listen_port, cmd_q, on_log=log)
+    server = network_listener(listen_host, listen_port, cmd_q, on_log=log, on_pending=_on_pending)
     claw_rx = claw_listener(claw_q, on_log=log)
     server.start_background()
 
     if web_port > 0:
         _web_dir = os.path.join(os.path.dirname(__file__), "web")
-        start_http_server(cmd_q, host=web_host, port=web_port, web_dir=_web_dir, on_log=log)
+        start_http_server(cmd_q, host=web_host, port=web_port, web_dir=_web_dir, on_log=log, on_pending=_on_pending)
 
     arm_motor: Optional[motor] = None
     adapter: Optional[RpiProtocolAdapter] = None
+    pi_fb: Optional[PiFeedbackClient] = None
     if rpi_ip:
         streamer = RPiUDPStreamer(rpi_ip, rpi_port)
         adapter = RpiProtocolAdapter(streamer)
         arm_motor = motor(adapter)
+        pi_fb = PiFeedbackClient(rpi_ip)
 
     log(
         f"[runner] 控制频率 {CONTROL_HZ} Hz | URDF: {getattr(kin, '_source', '?')} | "
@@ -140,6 +261,7 @@ def run_loop(
                 if c is None:
                     continue
                 if isinstance(c, ClawCommand):
+                    tracker.accept("claw")
                     claw_rx.emit(c)
                     continue
                 if c.kind == "ping":
@@ -149,6 +271,7 @@ def run_loop(
                     log("[runner] estop（当前仅记录，可扩展为保持当前角）")
                     continue
                 log(f"[runner] recv {c.kind}: {c.payload}")
+                tracker.accept(c.kind)
                 engine.apply_command(c, state)
                 dump_next_udp_frame = True
 
@@ -172,6 +295,19 @@ def run_loop(
                 dump_next_udp_frame = False
             if arm_motor is not None:
                 arm_motor.send(frame)
+
+            if tracker.waiting:
+                fb = pi_fb.get_fb_arm_rad() if pi_fb is not None else None
+                reached, err = engine.is_reached(state, fb_arm_rad=fb)
+                if tracker.cmd_kind in ("pose", "pose_delta"):
+                    q_for_fk = fb if fb is not None else state.q_cmd
+                    p = kin.forward_kinematics_position_link4(q_for_fk).tolist()
+                    result = {"ok": True, "reached": True,
+                              "actual_pose": {"x": round(p[0],4), "y": round(p[1],4), "z": round(p[2],4)},
+                              "error_pose_m": round(err, 4)}
+                else:
+                    result = {"ok": True, "reached": True, "error_joints_deg": round(err, 3)}
+                tracker.feed(reached, result)
 
             next_t += CONTROL_DT
             sleep_t = next_t - time.monotonic()
@@ -216,10 +352,10 @@ def run_sim_loop(
     from .PiController import RPiUDPStreamer, RpiProtocolAdapter, motor
     from .calculator import CalculatorEngine, CalculatorState, NUM_JOINTS, URDFKinematics
     from .config import (
-        SIM_TRACK_SNAP_THRESHOLD_RAD,
-        load_calibration_deg,
+        REACHED_CLAW_DELAY_S, REACHED_STABLE_FRAMES, REACHED_TIMEOUT_S,
+        SIM_TRACK_SNAP_THRESHOLD_RAD, load_calibration_deg,
     )
-    from .listener import ClawCommand, MotionCommand4Axis, network_listener, start_http_server
+    from .listener import ClawCommand, MotionCommand4Axis, ReplySlot, network_listener, start_http_server
     from .shower import receiver, show
 
     simulation_app = SimulationApp({"headless": headless})
@@ -227,6 +363,84 @@ def run_sim_loop(
     def log(msg: str) -> None:
         if log_print:
             print(msg, flush=True)
+
+    # 到位追踪器（与 run_loop 相同结构，内联）
+    class _ReachTracker:
+        def __init__(self) -> None:
+            self.waiting = False
+            self.cmd_kind = ""
+            self._buf: collections.deque[bool] = collections.deque(maxlen=REACHED_STABLE_FRAMES)
+            self._deadline = 0.0
+            self._tcp_conn = None
+            self._http_slot: Optional[ReplySlot] = None
+            self._claw_timer: Optional[threading.Timer] = None
+            self.reply_q: queue.Queue = queue.Queue()
+
+        def register_pending(self, *, tcp_conn=None, http_slot=None) -> None:
+            self._pending_tcp = tcp_conn
+            self._pending_slot = http_slot
+
+        def accept(self, kind: str) -> None:
+            if self._claw_timer is not None:
+                self._claw_timer.cancel()
+                self._claw_timer = None
+            self.waiting = True
+            self.cmd_kind = kind
+            self._buf.clear()
+            self._deadline = time.monotonic() + REACHED_TIMEOUT_S
+            self._tcp_conn = getattr(self, "_pending_tcp", None)
+            self._http_slot = getattr(self, "_pending_slot", None)
+            self._pending_tcp = None
+            self._pending_slot = None
+            if kind == "claw":
+                t = threading.Timer(REACHED_CLAW_DELAY_S, self._claw_done)
+                t.daemon = True
+                t.start()
+                self._claw_timer = t
+
+        def feed(self, reached: bool, result: dict) -> None:
+            if not self.waiting or self.cmd_kind == "claw":
+                return
+            if time.monotonic() > self._deadline:
+                self._finish({"ok": False, "reached": False, "error": "timeout"})
+                return
+            self._buf.append(reached)
+            if len(self._buf) == REACHED_STABLE_FRAMES and all(self._buf):
+                self._finish(result)
+
+        def _claw_done(self) -> None:
+            self._finish({"ok": True, "reached": True})
+
+        def _finish(self, result: dict) -> None:
+            self.waiting = False
+            self._claw_timer = None
+            self.reply_q.put_nowait((result, self._tcp_conn, self._http_slot))
+            self._tcp_conn = None
+            self._http_slot = None
+
+    tracker = _ReachTracker()
+
+    def _on_pending(*, tcp_conn=None, http_slot=None) -> None:
+        tracker.register_pending(tcp_conn=tcp_conn, http_slot=http_slot)
+
+    def _reply_worker() -> None:
+        import json
+        while True:
+            item = tracker.reply_q.get()
+            if item is None:
+                break
+            result, tcp_conn, http_slot = item
+            if tcp_conn is not None:
+                try:
+                    tcp_conn.sendall((json.dumps(result) + "\n").encode())
+                except OSError:
+                    pass
+            if http_slot is not None:
+                http_slot.result = result
+                http_slot.event.set()
+
+    reply_thread = threading.Thread(target=_reply_worker, daemon=True)
+    reply_thread.start()
 
     def _log_udp_frame_preview(frame) -> None:
         p6 = np.zeros(6, dtype=float)
@@ -279,7 +493,7 @@ def run_sim_loop(
         from omni.isaac.core.utils.stage import add_reference_to_stage, get_current_stage
 
     cmd_q: "queue.Queue[Optional[MotionCommand4Axis | ClawCommand]]" = queue.Queue()
-    tcp = network_listener(listen_host, listen_port, cmd_q, on_log=log)
+    tcp = network_listener(listen_host, listen_port, cmd_q, on_log=log, on_pending=_on_pending)
     tcp.start_background()
 
     arm_motor: Optional[motor] = None
@@ -296,6 +510,7 @@ def run_sim_loop(
             port=web_port,
             web_dir=os.path.join(os.path.dirname(__file__), "web"),
             on_log=log,
+            on_pending=_on_pending,
         )
 
     ARM_PRIM_PATH = "/World/IceCreamArm"
@@ -369,10 +584,15 @@ def run_sim_loop(
             pass
 
     usd_path = _resolve_sim_usd(sim_usd)
+    _ensure_v8_arm_payload_symlinks(usd_path)
     world = World(stage_units_in_meters=1.0, physics_dt=physics_dt, rendering_dt=physics_dt)
     world.scene.add_default_ground_plane()
     stage = get_current_stage()
-    add_reference_to_stage(usd_path=usd_path, prim_path=ARM_PRIM_PATH)
+    arm_prim = add_reference_to_stage(usd_path=usd_path, prim_path=ARM_PRIM_PATH)
+    try:
+        arm_prim.Load()
+    except Exception:
+        pass
     found_root = _find_articulation_root(stage, ARM_PRIM_PATH)
     articulation_path = found_root if found_root else ARM_PRIM_PATH
     arm = world.scene.add(SingleArticulation(articulation_path, name="ice_cream_arm"))
@@ -427,6 +647,7 @@ def run_sim_loop(
                 continue
             if isinstance(c, ClawCommand):
                 log(f"[sim] recv claw: {c.payload}")
+                tracker.accept("claw")
                 payload = c.payload
                 state.wrist_rel_deg = float(payload.get("wrist_deg", state.wrist_rel_deg))
                 state.grip_state = 1.0 if float(payload.get("grip_state", state.grip_state)) >= 0.5 else 0.0
@@ -434,6 +655,7 @@ def run_sim_loop(
                 dump_next_udp_frame = True
                 continue
             log(f"[sim] recv {c.kind}: {c.payload}")
+            tracker.accept(c.kind)
             engine.apply_command(c, state)
             dump_next_udp_frame = True
             if c.kind in ("pose", "pose_delta"):
@@ -455,7 +677,6 @@ def run_sim_loop(
                 arm_cmp = min(4, n_dof, len(q_a))
                 diff_b = float(np.linalg.norm(q_a[:arm_cmp] - state.q_cmd[:arm_cmp]))
                 if diff_b > SIM_TRACK_SNAP_THRESHOLD_RAD:
-                    # 滞后时把仿真对齐到指令，避免旧逻辑「把 q_cmd 拉回 q_actual」导致机械臂/UDP 被往回拽
                     q_snap = q_a.copy()
                     for i in range(min(controlled_dof, n_dof, NUM_JOINTS)):
                         q_snap[i] = float(state.q_cmd[i])
@@ -478,6 +699,20 @@ def run_sim_loop(
         viewer.apply(frame_rx.latest())
         if arm_motor is not None:
             arm_motor.send(frame)
+
+        if tracker.waiting:
+            q_sim_raw = arm.get_joint_positions()
+            fb_sim = np.asarray(q_sim_raw, dtype=float).ravel()[:4] if q_sim_raw is not None else None
+            reached, err = engine.is_reached(state, fb_arm_rad=fb_sim)
+            if tracker.cmd_kind in ("pose", "pose_delta"):
+                q_for_fk = fb_sim if fb_sim is not None else state.q_cmd
+                p = kin.forward_kinematics_position_link4(q_for_fk).tolist()
+                result = {"ok": True, "reached": True,
+                          "actual_pose": {"x": round(p[0],4), "y": round(p[1],4), "z": round(p[2],4)},
+                          "error_pose_m": round(err, 4)}
+            else:
+                result = {"ok": True, "reached": True, "error_joints_deg": round(err, 3)}
+            tracker.feed(reached, result)
 
     if adapter is not None:
         adapter.close()

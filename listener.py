@@ -13,9 +13,17 @@ import os
 import queue
 import socket
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable, Optional
+
+
+class ReplySlot:
+    """HTTP handler 与回传线程之间的结果容器。"""
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: dict[str, Any] = {"ok": True}
 
 
 @dataclass
@@ -164,6 +172,7 @@ class network_listener(BaseListener):
         port: int,
         command_queue: "queue.Queue[Optional[NormalizedCommand]]",
         on_log: Optional[Callable[[str], None]] = None,
+        on_pending: Optional[Callable[..., None]] = None,
     ):
         super().__init__(command_queue, on_log=on_log)
         self._host = host
@@ -171,6 +180,7 @@ class network_listener(BaseListener):
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._on_pending = on_pending  # on_pending(tcp_conn=conn)
 
     def start_background(self) -> None:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -208,7 +218,11 @@ class network_listener(BaseListener):
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     try:
-                        self.emit_from_line(line.decode("utf-8"))
+                        cmd = CommandNormalizer.normalize_line(line.decode("utf-8"))
+                        if cmd is not None:
+                            if self._on_pending is not None:
+                                self._on_pending(tcp_conn=conn, http_slot=None)
+                            self.emit(cmd)
                     except ValueError as e:
                         self._on_log(f"[TCP] 忽略行: {e}")
         finally:
@@ -266,7 +280,10 @@ def start_http_server(
     port: int,
     web_dir: str,
     on_log: Callable[[str], None],
+    on_pending: Optional[Callable[..., None]] = None,
 ) -> threading.Thread:
+    from .config import REACHED_TIMEOUT_S
+
     frontend = frontend_listener(cmd_q, on_log=on_log)
 
     class Handler(BaseHTTPRequestHandler):
@@ -325,13 +342,24 @@ def start_http_server(
             except json.JSONDecodeError:
                 self._send_json(400, {"ok": False, "error": "invalid json"})
                 return
+            kind = routes[path]
+            slot: Optional[ReplySlot] = None
+            if on_pending is not None:
+                slot = ReplySlot()
+                on_pending(tcp_conn=None, http_slot=slot)
             try:
-                frontend.emit_from_obj({"cmd": routes[path], **obj})
+                frontend.emit_from_obj({"cmd": kind, **obj})
             except ValueError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
                 return
-            on_log(f"[HTTP] recv {routes[path]}: {obj}")
-            self._send_json(200, {"ok": True})
+            on_log(f"[HTTP] recv {kind}: {obj}")
+            if slot is not None:
+                slot.event.wait(timeout=REACHED_TIMEOUT_S + 0.5)
+                result = slot.result
+                code = 200 if result.get("ok") else 408
+                self._send_json(code, result)
+            else:
+                self._send_json(200, {"ok": True})
 
     def _run() -> None:
         httpd = HTTPServer((host, port), Handler)

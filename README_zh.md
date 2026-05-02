@@ -4,15 +4,40 @@
 
 `arm_control_bridge` 是 4 轴主臂 + 抓手通道的控制桥接模块：
 
-- 上层 -> Bridge：TCP/HTTP 命令
-- Bridge -> 树莓派：UDP 二进制帧
+- 上层策略 → Bridge：TCP / HTTP 命令
+- Bridge → 树莓派：UDP 二进制帧（V2.1，108B，25Hz）
+- Bridge ← 树莓派：WebSocket 状态广播（pi2camera v1，用于到位判定）
 - 可选 Isaac Sim 运行模式（`--sim`）
 
 ## 架构概览
 
-上层发送命令（`pose/joints/claw`）-> `listener.py` 做命令归一化 ->
-`calculator.py` 生成关节目标 -> `PiController.py` 打包并下发 V2.1 UDP 帧 ->
-Pi 侧执行电机/舵机控制。仿真模式下，同一命令流也驱动 Isaac Sim。
+```
+上层策略
+  │  TCP JSON行 / HTTP POST
+  ▼
+listener.py  ──────────────────────────────────────────────────────
+  CommandNormalizer 归一化命令                                      │
+  register_pending(tcp_conn / http_slot)  ← 预注册回传上下文        │
+  │                                                                 │
+  ▼                                                                 │
+run_control.py 控制循环（25Hz）                                     │
+  tracker.accept(kind)   ← 消费预注册上下文，开始计时               │
+  engine.apply_command() ← 更新 IK/关节目标                         │
+  engine.step()          ← 生成 JointFrame                          │
+  tracker.feed(reached, result)  ← 无锁到位判定 + put_nowait        │
+  │                                                                 │
+  ├─ PiController.py → UDP 108B → 树莓派                            │
+  │                                                                 │
+  └─ reply_q (daemon 线程)                                          │
+       conn.sendall / slot.event.set  ← 异步回传，不阻塞控制循环    │
+                                                                    │
+pi_feedback.py (daemon 线程)                                        │
+  WebSocket 订阅 ws://rpi_ip:8765                                   │
+  解析 feedback.fb_arm_rad / mit_arm_rad                            │
+  get_fb_arm_rad() → 供 is_reached() 使用实机关节角 ───────────────┘
+```
+
+**到位判定数据源优先级**：有树莓派 WebSocket 回传时用实机关节角；无回传或仿真模式时用 `state.q_cmd`（仿真模式用 `arm.get_joint_positions()`）。
 
 ## 接口说明
 
@@ -20,112 +45,163 @@ Pi 侧执行电机/舵机控制。仿真模式下，同一命令流也驱动 Isa
 
 - 默认监听：`0.0.0.0:9888`
 - 每行一条 JSON（`\n` 分隔）
-- 主要参数：`--listen`、`--port`
+- 到位后 bridge 在**同一连接**写回一行 JSON（见 §到位回传）
 
 ### 2) HTTP（JSON）
 
-- `--web-port > 0` 时启用
-- `run_control.py` 默认：`127.0.0.1:8765`
-- `start_pc_control.sh` 脚本默认：`0.0.0.0:8877`
-- 路由：
-  - `POST /api/pose`
-  - `POST /api/pose_delta`
-  - `POST /api/joints`
-  - `POST /api/joints_delta`
-  - `POST /api/claw`
+- `--web-port > 0` 时启用，默认 `start_pc_control.sh` 使用 `0.0.0.0:8877`
+- 所有命令均**阻塞等待到位**后才返回响应（超时 10s 返回 408）
+- 路由：`POST /api/pose` · `/api/pose_delta` · `/api/joints` · `/api/joints_delta` · `/api/claw`
 
 ### 3) 下发到 Pi 的 UDP
 
 - 默认目标端口：`9870`（`--rpi-port`）
-- 协议：固定 V2.1 `108B`（`=Id + d*12`）
-- 默认控制频率：`25Hz`
-- 已移除 UDP v1 路径。
+- 协议：固定 V2.1 `108B`（`=Id + d*12`），25Hz
+- 详见 `doc/bridge2pi.md`
 
-详细字段请看：`doc/head2bridge.md` 与 `doc/bridge2pi.md`。
+### 4) 接收 Pi 回传（WebSocket）
 
-## 资源加载策略（仅 configuration）
+- 订阅 `ws://rpi_ip:8765`（pi2camera v1 协议）
+- 解析 `feedback.fb_arm_rad`（优先）或 `feedback.mit_arm_rad`
+- 仅在 `--rpi-ip` 存在时启动，断线自动重连（3s）
+- 无回传时静默降级，到位判定自动切换为内部指令角
 
-- 默认 URDF 仅从 `arm_control_bridge/configuration/` 加载：
-  - `ice_cream_v8.SLDASM.urdf`（优先）
-  - `ice_cream_SINGLE.SLDASM.urdf`
-- 默认 USD（`--sim`）仅从 `arm_control_bridge/configuration/` 加载：
-  - `ice_cream_v8_arm.usd`
-  - `ice_cream_single_arm.usd`
-  - `ice_cream_arm.usd`
-- 仍支持显式 `--urdf`、`--sim-usd` 覆盖路径。
-- 若默认文件缺失且未显式覆盖，启动会快速失败并给出明确报错。
+## 到位回传格式（head2bridge v2.2）
 
-## 命令格式（高频摘要）
+命令执行完成后，bridge 向上层回传结果。格式如下：
 
-- `pose`：必填 `x, y, z`（米）
-- `pose_delta`：必填 `dx, dy, dz`（米）
-- `joints`：必填 `axes_rel_deg`（长度 4 数组）
-- `joints_delta`：必填 `deltas_rel_deg`（长度 4 数组）
-- `claw`：必填 `wrist_deg` + (`grip_state` 或 `open_close`)
-- `stop` / `ping`：TCP 命令路径支持
-
-最小 TCP 示例：
-
+**joints / joints_delta 到位：**
 ```json
-{"cmd":"joints","axes_rel_deg":[0,10,-90,-70]}
-{"cmd":"claw","wrist_deg":20,"open_close":"close"}
-{"cmd":"pose","x":0.35,"y":0.20,"z":0.25}
+{"ok": true, "reached": true, "error_joints_deg": 1.2}
 ```
 
-## 文件与文件夹职责
+**pose / pose_delta 到位：**
+```json
+{"ok": true, "reached": true, "actual_pose": {"x": 0.349, "y": 0.201, "z": 0.248}, "error_pose_m": 0.003}
+```
+
+**claw 到位（2s 定时）：**
+```json
+{"ok": true, "reached": true}
+```
+
+**超时（10s）：**
+```json
+{"ok": false, "reached": false, "error": "timeout"}
+```
+
+到位判定规则：
+- `joints`：每轴误差均 < 5°（任一轴超出即不到位）
+- `pose`：link4 FK 位置误差范数 < 5mm
+- `claw`：无硬件回传，接收命令后 2s 自动判定到位
+- 稳定缓冲：连续 5 帧（@25Hz ≈ 200ms）全部满足阈值才触发回传，防止瞬间抖动误判
+
+## 文件职责
 
 ### 核心运行入口
 
-- `run_control.py`：主入口、参数解析、sim/nosim 主循环编排
-- `start_pc_control.sh`：一键启动脚本（sim 或 nosim）
+- `run_control.py`：主入口、参数解析、sim/nosim 主循环。内联 `_ReachTracker`（到位判定 + 稳定缓冲 + 异步回传队列）和 `_reply_worker`（daemon 回传线程）
 
 ### 命令入口与协议 I/O
 
-- `listener.py`：TCP/HTTP 服务与命令归一化
+- `listener.py`：TCP/HTTP 服务与命令归一化。新增 `ReplySlot`（HTTP 阻塞等待容器）和 `on_pending` 回调接口
 - `PiController.py`：UDP 帧打包与下发
 
 ### 运动学与控制
 
-- `calculator.py`：IK/FK、命令应用、控制帧生成
-- `shower.py`：仿真侧状态显示/可视化辅助
+- `calculator.py`：IK/FK、命令应用、控制帧生成。新增 `CalculatorEngine.is_reached()`：joints 模式逐轴判断，pose 模式判断 FK 位置范数，支持传入实机关节角覆盖内部指令角
+- `shower.py`：仿真侧状态显示辅助
+
+### 树莓派回传
+
+- `pi_feedback.py`：WebSocket 客户端，后台线程订阅树莓派状态广播，线程安全地暴露 `get_fb_arm_rad()`
 
 ### 配置与资源
 
-- `config.py`：默认端口、频率、限幅、标定加载
-- `configuration/`：运行时资源（例如默认 URDF）
+- `config.py`：端口、频率、限幅、标定加载，以及到位判定阈值（`REACHED_JOINTS_TOL_DEG=5°`、`REACHED_POSE_TOL_M=5mm`、`REACHED_STABLE_FRAMES=5`、`REACHED_TIMEOUT_S=10s`、`REACHED_CLAW_DELAY_S=2s`）
+- `configuration/`：URDF、USD 资源
 - `web/`：测试网页（`index.html`）
 
 ### 文档
 
-- `doc/head2bridge.md`：上层 -> bridge API 规范
-- `doc/bridge2pi.md`：bridge -> Pi UDP 规范
-- `doc/pi2camera.md`：相机链路相关协议说明
+- `doc/head2bridge.md`：上层 → bridge API 规范（v2.2，含到位回传）
+- `doc/bridge2pi.md`：bridge → Pi UDP 规范（V2.1）
+- `doc/pi2camera.md`：Pi → 相机/仿真 WebSocket 广播规范
 
 ## 快速启动
 
-### 一键脚本
-
 ```bash
-# 仿真 + 下发
+# 仿真 + 下发到树莓派
 ./arm_control_bridge/start_pc_control.sh sim 192.168.1.100
 
 # 无仿真开环下发
 ./arm_control_bridge/start_pc_control.sh nosim 192.168.1.100
+
+# 仅本地仿真（无树莓派）
+~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --web-port 8877 --web-host 0.0.0.0
+
+# 无窗口仿真（降低 GPU 负载）
+~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --headless --web-port 8877 --web-host 0.0.0.0
 ```
 
-## 最小联调
+## 与树莓派对接方案
+
+### 下行（Bridge → Pi）
+
+Bridge 以 25Hz 向 Pi 发送 UDP 108B 帧，无需额外配置，`--rpi-ip` 指定 Pi 地址即可。
+
+### 上行（Pi → Bridge，用于到位判定）
+
+Pi 运行 `icecreamPi` 服务，通过 WebSocket 广播状态（`ws://pi_ip:8765`，约 20Hz）。Bridge 启动时若指定了 `--rpi-ip`，会自动启动 `PiFeedbackClient` 订阅该广播。
+
+Pi 广播消息格式（`pi2camera v1`）：
+```json
+{
+  "type": "state",
+  "data": {
+    "feedback": {
+      "fb_arm_rad": [q1, q2, q3, q4],
+      "mit_arm_rad": [q1, q2, q3, q4]
+    }
+  }
+}
+```
+
+Bridge 优先使用 `fb_arm_rad`，回退 `mit_arm_rad`，两者均无时降级为内部指令角。
+
+### 联调验证
 
 ```bash
-python3 - <<'PY'
-import socket, json
-s = socket.create_connection(("127.0.0.1", 9888))
-for cmd in [
-    {"cmd":"pose","x":0.35,"y":0.2,"z":0.25},
-    {"cmd":"joints","axes_rel_deg":[0,0,5,0]},
-    {"cmd":"claw","wrist_deg":15,"grip":0.5},
-]:
-    s.sendall((json.dumps(cmd) + "\n").encode("utf-8"))
+# 发送 joints 命令，等待到位回传
+curl -s -X POST http://127.0.0.1:8877/api/joints \
+  -H "Content-Type: application/json" \
+  -d '{"axes_rel_deg":[0,90,-180,-20]}'
+# 返回：{"ok":true,"reached":true,"error_joints_deg":0.8}
+
+# 发送 pose 命令
+curl -s -X POST http://127.0.0.1:8877/api/pose \
+  -H "Content-Type: application/json" \
+  -d '{"x":-0.05,"y":0.05,"z":0.28}'
+# 返回：{"ok":true,"reached":true,"actual_pose":{"x":-0.05,"y":0.05,"z":0.28},"error_pose_m":0.002}
+
+# TCP 路径（到位后同一连接收到回传行）
+python3 -c "
+import socket, json, time
+s = socket.create_connection(('127.0.0.1', 9888))
+s.sendall((json.dumps({'cmd':'joints','axes_rel_deg':[0,90,-180,-20]}) + '\n').encode())
+s.settimeout(15)
+print('reply:', s.recv(4096).decode())
 s.close()
-print("done")
-PY
+"
 ```
+
+## 命令格式摘要
+
+| 命令 | 必填字段 | 说明 |
+|---|---|---|
+| `pose` | `x, y, z`（米） | link4 笛卡尔目标，阻塞到位 |
+| `pose_delta` | `dx, dy, dz`（米） | 笛卡尔增量，阻塞到位 |
+| `joints` | `axes_rel_deg`（长度 4） | 关节绝对目标（相对标定零位，度），阻塞到位 |
+| `joints_delta` | `deltas_rel_deg`（长度 4） | 关节增量，阻塞到位 |
+| `claw` | `wrist_deg` + `grip_state`/`open_close` | 手腕角 + 夹爪状态，2s 后回传 |
+| `stop` / `ping` | — | 急停记录 / 连通检查 |
