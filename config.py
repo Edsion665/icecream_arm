@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,17 @@ class ControlConfig:
     control_hz: float = 25.0
     default_tcp_port: int = 9888
     default_udp_port: int = 9870
+    #: TCP JSON 指令监听（CLI 可覆盖）。
+    listen_host: str = "0.0.0.0"
+    #: 树莓派 IP；``None`` 表示不连 UDP / 不回读反馈。
+    rpi_ip: Optional[str] = None
+    #: HTTP 调试页；端口 ``0`` 关闭。
+    web_test_host: str = "0.0.0.0"
+    web_test_port: int = 8877
+    #: 相对仓库根（``isaac-sim/``）的标定 md。
+    calibration_md_relpath: str = "initial_position.md"
+    #: pose IK 中 q5 固定角（度）。
+    q5_fixed_deg: float = 0.0
     approach_gain_scale: float = 0.1  # APPROACH_GAIN = control_hz * scale
     max_joint_vel_rad_s: float = 0.6
     max_target_rate_rad_s: float = 1.5
@@ -66,19 +77,23 @@ class SimulationConfig:
     arm_prim_path: str = "/World/IceCreamArm"
     target_marker_path: str = "/World/TargetJoint4Marker"
     marker_z_lift_m: float = 0.04
-    default_usd_candidates: Tuple[str, ...] = (
-        "ice_cream_v8_arm.usd",
-        "ice_cream_single_arm.usd",
-        "ice_cream_arm.usd",
-    )
-    v8_payload_basename: str = "ice_cream_v8_arm.usd"
-    v8_payload_children: Tuple[str, ...] = (
-        "ice_cream_v8_arm_physics.usd",
-        "ice_cream_v8_arm_sensor.usd",
-        "ice_cream_v8_arm_base.usd",
-    )
+    #: 相对 ``arm_control_bridge/configuration/`` 的机械臂主 USD（如 ``v8/ice_cream_v8_arm.usd``）。
+    arm_usd_relpath: str = "v8/ice_cream_v8_arm.usd"
+    #: 默认 URDF（CLI 不再指定，启动时优先使用）；与 ``arm_usd_relpath`` 通常同一子目录。
+    arm_urdf_relpath: str = "v8/ice_cream_v8.SLDASM.urdf"
+    #: 若设置，``SingleArticulation`` 直接绑此路径，跳过舞台内自动查找 ArticulationRoot。
+    articulation_prim_path: Optional[str] = None
     pd_kp_base: float = 1e4
     pd_kd_base: float = 1e3
+    #: 无头仿真窗口。
+    sim_headless: bool = False
+    #: 仿真内 HTTP 调试页（端口 ``0`` 关闭）。
+    sim_web_host: str = "0.0.0.0"
+    sim_web_port: int = 8877
+    #: 关节 PD 相对 ``pd_kp_base`` / ``pd_kd_base`` 的缩放。
+    sim_gain_scale: float = 1.0
+    #: 指令与仿真关节差过大时是否 snap 对齐。
+    sim_resync: bool = True
 
 
 @dataclass(frozen=True)

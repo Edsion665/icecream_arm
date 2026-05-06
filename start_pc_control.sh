@@ -12,9 +12,6 @@ RPI_IP="${2:-192.168.31.211}"           # 默认 head 地址，可被参数覆�
 RPI_PORT="${RPI_PORT:-9870}"
 LISTEN_HOST="${LISTEN_HOST:-0.0.0.0}"
 TCP_PORT="${TCP_PORT:-9888}"
-WEB_HOST="${WEB_HOST:-0.0.0.0}"
-WEB_PORT="${WEB_PORT:-8877}"
-
 cd "$(dirname "$0")/.."
 
 COMMON_ARGS=(
@@ -22,8 +19,6 @@ COMMON_ARGS=(
   --port "${TCP_PORT}"
   --rpi-ip "${RPI_IP}"
   --rpi-port "${RPI_PORT}"
-  --web-host "${WEB_HOST}"
-  --web-port "${WEB_PORT}"
 )
 
 if [[ "${MODE}" == "sim" ]]; then

@@ -1,4 +1,4 @@
-"""Isaac Sim 场景辅助：USD 解析、payload 符号链接、Prim 调试。"""
+"""Isaac Sim 场景辅助：Grid 地面、Articulation 查找、Prim 调试。"""
 
 from __future__ import annotations
 
@@ -10,66 +10,6 @@ import numpy as np
 from ..config import DEFAULT_SIMULATION_CONFIG, SimulationConfig
 
 LogFn = Callable[[str], None]
-
-
-def resolve_sim_usd(package_dir: str, sim_usd_arg: str | None, sim_cfg: SimulationConfig = DEFAULT_SIMULATION_CONFIG) -> str:
-    """解析仿真主 USD 路径：显式参数优先，否则在 ``configuration/`` 下按候选名查找。
-
-    Args:
-        package_dir: ``arm_control_bridge`` 包根目录绝对路径。
-        sim_usd_arg: CLI ``--sim-usd``；为 ``None`` 时使用默认候选。
-        sim_cfg: 仿真相关常量。
-
-    Returns:
-        存在的 USD 文件绝对路径。
-
-    Raises:
-        FileNotFoundError: 未找到任何候选文件。
-    """
-    if sim_usd_arg is not None:
-        path = os.path.abspath(sim_usd_arg)
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"仿真 USD 不存在: {path}")
-        return path
-    for name in sim_cfg.default_usd_candidates:
-        p = os.path.join(package_dir, "configuration", name)
-        if os.path.isfile(p):
-            return p
-    names = ", ".join(sim_cfg.default_usd_candidates)
-    raise FileNotFoundError(
-        f"未在 arm_control_bridge/configuration/ 找到 {names}，请用 --sim-usd 指定。"
-    )
-
-
-def ensure_v8_arm_payload_symlinks(
-    usd_path: str,
-    *,
-    sim_cfg: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
-    on_warn: Optional[LogFn] = None,
-) -> None:
-    """为 ``ice_cream_v8_arm.usd`` 建立 ``configuration/*.usd`` 符号链，满足 Omniverse payload 解析。
-
-    Args:
-        usd_path: 已解析的 USD 绝对路径。
-        sim_cfg: 含 v8 基名与子 USD 列表。
-        on_warn: 创建失败时的回调（不再静默 ``pass``）。
-    """
-    if os.path.basename(usd_path) != sim_cfg.v8_payload_basename:
-        return
-    parent = os.path.dirname(os.path.abspath(usd_path))
-    nested = os.path.join(parent, "configuration")
-    for name in sim_cfg.v8_payload_children:
-        src = os.path.join(parent, name)
-        dst = os.path.join(nested, name)
-        if not os.path.isfile(src) or os.path.lexists(dst):
-            continue
-        try:
-            os.makedirs(nested, exist_ok=True)
-            os.symlink(os.path.join("..", name), dst)
-        except OSError as exc:
-            msg = f"[sim] v8 payload symlink 失败: {dst} <- {src} ({type(exc).__name__}: {exc})"
-            if on_warn is not None:
-                on_warn(msg)
 
 
 def find_articulation_root(stage: Any, under_path: str) -> Optional[str]:
@@ -140,3 +80,49 @@ def set_marker_xyz(
     except Exception as exc:
         if log is not None:
             log(f"[sim][marker] set_marker_xyz failed: {type(exc).__name__}: {exc}")
+
+
+def add_grid_ground(world: Any, package_dir: str, *, on_log: Optional[LogFn] = None) -> Any:
+    """从包内 ``configuration/Isaac/Environments/Grid/default_environment.usd`` 加载默认 Grid 地面（与官方布局一致）。"""
+    name = "default_ground_plane"
+    prim_path = "/World/defaultGroundPlane"
+    if world.scene.object_exists(name=name):
+        return world.scene.get_object(name=name)
+    usd_path = os.path.join(
+        package_dir, "configuration", "Isaac", "Environments", "Grid", "default_environment.usd"
+    )
+    if not os.path.isfile(usd_path):
+        raise FileNotFoundError(
+            "缺少本地 Grid 地面 USD，请将 default_environment.usd 及同目录依赖放入: "
+            f"{os.path.dirname(usd_path)}/"
+        )
+    usd_path = os.path.abspath(usd_path)
+    try:
+        from isaacsim.core.api.materials.physics_material import PhysicsMaterial
+        from isaacsim.core.api.objects.ground_plane import GroundPlane
+        from isaacsim.core.utils.prims import is_prim_path_valid
+        from isaacsim.core.utils.stage import add_reference_to_stage
+        from isaacsim.core.utils.string import find_unique_string_name
+    except ModuleNotFoundError:
+        from omni.isaac.core.materials.physics_material import PhysicsMaterial
+        from omni.isaac.core.objects.ground_plane import GroundPlane
+        from omni.isaac.core.utils.prims import is_prim_path_valid
+        from omni.isaac.core.utils.stage import add_reference_to_stage
+        from omni.isaac.core.utils.string import find_unique_string_name
+
+    if on_log is not None:
+        on_log(f"[sim] Grid 地面: {usd_path}")
+    add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
+    physics_material_path = find_unique_string_name(
+        initial_name="/World/Physics_Materials/physics_material",
+        is_unique_fn=lambda x: not is_prim_path_valid(x),
+    )
+    physics_material = PhysicsMaterial(
+        prim_path=physics_material_path,
+        static_friction=0.5,
+        dynamic_friction=0.5,
+        restitution=0.8,
+    )
+    plane = GroundPlane(prim_path=prim_path, name=name, z_position=0.0, physics_material=physics_material)
+    world.scene.add(plane)
+    return plane

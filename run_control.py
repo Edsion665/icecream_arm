@@ -22,12 +22,8 @@ for _p in (_ROOT,):
         sys.path.insert(0, _p)
 
 _ICECREAM_ROOT = _ROOT
-# URDF 默认仅从 arm_control_bridge/configuration/ 读取（V8 优先，其次 SINGLE）。
+# URDF 默认：见 ``SimulationConfig.arm_urdf_relpath``；SINGLE 仍在 configuration/ 根目录作备选。
 _CONFIG_DIR = os.path.join(_PKG_DIR, "configuration")
-
-_DEFAULT_V8_URDF_CANDIDATES = [
-    os.path.join(_CONFIG_DIR, "ice_cream_v8.SLDASM.urdf"),
-]
 
 _DEFAULT_SINGLE_URDF_CANDIDATES = [
     os.path.join(_CONFIG_DIR, "ice_cream_SINGLE.SLDASM.urdf"),
@@ -35,17 +31,20 @@ _DEFAULT_SINGLE_URDF_CANDIDATES = [
 
 
 def _default_urdf_path() -> Optional[str]:
-    for p in _DEFAULT_V8_URDF_CANDIDATES:
-        if os.path.isfile(p):
-            return p
-    for p in _DEFAULT_SINGLE_URDF_CANDIDATES:
-        if os.path.isfile(p):
-            return p
+    from .config import DEFAULT_SIMULATION_CONFIG
+
+    p = os.path.abspath(
+        os.path.join(_CONFIG_DIR, DEFAULT_SIMULATION_CONFIG.arm_urdf_relpath)
+    )
+    if os.path.isfile(p):
+        return p
+    for cand in _DEFAULT_SINGLE_URDF_CANDIDATES:
+        if os.path.isfile(cand):
+            return cand
     return None
 
 
 DEFAULT_URDF = _default_urdf_path()
-_INITIAL_POSITION_MD = os.path.join(_ICECREAM_ROOT, "initial_position.md")
 
 
 def run_loop(
@@ -55,17 +54,26 @@ def run_loop(
     rpi_ip: Optional[str],
     rpi_port: int,
     urdf_path: Optional[str],
-    calib_file: Optional[str],
-    q5_deg: float,
-    web_port: int = 0,
-    web_host: str = "127.0.0.1",
     log_print: bool = True,
-    udp_strict: bool = True,
+    udp_strict: Optional[bool] = None,
 ) -> None:
     import numpy as np
     from arm_control_bridge.calculator import CalculatorEngine, CalculatorState, URDFKinematics
 
-    from .config import CONTROL_DT, CONTROL_HZ, load_calibration_deg
+    from .config import (
+        CONTROL_DT,
+        CONTROL_HZ,
+        DEFAULT_BRIDGE_RUNTIME,
+        DEFAULT_CONTROL_CONFIG,
+        load_calibration_deg,
+    )
+
+    cc = DEFAULT_CONTROL_CONFIG
+    strict = DEFAULT_BRIDGE_RUNTIME.udp_strict if udp_strict is None else udp_strict
+    calib_file = os.path.join(_ICECREAM_ROOT, cc.calibration_md_relpath)
+    q5_deg = float(cc.q5_fixed_deg)
+    web_port = int(cc.web_test_port)
+    web_host = cc.web_test_host
     from .io import PiFeedbackClient, RPiUDPStreamer, RpiProtocolAdapter, motor
     from .io.listener import ClawCommand, MotionCommand4Axis, claw_listener, network_listener, start_http_server
 
@@ -119,7 +127,7 @@ def run_loop(
     adapter: Optional[RpiProtocolAdapter] = None
     pi_fb: Optional[PiFeedbackClient] = None
     if rpi_ip:
-        streamer = RPiUDPStreamer(rpi_ip, rpi_port, strict_udp=udp_strict)
+        streamer = RPiUDPStreamer(rpi_ip, rpi_port, strict_udp=strict)
         adapter = RpiProtocolAdapter(streamer)
         arm_motor = motor(adapter)
         pi_fb = PiFeedbackClient(rpi_ip)
@@ -214,36 +222,39 @@ def run_sim_loop(
     rpi_ip: Optional[str],
     rpi_port: int,
     urdf_path: Optional[str],
-    calib_file: Optional[str],
-    q5_deg: float,
-    sim_usd: Optional[str],
-    headless: bool,
-    ik_rate: float,
-    web_port: int,
-    web_host: str,
-    damping: float,
-    max_iter: int,
-    tol: float,
-    physics_hz: Optional[float] = None,
-    no_rate_limits: bool = False,
     log_print: bool = True,
-    sim_gain_scale: float = 1.0,
-    sim_resync: bool = True,
-    udp_strict: bool = True,
+    udp_strict: Optional[bool] = None,
 ) -> None:
     import numpy as np
     from isaacsim import SimulationApp
 
     from .calculator import CalculatorEngine, CalculatorState, NUM_JOINTS, URDFKinematics
-    from .config import DEFAULT_SIMULATION_CONFIG, SIM_TRACK_SNAP_THRESHOLD_RAD, load_calibration_deg
+    from .config import (
+        CONTROL_HZ,
+        DEFAULT_BRIDGE_RUNTIME,
+        DEFAULT_CONTROL_CONFIG,
+        DEFAULT_SIMULATION_CONFIG,
+        SIM_TRACK_SNAP_THRESHOLD_RAD,
+        load_calibration_deg,
+    )
+
+    cc = DEFAULT_CONTROL_CONFIG
+    sim_cfg = DEFAULT_SIMULATION_CONFIG
+    strict = DEFAULT_BRIDGE_RUNTIME.udp_strict if udp_strict is None else udp_strict
+    calib_file = os.path.join(_ICECREAM_ROOT, cc.calibration_md_relpath)
+    q5_deg = float(cc.q5_fixed_deg)
+    headless = bool(sim_cfg.sim_headless)
+    web_port = int(sim_cfg.sim_web_port)
+    web_host = sim_cfg.sim_web_host
+    sim_gain_scale = float(sim_cfg.sim_gain_scale)
+    sim_resync = bool(sim_cfg.sim_resync)
     from .io import RPiUDPStreamer, RpiProtocolAdapter, motor
     from .io.listener import ClawCommand, MotionCommand4Axis, network_listener, start_http_server
     from .sim import (
-        ensure_v8_arm_payload_symlinks,
+        add_grid_ground,
         find_articulation_root,
         log_prim_world_pose,
         receiver,
-        resolve_sim_usd,
         set_marker_xyz,
         show,
     )
@@ -280,15 +291,9 @@ def run_sim_loop(
         log(f"[sim] 初始 pose_xyz = link4 FK @ 标定零位 (m): {state.pose_xyz}")
     engine = CalculatorEngine(kin)
 
-    ik_follow_hz = float(ik_rate)
-    # 与验证脚本一致：每控制周期一次 world.step，physics_dt = 1/ik_follow_hz
-    physics_hz_eff = ik_follow_hz
+    ik_follow_hz = float(CONTROL_HZ)
     n_physics_substeps = 1
     physics_dt = 1.0 / ik_follow_hz
-    if physics_hz is not None and log_print:
-        log(
-            f"[sim] 忽略 --physics-hz={physics_hz}，物理与 IK 锁定同频 {ik_follow_hz:.1f} Hz（单步/周期）"
-        )
 
     try:
         from isaacsim.core.api import World
@@ -306,7 +311,7 @@ def run_sim_loop(
     arm_motor: Optional[motor] = None
     adapter: Optional[RpiProtocolAdapter] = None
     if rpi_ip:
-        streamer = RPiUDPStreamer(rpi_ip, rpi_port, strict_udp=udp_strict)
+        streamer = RPiUDPStreamer(rpi_ip, rpi_port, strict_udp=strict)
         adapter = RpiProtocolAdapter(streamer)
         arm_motor = motor(adapter)
 
@@ -320,19 +325,20 @@ def run_sim_loop(
             on_pending=_on_pending,
         )
 
-    sim_cfg = DEFAULT_SIMULATION_CONFIG
-    usd_path = resolve_sim_usd(_PKG_DIR, sim_usd)
-    ensure_v8_arm_payload_symlinks(usd_path, on_warn=log)
+    usd_path = os.path.abspath(os.path.join(_PKG_DIR, "configuration", sim_cfg.arm_usd_relpath))
     world = World(stage_units_in_meters=1.0, physics_dt=physics_dt, rendering_dt=physics_dt)
-    world.scene.add_default_ground_plane()
+    add_grid_ground(world, _PKG_DIR, on_log=log)
     stage = get_current_stage()
     arm_prim = add_reference_to_stage(usd_path=usd_path, prim_path=sim_cfg.arm_prim_path)
     try:
         arm_prim.Load()
     except Exception as ex:
         log(f"[sim] arm_prim.Load() 跳过: {type(ex).__name__}: {ex}")
-    found_root = find_articulation_root(stage, sim_cfg.arm_prim_path)
-    articulation_path = found_root if found_root else sim_cfg.arm_prim_path
+    if sim_cfg.articulation_prim_path:
+        articulation_path = sim_cfg.articulation_prim_path
+    else:
+        found_root = find_articulation_root(stage, sim_cfg.arm_prim_path)
+        articulation_path = found_root if found_root else sim_cfg.arm_prim_path
     arm = world.scene.add(SingleArticulation(articulation_path, name="ice_cream_arm"))
     world.reset()
     log_prim_world_pose(stage, sim_cfg.arm_prim_path, "arm_prim", log)
@@ -468,113 +474,43 @@ def run_sim_loop(
 
 
 def main() -> None:
-    from arm_control_bridge.config import (
-        BridgeRuntimeConfig,
-        DEFAULT_TCP_PORT,
-        DEFAULT_UDP_PORT,
-    )
+    from arm_control_bridge.config import DEFAULT_CONTROL_CONFIG
 
-    p = argparse.ArgumentParser(description="arm_control_bridge 新架构：网络指令 + 可选 Isaac Sim")
-    p.add_argument("--listen", default="0.0.0.0", help="TCP 监听地址")
-    p.add_argument("--port", type=int, default=DEFAULT_TCP_PORT, help="TCP 端口（JSON 行指令）")
-    p.add_argument("--rpi-ip", default=None, help="树莓派 IP；不填则不发送 UDP")
-    p.add_argument("--rpi-port", type=int, default=DEFAULT_UDP_PORT, help="树莓派 UDP 端口")
-    p.add_argument(
-        "--urdf",
-        type=str,
-        nargs="?",
-        default=DEFAULT_URDF,
-        const=DEFAULT_URDF,
-        help="运动学 URDF；默认仅从 arm_control_bridge/configuration/ 读取（V8 优先，其次 SINGLE）；若缺失则报错退出",
-    )
-    p.add_argument("--calib-file", type=str, default=None)
-    p.add_argument("--q5-deg", type=float, default=0.0, help="pose IK 中 q5 固定角（度）")
+    cc = DEFAULT_CONTROL_CONFIG
+    p = argparse.ArgumentParser(description="arm_control_bridge：网络指令 + 可选 Isaac Sim（其余见 config）")
     p.add_argument("--sim", action="store_true", help="启动 Isaac Sim")
-    p.add_argument("--headless", action="store_true", help="仿真无窗口（仅 --sim）")
-    p.add_argument(
-        "--sim-usd",
-        type=str,
-        default=None,
-        help="机械臂 USD（仅 --sim）；未指定时仅从本包目录 arm_control_bridge/configuration/ 查找：ice_cream_v8_arm.usd、ice_cream_single_arm.usd、ice_cream_arm.usd",
-    )
-    p.add_argument("--ik-rate", type=float, default=25.0, help="控制/IK 更新频率 Hz（仅 --sim）")
-    p.add_argument(
-        "--physics-hz",
-        type=float,
-        default=None,
-        help="已弃用：--sim 下物理步与 --ik-rate 锁定同频（与 cartesian_ik_verify 一致），传入则仅打印忽略提示",
-    )
-    p.add_argument(
-        "--sim-gain-scale",
-        type=float,
-        default=1.0,
-        help="仿真关节 PD 增益缩放（仅 --sim），默认 1.0 对应 kps≈1e4、kds≈1e3",
-    )
-    p.add_argument(
-        "--no-sim-resync",
-        action="store_true",
-        help="关闭仿真与指令偏差过大时自动对齐（仅 --sim）；默认把仿真关节 snap 到 q_cmd，不拉回内部状态",
-    )
-    p.add_argument("--no-rate-limits", action="store_true", help="关闭限速（仅 --sim）")
-    p.add_argument(
-        "--no-udp-strict",
-        action="store_true",
-        help="UDP 发送失败时不抛错退出（不推荐）；默认开启严格模式以便发现网络问题",
-    )
-    p.add_argument("--web-port", type=int, default=8765, help="HTTP 测试页端口，0 关闭")
-    p.add_argument("--web-host", default="127.0.0.1", help="HTTP 绑定地址")
-    p.add_argument("--tol", type=float, default=1e-5, help="IK 位置容差（米）")
-    p.add_argument("--max-iter", type=int, default=80, help="IK 最大迭代次数")
-    p.add_argument("--damping", type=float, default=1e-2, help="IK 阻尼")
+    p.add_argument("--listen", default=cc.listen_host, help="TCP 监听（默认 ControlConfig.listen_host）")
+    p.add_argument("--port", type=int, default=cc.default_tcp_port, help="TCP 端口")
+    p.add_argument("--rpi-ip", default=None, help="树莓派 IP（未传则用 ControlConfig.rpi_ip）")
+    p.add_argument("--rpi-port", type=int, default=cc.default_udp_port, help="树莓派 UDP 端口")
     args = p.parse_args()
 
-    urdf = args.urdf.strip() if args.urdf and str(args.urdf).strip() else None
-    if urdf and not os.path.isfile(urdf):
-        print(f"错误：URDF 不存在: {urdf}")
-        sys.exit(1)
-    if urdf is None:
+    rpi_ip: Optional[str] = args.rpi_ip if args.rpi_ip is not None else cc.rpi_ip
+    if rpi_ip is not None and not str(rpi_ip).strip():
+        rpi_ip = None
+
+    urdf = _default_urdf_path()
+    if urdf is None or not os.path.isfile(urdf):
         print(
-            "错误：未在 arm_control_bridge/configuration/ 找到默认 URDF（ice_cream_v8.SLDASM.urdf 或 ice_cream_SINGLE.SLDASM.urdf），请补齐文件或显式传 --urdf。"
+            "错误：未找到 URDF（检查 SimulationConfig.arm_urdf_relpath 或 configuration/ice_cream_SINGLE.SLDASM.urdf）。"
         )
         sys.exit(1)
-    calib = args.calib_file or _INITIAL_POSITION_MD
 
-    bridge_runtime = BridgeRuntimeConfig(udp_strict=not args.no_udp_strict)
     if args.sim:
         run_sim_loop(
             listen_host=args.listen,
             listen_port=args.port,
-            rpi_ip=args.rpi_ip,
+            rpi_ip=rpi_ip,
             rpi_port=args.rpi_port,
             urdf_path=urdf,
-            calib_file=calib,
-            q5_deg=args.q5_deg,
-            sim_usd=args.sim_usd,
-            headless=args.headless,
-            ik_rate=args.ik_rate,
-            web_port=args.web_port,
-            web_host=args.web_host,
-            damping=args.damping,
-            max_iter=args.max_iter,
-            tol=args.tol,
-            physics_hz=args.physics_hz,
-            no_rate_limits=args.no_rate_limits,
-            sim_gain_scale=args.sim_gain_scale,
-            sim_resync=not args.no_sim_resync,
-            udp_strict=bridge_runtime.udp_strict,
         )
     else:
         run_loop(
             listen_host=args.listen,
             listen_port=args.port,
-            rpi_ip=args.rpi_ip,
+            rpi_ip=rpi_ip,
             rpi_port=args.rpi_port,
             urdf_path=urdf,
-            calib_file=calib,
-            q5_deg=args.q5_deg,
-            web_port=args.web_port,
-            web_host=args.web_host,
-            udp_strict=bridge_runtime.udp_strict,
         )
 
 
