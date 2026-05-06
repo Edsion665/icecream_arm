@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from ..config import Q4_GEOMETRIC_OFFSET_DEG, Q4_GEOMETRIC_Q23_COEFF
+from ..config import IK_CONFIG
 
 JOINT_NAMES = ["joint1", "joint2", "joint3", "joint4", "joint5"]
 NUM_JOINTS = 5
@@ -16,9 +16,9 @@ NUM_JOINTS = 5
 JOINT_LIMITS_LOWER = np.array([-3.14] * NUM_JOINTS, dtype=float)
 JOINT_LIMITS_UPPER = np.array([3.14] * NUM_JOINTS, dtype=float)
 
-Q4_OFFSET_DEG = float(Q4_GEOMETRIC_OFFSET_DEG)
+Q4_OFFSET_DEG = float(IK_CONFIG.q4_geometric_offset_deg)
 Q4_OFFSET_RAD = float(np.deg2rad(Q4_OFFSET_DEG))
-Q4_Q23_COEFF = float(Q4_GEOMETRIC_Q23_COEFF)
+Q4_Q23_COEFF = float(IK_CONFIG.q4_geometric_q23_coeff)
 
 _HARDCODED_JOINTS: List[dict] = [
     {

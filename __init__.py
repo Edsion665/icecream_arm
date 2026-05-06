@@ -5,7 +5,7 @@ arm_control_bridge: 4 轴主臂 + 爪通道控制桥。
 ``control`` / ``kinematics``（算法层）。
 """
 
-from .config import CONTROL_HZ, DEFAULT_TCP_PORT, DEFAULT_UDP_PORT, load_calibration_deg
+from .config import CONFIG, IK_CONFIG, RUNTIME, SIM_CONFIG, load_calibration_deg
 
-__all__ = ["CONTROL_HZ", "DEFAULT_TCP_PORT", "DEFAULT_UDP_PORT", "load_calibration_deg"]
+__all__ = ["CONFIG", "IK_CONFIG", "RUNTIME", "SIM_CONFIG", "load_calibration_deg"]
 

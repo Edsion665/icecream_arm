@@ -11,7 +11,7 @@ from typing import Sequence
 import numpy as np
 
 from ..calculator import JointFrame
-from ..config import CONTROL_HZ, DEFAULT_UDP_PORT
+from ..config import CONFIG
 from ..exceptions import UDPTransportError
 
 # 协议文档：PC_RPI_UDP_PROTOCOL.md
@@ -26,7 +26,7 @@ class RPiUDPStreamer:
     def __init__(
         self,
         rpi_ip: str,
-        port: int = DEFAULT_UDP_PORT,
+        port: int = CONFIG.default_udp_port,
         *,
         strict_udp: bool = True,
     ) -> None:
@@ -36,10 +36,10 @@ class RPiUDPStreamer:
         self._seq = 0
         self._strict_udp = strict_udp
         self._ps = PACKET_V2_SIZE
-        approx_kbps = self._ps * CONTROL_HZ / 1024
+        approx_kbps = self._ps * CONFIG.control_hz / 1024
         print(
             f"[RPiUDPStreamer] udp://{rpi_ip}:{port} | protocol_v2.1_108B | "
-            f"{self._ps} B/帧 @ {CONTROL_HZ:g} Hz ≈ {approx_kbps:.1f} KB/s"
+            f"{self._ps} B/帧 @ {CONFIG.control_hz:g} Hz ≈ {approx_kbps:.1f} KB/s"
         )
 
     def send(

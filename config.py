@@ -1,7 +1,6 @@
 """默认网络、控制参数与标定加载。
 
-模块级常量保留为对外稳定 API；结构化参数见 ``ControlConfig`` / ``IKConfig`` /
-``SimulationConfig`` / ``BridgeRuntimeConfig``。
+运行时使用单例 ``CONFIG`` / ``IK_CONFIG`` / ``SIM_CONFIG`` / ``RUNTIME``（见文件底部）。
 """
 
 from __future__ import annotations
@@ -19,16 +18,11 @@ class ControlConfig:
     control_hz: float = 25.0
     default_tcp_port: int = 9888
     default_udp_port: int = 9870
-    #: TCP JSON 指令监听（CLI 可覆盖）。
     listen_host: str = "0.0.0.0"
-    #: 树莓派 IP；``None`` 表示不连 UDP / 不回读反馈。
     rpi_ip: Optional[str] = None
-    #: HTTP 调试页；端口 ``0`` 关闭。
     web_test_host: str = "0.0.0.0"
     web_test_port: int = 8877
-    #: 相对仓库根（``isaac-sim/``）的标定 md。
     calibration_md_relpath: str = "initial_position.md"
-    #: pose IK 中 q5 固定角（度）。
     q5_fixed_deg: float = 0.0
     approach_gain_scale: float = 0.1  # APPROACH_GAIN = control_hz * scale
     max_joint_vel_rad_s: float = 0.6
@@ -77,22 +71,15 @@ class SimulationConfig:
     arm_prim_path: str = "/World/IceCreamArm"
     target_marker_path: str = "/World/TargetJoint4Marker"
     marker_z_lift_m: float = 0.04
-    #: 相对 ``arm_control_bridge/configuration/`` 的机械臂主 USD（如 ``v8/ice_cream_v8_arm.usd``）。
     arm_usd_relpath: str = "v8/ice_cream_v8_arm.usd"
-    #: 默认 URDF（CLI 不再指定，启动时优先使用）；与 ``arm_usd_relpath`` 通常同一子目录。
     arm_urdf_relpath: str = "v8/ice_cream_v8.SLDASM.urdf"
-    #: 若设置，``SingleArticulation`` 直接绑此路径，跳过舞台内自动查找 ArticulationRoot。
     articulation_prim_path: Optional[str] = None
     pd_kp_base: float = 1e4
     pd_kd_base: float = 1e3
-    #: 无头仿真窗口。
     sim_headless: bool = False
-    #: 仿真内 HTTP 调试页（端口 ``0`` 关闭）。
     sim_web_host: str = "0.0.0.0"
     sim_web_port: int = 8877
-    #: 关节 PD 相对 ``pd_kp_base`` / ``pd_kd_base`` 的缩放。
     sim_gain_scale: float = 1.0
-    #: 指令与仿真关节差过大时是否 snap 对齐。
     sim_resync: bool = True
 
 
@@ -103,44 +90,10 @@ class BridgeRuntimeConfig:
     udp_strict: bool = True
 
 
-# 默认单例（与下方模块常量一致）
-DEFAULT_CONTROL_CONFIG = ControlConfig()
-DEFAULT_IK_CONFIG = IKConfig()
-DEFAULT_SIMULATION_CONFIG = SimulationConfig()
-DEFAULT_BRIDGE_RUNTIME = BridgeRuntimeConfig()
-
-# --- 模块级别名（历史导入路径） ---
-CONTROL_HZ = DEFAULT_CONTROL_CONFIG.control_hz
-CONTROL_DT = DEFAULT_CONTROL_CONFIG.control_dt
-DEFAULT_TCP_PORT = DEFAULT_CONTROL_CONFIG.default_tcp_port
-DEFAULT_UDP_PORT = DEFAULT_CONTROL_CONFIG.default_udp_port
-APPROACH_GAIN = DEFAULT_CONTROL_CONFIG.approach_gain
-MAX_JOINT_VEL_RAD_S = DEFAULT_CONTROL_CONFIG.max_joint_vel_rad_s
-MAX_TARGET_RATE_RAD_S = DEFAULT_CONTROL_CONFIG.max_target_rate_rad_s
-POSE_VEL_MAX_M_S = DEFAULT_CONTROL_CONFIG.pose_vel_max_m_s
-
-Q4_GEOMETRIC_OFFSET_DEG = DEFAULT_IK_CONFIG.q4_geometric_offset_deg
-Q4_GEOMETRIC_Q23_COEFF = DEFAULT_IK_CONFIG.q4_geometric_q23_coeff
-POSE_Q5_EXTRA_DEG = DEFAULT_IK_CONFIG.pose_q5_extra_deg
-Q4_BLEND_TIME_S = int(DEFAULT_IK_CONFIG.q4_blend_time_s)
-IK_DAMPING = DEFAULT_IK_CONFIG.ik_damping
-IK_MAX_ITER = DEFAULT_IK_CONFIG.ik_max_iter
-IK_POS_TOL = DEFAULT_IK_CONFIG.ik_pos_tol
-Q4_SAFE_MIN, Q4_SAFE_MAX = DEFAULT_IK_CONFIG.q4_safe_min, DEFAULT_IK_CONFIG.q4_safe_max
-SV_WARN = DEFAULT_IK_CONFIG.sv_warn
-SV_CRIT = DEFAULT_IK_CONFIG.sv_crit
-
-SIM_TRACK_SNAP_THRESHOLD_RAD = DEFAULT_SIMULATION_CONFIG.sim_track_snap_threshold_rad
-
-REACHED_JOINTS_TOL_DEG = DEFAULT_CONTROL_CONFIG.reached_joints_tol_deg
-REACHED_POSE_TOL_M = DEFAULT_CONTROL_CONFIG.reached_pose_tol_m
-REACHED_WRIST_TOL_DEG = DEFAULT_CONTROL_CONFIG.reached_wrist_tol_deg
-REACHED_CLAW_DELAY_S = DEFAULT_CONTROL_CONFIG.reached_claw_delay_s
-REACHED_TIMEOUT_S = DEFAULT_CONTROL_CONFIG.reached_timeout_s
-REACHED_STABLE_FRAMES = DEFAULT_CONTROL_CONFIG.reached_stable_frames
-
-RPI_WS_PORT = DEFAULT_CONTROL_CONFIG.rpi_ws_port
-PI_FEEDBACK_RECONNECT_INTERVAL_S = DEFAULT_CONTROL_CONFIG.pi_feedback_reconnect_interval_s
+CONFIG = ControlConfig()
+IK_CONFIG = IKConfig()
+SIM_CONFIG = SimulationConfig()
+RUNTIME = BridgeRuntimeConfig()
 
 DEFAULT_Q_CALIB_DEG_LIST = [0.0, 0.0, 0.0, 0.0, 0.0]
 DEFAULT_INITIAL_JOINT_REL_DEG_4 = [0.0, 90.0, -180.0, -20.0]

@@ -31,11 +31,9 @@ _DEFAULT_SINGLE_URDF_CANDIDATES = [
 
 
 def _default_urdf_path() -> Optional[str]:
-    from .config import DEFAULT_SIMULATION_CONFIG
+    from .config import SIM_CONFIG
 
-    p = os.path.abspath(
-        os.path.join(_CONFIG_DIR, DEFAULT_SIMULATION_CONFIG.arm_urdf_relpath)
-    )
+    p = os.path.abspath(os.path.join(_CONFIG_DIR, SIM_CONFIG.arm_urdf_relpath))
     if os.path.isfile(p):
         return p
     for cand in _DEFAULT_SINGLE_URDF_CANDIDATES:
@@ -60,16 +58,10 @@ def run_loop(
     import numpy as np
     from arm_control_bridge.calculator import CalculatorEngine, CalculatorState, URDFKinematics
 
-    from .config import (
-        CONTROL_DT,
-        CONTROL_HZ,
-        DEFAULT_BRIDGE_RUNTIME,
-        DEFAULT_CONTROL_CONFIG,
-        load_calibration_deg,
-    )
+    from .config import CONFIG, RUNTIME, load_calibration_deg
 
-    cc = DEFAULT_CONTROL_CONFIG
-    strict = DEFAULT_BRIDGE_RUNTIME.udp_strict if udp_strict is None else udp_strict
+    cc = CONFIG
+    strict = RUNTIME.udp_strict if udp_strict is None else udp_strict
     calib_file = os.path.join(_ICECREAM_ROOT, cc.calibration_md_relpath)
     q5_deg = float(cc.q5_fixed_deg)
     web_port = int(cc.web_test_port)
@@ -133,7 +125,7 @@ def run_loop(
         pi_fb = PiFeedbackClient(rpi_ip)
 
     log(
-        f"[runner] 控制频率 {CONTROL_HZ} Hz | URDF: {getattr(kin, '_source', '?')} | "
+        f"[runner] 控制频率 {CONFIG.control_hz} Hz | URDF: {getattr(kin, '_source', '?')} | "
         f"标定(度): {np.array2string(q_calib_deg, precision=2)}"
     )
 
@@ -177,7 +169,7 @@ def run_loop(
                 log(f"[runner] recv claw: wrist={state.wrist_rel_deg:.3f}, grip_state={state.grip_state:.0f}")
                 dump_next_udp_frame = True
 
-            frame = engine.step(None, state, dt=CONTROL_DT)
+            frame = engine.step(None, state, dt=CONFIG.control_dt)
             if dump_next_udp_frame:
                 log_udp_frame_preview(frame, log, tag="[runner][UDP]")
                 dump_next_udp_frame = False
@@ -197,7 +189,7 @@ def run_loop(
                     result = {"ok": True, "reached": True, "error_joints_deg": round(err, 3)}
                 tracker.feed(reached, result)
 
-            next_t += CONTROL_DT
+            next_t += CONFIG.control_dt
             sleep_t = next_t - time.monotonic()
             if sleep_t > 0:
                 time.sleep(sleep_t)
@@ -229,18 +221,11 @@ def run_sim_loop(
     from isaacsim import SimulationApp
 
     from .calculator import CalculatorEngine, CalculatorState, NUM_JOINTS, URDFKinematics
-    from .config import (
-        CONTROL_HZ,
-        DEFAULT_BRIDGE_RUNTIME,
-        DEFAULT_CONTROL_CONFIG,
-        DEFAULT_SIMULATION_CONFIG,
-        SIM_TRACK_SNAP_THRESHOLD_RAD,
-        load_calibration_deg,
-    )
+    from .config import CONFIG, RUNTIME, SIM_CONFIG, load_calibration_deg
 
-    cc = DEFAULT_CONTROL_CONFIG
-    sim_cfg = DEFAULT_SIMULATION_CONFIG
-    strict = DEFAULT_BRIDGE_RUNTIME.udp_strict if udp_strict is None else udp_strict
+    cc = CONFIG
+    sim_cfg = SIM_CONFIG
+    strict = RUNTIME.udp_strict if udp_strict is None else udp_strict
     calib_file = os.path.join(_ICECREAM_ROOT, cc.calibration_md_relpath)
     q5_deg = float(cc.q5_fixed_deg)
     headless = bool(sim_cfg.sim_headless)
@@ -291,7 +276,7 @@ def run_sim_loop(
         log(f"[sim] 初始 pose_xyz = link4 FK @ 标定零位 (m): {state.pose_xyz}")
     engine = CalculatorEngine(kin)
 
-    ik_follow_hz = float(CONTROL_HZ)
+    ik_follow_hz = float(CONFIG.control_hz)
     n_physics_substeps = 1
     physics_dt = 1.0 / ik_follow_hz
 
@@ -353,7 +338,7 @@ def run_sim_loop(
         simulation_app.close()
         return
 
-    # 与 calculator.reset_command() 一致（config.DEFAULT_INITIAL_JOINT_REL_DEG_4 + 标定 + q5_fixed），不用 USD 默认角
+    # 与 calculator.reset_command() 一致（DEFAULT_INITIAL_JOINT_REL_DEG_4 + 标定 + q5_fixed），不用 USD 默认角
     state.reset_command()
     log(
         "[sim] 初始关节 (deg)，与 reset_command 一致: "
@@ -424,7 +409,7 @@ def run_sim_loop(
                 q_a = np.asarray(q_actual_raw, dtype=float).ravel()
                 arm_cmp = min(4, n_dof, len(q_a))
                 diff_b = float(np.linalg.norm(q_a[:arm_cmp] - state.q_cmd[:arm_cmp]))
-                if diff_b > SIM_TRACK_SNAP_THRESHOLD_RAD:
+                if diff_b > SIM_CONFIG.sim_track_snap_threshold_rad:
                     q_snap = q_a.copy()
                     for i in range(min(controlled_dof, n_dof, NUM_JOINTS)):
                         q_snap[i] = float(state.q_cmd[i])
@@ -436,7 +421,7 @@ def run_sim_loop(
                         log(f"[sim][SYNC] set_joint_positions 失败: {type(ex).__name__}: {ex}")
                     if log_print:
                         log(
-                            f"[sim][SYNC] ‖q_actual−q_cmd‖={diff_b:.3f} rad > {SIM_TRACK_SNAP_THRESHOLD_RAD:.2f}，已对齐仿真到指令"
+                            f"[sim][SYNC] ‖q_actual−q_cmd‖={diff_b:.3f} rad > {SIM_CONFIG.sim_track_snap_threshold_rad:.2f}，已对齐仿真到指令"
                         )
 
         frame = engine.step(None, state, dt=ik_dt)
@@ -474,9 +459,9 @@ def run_sim_loop(
 
 
 def main() -> None:
-    from arm_control_bridge.config import DEFAULT_CONTROL_CONFIG
+    from arm_control_bridge.config import CONFIG
 
-    cc = DEFAULT_CONTROL_CONFIG
+    cc = CONFIG
     p = argparse.ArgumentParser(description="arm_control_bridge：网络指令 + 可选 Isaac Sim（其余见 config）")
     p.add_argument("--sim", action="store_true", help="启动 Isaac Sim")
     p.add_argument("--listen", default=cc.listen_host, help="TCP 监听（默认 ControlConfig.listen_host）")

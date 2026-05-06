@@ -7,18 +7,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from ..config import (
-    APPROACH_GAIN,
-    CONTROL_DT,
-    MAX_JOINT_VEL_RAD_S,
-    POSE_Q5_EXTRA_DEG,
-    Q4_BLEND_TIME_S,
-    Q4_SAFE_MAX,
-    Q4_SAFE_MIN,
-    REACHED_JOINTS_TOL_DEG,
-    REACHED_POSE_TOL_M,
-    frontend_pose_to_internal_m,
-)
+from ..config import CONFIG, IK_CONFIG, frontend_pose_to_internal_m
 from ..kinematics.urdf_kinematics import (
     JOINT_LIMITS_LOWER,
     JOINT_LIMITS_UPPER,
@@ -74,7 +63,7 @@ class CalculatorEngine:
         self,
         command: Optional[MotionCommand4Axis],
         state: CalculatorState,
-        dt: float = CONTROL_DT,
+        dt: float = CONFIG.control_dt,
     ) -> JointFrame:
         if not state.initialized:
             state.reset_command()
@@ -90,7 +79,7 @@ class CalculatorEngine:
         if state.mode == MotionMode.POSE:
             q5_pose_tgt = float(
                 np.clip(
-                    state.q5_fixed_rad + np.deg2rad(POSE_Q5_EXTRA_DEG),
+                    state.q5_fixed_rad + np.deg2rad(IK_CONFIG.pose_q5_extra_deg),
                     float(JOINT_LIMITS_LOWER[4]),
                     float(JOINT_LIMITS_UPPER[4]),
                 )
@@ -105,12 +94,12 @@ class CalculatorEngine:
             q4_geo_target = float(
                 np.clip(
                     Q4_OFFSET_RAD + Q4_Q23_COEFF * (state.q_full[1] + state.q_full[2]),
-                    Q4_SAFE_MIN,
-                    Q4_SAFE_MAX,
+                    IK_CONFIG.q4_safe_min,
+                    IK_CONFIG.q4_safe_max,
                 )
             )
             if state.q4_blend_active:
-                blend_time = max(float(Q4_BLEND_TIME_S), 1e-6)
+                blend_time = max(float(IK_CONFIG.q4_blend_time_s), 1e-6)
                 state.q4_blend_t = min(1.0, state.q4_blend_t + dt / blend_time)
                 s = state.q4_blend_t * state.q4_blend_t * (3.0 - 2.0 * state.q4_blend_t)
                 q4_pose_target = float((1.0 - s) * state.q4_blend_start_rad + s * q4_geo_target)
@@ -124,11 +113,11 @@ class CalculatorEngine:
         q_err = state.q_full[:ARM_AXES] - state.q_cmd[:ARM_AXES]
         if state.mode == MotionMode.POSE:
             q_err[3] = 0.0
-        dq_des = q_err * APPROACH_GAIN
+        dq_des = q_err * CONFIG.approach_gain
 
         dq_n = float(np.linalg.norm(dq_des))
-        if dq_n > MAX_JOINT_VEL_RAD_S:
-            dq_des *= MAX_JOINT_VEL_RAD_S / dq_n
+        if dq_n > CONFIG.max_joint_vel_rad_s:
+            dq_des *= CONFIG.max_joint_vel_rad_s / dq_n
 
         state.q_cmd[:ARM_AXES] += dq_des * dt
         if state.mode == MotionMode.POSE:
@@ -161,8 +150,8 @@ class CalculatorEngine:
         state: CalculatorState,
         *,
         fb_arm_rad: Optional[np.ndarray] = None,
-        joints_tol_deg: float = REACHED_JOINTS_TOL_DEG,
-        pose_tol_m: float = REACHED_POSE_TOL_M,
+        joints_tol_deg: float = CONFIG.reached_joints_tol_deg,
+        pose_tol_m: float = CONFIG.reached_pose_tol_m,
     ) -> Tuple[bool, float]:
         """到位判定：``(reached, error)``；error 在关节模式为度范数，在 pose 模式为米。"""
         if state.mode == MotionMode.JOINTS:

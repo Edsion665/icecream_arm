@@ -21,6 +21,27 @@ LogFn = Optional[Callable[[str], None]]
 PendingFn = Optional[Callable[..., None]]
 
 
+def _http_browser_base_url(bind_host: str, port: int) -> str:
+    """绑定在任意地址时，日志里给出可在浏览器打开的 URL（避免写死 ``0.0.0.0``）。"""
+    if bind_host and bind_host not in ("0.0.0.0", "::", ""):
+        return f"http://{bind_host}:{port}/"
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(0.2)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        return f"http://{ip}:{port}/"
+    except OSError:
+        pass
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and ip != "127.0.0.1":
+            return f"http://{ip}:{port}/"
+    except OSError:
+        pass
+    return f"http://127.0.0.1:{port}/"
+
+
 class ReplySlot:
     """HTTP 与异步回传线程之间的结果槽。"""
 
@@ -310,7 +331,7 @@ def start_http_server(
     on_pending: PendingFn = None,
 ) -> threading.Thread:
     """在后台线程启动 ``HTTPServer``，路由见内部 ``Handler``。"""
-    from ..config import REACHED_TIMEOUT_S
+    from ..config import CONFIG
 
     frontend = FrontendListener(cmd_q, on_log=on_log)
 
@@ -382,7 +403,7 @@ def start_http_server(
                 return
             on_log(f"[HTTP] recv {kind}: {obj}")
             if slot is not None:
-                slot.event.wait(timeout=REACHED_TIMEOUT_S + 0.5)
+                slot.event.wait(timeout=CONFIG.reached_timeout_s + 0.5)
                 result = slot.result
                 code = 200 if result.get("ok") else 408
                 self._send_json(code, result)
@@ -391,7 +412,8 @@ def start_http_server(
 
     def _run_http() -> None:
         httpd = HTTPServer((host, port), Handler)
-        on_log(f"[HTTP] 服务 http://{host}:{port}/")
+        browse = _http_browser_base_url(host, port)
+        on_log(f"[HTTP] 服务 {browse}（绑定 {host}:{port}）")
         httpd.serve_forever()
 
     t = threading.Thread(target=_run_http, daemon=True)

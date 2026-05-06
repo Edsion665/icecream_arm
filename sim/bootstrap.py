@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-from ..config import DEFAULT_SIMULATION_CONFIG, SimulationConfig
+from ..config import SIM_CONFIG, SimulationConfig
 
 LogFn = Callable[[str], None]
 
@@ -56,7 +56,7 @@ def set_marker_xyz(
     stage: Any,
     xyz: np.ndarray,
     *,
-    sim_cfg: SimulationConfig = DEFAULT_SIMULATION_CONFIG,
+    sim_cfg: SimulationConfig = SIM_CONFIG,
     log: Optional[LogFn] = None,
 ) -> None:
     """将目标 marker prim 平移到 ``xyz``（米）+ z 抬升。"""

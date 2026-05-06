@@ -1,6 +1,6 @@
 """树莓派 WebSocket 回传订阅客户端（pi2camera v1 协议）。
 
-订阅 ``ws://rpi_ip:<RPI_WS_PORT>``，解析 ``type=state``，提取
+订阅树莓派 WebSocket 状态（端口见 ``CONFIG.rpi_ws_port``），解析 ``type=state``，提取
 ``feedback.fb_arm_rad``（优先）或 ``feedback.mit_arm_rad``，
 供 ``is_reached()`` 使用实机关节角。
 
@@ -15,13 +15,13 @@ from typing import Optional
 
 import numpy as np
 
-from ..config import PI_FEEDBACK_RECONNECT_INTERVAL_S, RPI_WS_PORT
+from ..config import CONFIG
 
 
 class PiFeedbackClient:
     """后台线程订阅树莓派 WebSocket 状态广播。"""
 
-    def __init__(self, rpi_ip: str, port: int = RPI_WS_PORT) -> None:
+    def __init__(self, rpi_ip: str, port: int = CONFIG.rpi_ws_port) -> None:
         self._uri = f"ws://{rpi_ip}:{port}"
         self._lock = threading.Lock()
         self._fb_arm_rad: Optional[np.ndarray] = None
@@ -66,9 +66,9 @@ class PiFeedbackClient:
                         print(f"[PiFeedbackClient] ws.close: {type(exc).__name__}: {exc}")
             if not self._stop.is_set():
                 print(
-                    f"[PiFeedbackClient] 断开，{PI_FEEDBACK_RECONNECT_INTERVAL_S:g}s 后重连"
+                    f"[PiFeedbackClient] 断开，{CONFIG.pi_feedback_reconnect_interval_s:g}s 后重连"
                 )
-            self._stop.wait(PI_FEEDBACK_RECONNECT_INTERVAL_S)
+            self._stop.wait(CONFIG.pi_feedback_reconnect_interval_s)
 
     def _handle(self, raw: str | bytes) -> None:
         if isinstance(raw, bytes):

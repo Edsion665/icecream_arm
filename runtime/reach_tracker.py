@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Any, Callable, Optional, Tuple
 
-from ..config import REACHED_CLAW_DELAY_S, REACHED_STABLE_FRAMES, REACHED_TIMEOUT_S
+from ..config import CONFIG
 from ..io.listener import ReplySlot
 
 ReplyQueueItem = Tuple[dict[str, Any], Optional[Any], Optional[ReplySlot]]
@@ -26,7 +26,7 @@ class ReachTracker:
     def __init__(self) -> None:
         self.waiting = False
         self.cmd_kind = ""
-        self._buf: collections.deque[bool] = collections.deque(maxlen=REACHED_STABLE_FRAMES)
+        self._buf: collections.deque[bool] = collections.deque(maxlen=CONFIG.reached_stable_frames)
         self._deadline = 0.0
         self._tcp_conn: Optional[Any] = None
         self._http_slot: Optional[ReplySlot] = None
@@ -48,13 +48,13 @@ class ReachTracker:
         self.waiting = True
         self.cmd_kind = kind
         self._buf.clear()
-        self._deadline = time.monotonic() + REACHED_TIMEOUT_S
+        self._deadline = time.monotonic() + CONFIG.reached_timeout_s
         self._tcp_conn = self._pending_tcp
         self._http_slot = self._pending_slot
         self._pending_tcp = None
         self._pending_slot = None
         if kind == "claw":
-            t = threading.Timer(REACHED_CLAW_DELAY_S, self._claw_done)
+            t = threading.Timer(CONFIG.reached_claw_delay_s, self._claw_done)
             t.daemon = True
             t.start()
             self._claw_timer = t
@@ -67,7 +67,7 @@ class ReachTracker:
             self._finish({"ok": False, "reached": False, "error": "timeout"})
             return
         self._buf.append(reached)
-        if len(self._buf) == REACHED_STABLE_FRAMES and all(self._buf):
+        if len(self._buf) == CONFIG.reached_stable_frames and all(self._buf):
             self._finish(result)
 
     def _claw_done(self) -> None:
