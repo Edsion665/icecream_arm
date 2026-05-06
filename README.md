@@ -49,13 +49,15 @@ io/pi_feedback.py (daemon thread)                                    │
 
 ### 2) HTTP (JSON)
 
-- Enabled when `--web-port > 0`; `start_pc_control.sh` default: `0.0.0.0:8877`
-- All commands **block until reached** before returning (timeout 10s → 408)
+- **Nosim**: enabled when `CONFIG.web_test_port > 0` (default `8877`); bind `CONFIG.web_test_host` (default `0.0.0.0`).
+- **Sim**: same idea via `SIM_CONFIG.sim_web_port` / `SIM_CONFIG.sim_web_host`.
+- On startup, the bridge logs a **browser-friendly URL** (LAN IP when bind is `0.0.0.0`, since `http://0.0.0.0:8877/` is not usable in browsers).
+- All commands **block until reached** before returning (timeout from `CONFIG.reached_timeout_s` → 408).
 - Routes: `POST /api/pose` · `/api/pose_delta` · `/api/joints` · `/api/joints_delta` · `/api/claw`
 
 ### 3) UDP to Pi
 
-- Default target port: `9870` (`--rpi-port`)
+- Default target port: `9870` (`CONFIG.default_udp_port`, overridable with `--rpi-port`)
 - Protocol: fixed V2.1 `108B` frame (`=Id + d*12`), 25Hz
 - See `doc/bridge2pi.md` for field details
 
@@ -63,7 +65,7 @@ io/pi_feedback.py (daemon thread)                                    │
 
 - Subscribes to `ws://rpi_ip:8765` (pi2camera v1)
 - Parses `feedback.fb_arm_rad` (preferred) or `feedback.mit_arm_rad`
-- Started automatically when `--rpi-ip` is set; auto-reconnects on disconnect (3s)
+- Started automatically when `--rpi-ip` is set (or `CONFIG.rpi_ip` default); auto-reconnect interval `CONFIG.pi_feedback_reconnect_interval_s`
 - Gracefully degrades to internal command angles when no feedback is available
 
 ## Reached Reply Format (head2bridge v2.2)
@@ -122,8 +124,8 @@ Reached detection rules:
 
 ### Configuration and assets
 
-- `config.py`: ports, rates, limits, calibration loading, and reached thresholds (`REACHED_JOINTS_TOL_DEG=5°`, `REACHED_POSE_TOL_M=5mm`, `REACHED_STABLE_FRAMES=5`, `REACHED_TIMEOUT_S=10s`, `REACHED_CLAW_DELAY_S=2s`)
-- `configuration/`: URDF and USD assets
+- `config.py`: frozen dataclass defaults exposed as **`CONFIG`** (control / TCP / UDP / HTTP test / reached), **`IK_CONFIG`** (IK), **`SIM_CONFIG`** (Isaac assets + sim HTTP + PD), **`RUNTIME`** (e.g. `udp_strict`). Tweak fields there instead of growing the CLI.
+- `configuration/`: URDF and USD assets (e.g. `configuration/v8/`)
 - `web/`: test web UI (`index.html`)
 
 ### Documentation
@@ -131,6 +133,18 @@ Reached detection rules:
 - `doc/head2bridge.md`: upper-layer → bridge API spec (v2.2, includes reached reply)
 - `doc/bridge2pi.md`: bridge → Pi UDP spec (V2.1)
 - `doc/pi2camera.md`: Pi → camera/sim WebSocket broadcast spec
+
+## CLI
+
+Only network overrides on the command line; everything else is in `config.py`:
+
+- `--sim` — Isaac Sim mode
+- `--listen` — TCP bind host (default `CONFIG.listen_host`)
+- `--port` — TCP JSON port (default `CONFIG.default_tcp_port`, usually `9888`)
+- `--rpi-ip` — Pi IPv4 (default `CONFIG.rpi_ip`; omit UDP downlink if unset)
+- `--rpi-port` — Pi UDP port (default `CONFIG.default_udp_port`, usually `9870`)
+
+Headless sim, HTTP bind, IK tuning, USD paths: edit **`SIM_CONFIG`** / **`CONFIG`** / **`IK_CONFIG`**.
 
 ## Quick Start
 
@@ -141,18 +155,18 @@ Reached detection rules:
 # open-loop downlink without simulation
 ./arm_control_bridge/start_pc_control.sh nosim 192.168.1.100
 
-# local simulation only (no Pi)
-~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --web-port 8877 --web-host 0.0.0.0
+# local simulation only (no Pi); HTTP/sim flags in SIM_CONFIG
+~/isaacsim/python.sh -m arm_control_bridge.run_control --sim
 
-# headless simulation (lower GPU load)
-~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --headless --web-port 8877 --web-host 0.0.0.0
+# same with explicit listen / Pi (optional)
+~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --listen 0.0.0.0 --port 9888 --rpi-ip 192.168.1.100
 ```
 
 ## Pi Integration
 
 ### Downlink (Bridge → Pi)
 
-Bridge sends UDP 108B frames at 25Hz. Set `--rpi-ip` to the Pi address; no other configuration needed.
+Bridge sends UDP 108B frames at `CONFIG.control_hz`. Set `--rpi-ip` (or default `CONFIG.rpi_ip`) to the Pi address.
 
 ### Uplink (Pi → Bridge, for reached detection)
 

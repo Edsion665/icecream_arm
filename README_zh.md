@@ -49,13 +49,15 @@ io/pi_feedback.py (daemon 线程)                                       │
 
 ### 2) HTTP（JSON）
 
-- `--web-port > 0` 时启用，默认 `start_pc_control.sh` 使用 `0.0.0.0:8877`
-- 所有命令均**阻塞等待到位**后才返回响应（超时 10s 返回 408）
+- **无仿真**：`CONFIG.web_test_port > 0`（默认 `8877`）时启用，绑定 `CONFIG.web_test_host`（默认 `0.0.0.0`）。
+- **仿真**：由 `SIM_CONFIG.sim_web_port` / `SIM_CONFIG.sim_web_host` 控制。
+- 启动时日志会打印**可在浏览器打开的 URL**（绑定 `0.0.0.0` 时用本机局域网 IP 提示，因浏览器无法直接访问 `http://0.0.0.0:8877/`）。
+- 命令**阻塞直到到位**再返回（超时见 `CONFIG.reached_timeout_s`，超时返回 408）。
 - 路由：`POST /api/pose` · `/api/pose_delta` · `/api/joints` · `/api/joints_delta` · `/api/claw`
 
 ### 3) 下发到 Pi 的 UDP
 
-- 默认目标端口：`9870`（`--rpi-port`）
+- 默认目标端口：`9870`（`CONFIG.default_udp_port`，可用 `--rpi-port` 覆盖）
 - 协议：固定 V2.1 `108B`（`=Id + d*12`），25Hz
 - 详见 `doc/bridge2pi.md`
 
@@ -63,7 +65,7 @@ io/pi_feedback.py (daemon 线程)                                       │
 
 - 订阅 `ws://rpi_ip:8765`（pi2camera v1 协议）
 - 解析 `feedback.fb_arm_rad`（优先）或 `feedback.mit_arm_rad`
-- 仅在 `--rpi-ip` 存在时启动，断线自动重连（3s）
+- 在指定了 `--rpi-ip`（或默认 `CONFIG.rpi_ip`）时启动，断线重连间隔见 `CONFIG.pi_feedback_reconnect_interval_s`
 - 无回传时静默降级，到位判定自动切换为内部指令角
 
 ## 到位回传格式（head2bridge v2.2）
@@ -124,8 +126,8 @@ io/pi_feedback.py (daemon 线程)                                       │
 
 ### 配置与资源
 
-- `config.py`：端口、频率、限幅、标定加载，以及到位判定阈值（`REACHED_JOINTS_TOL_DEG=5°`、`REACHED_POSE_TOL_M=5mm`、`REACHED_STABLE_FRAMES=5`、`REACHED_TIMEOUT_S=10s`、`REACHED_CLAW_DELAY_S=2s`）
-- `configuration/`：URDF、USD 资源
+- `config.py`：以 **`CONFIG`**（控制/网络/HTTP 调试/到位）、**`IK_CONFIG`**（IK）、**`SIM_CONFIG`**（仿真 USD、仿真 HTTP、PD 等）、**`RUNTIME`**（如 `udp_strict`）单例暴露默认值；少用的参数改这里，不必再堆 CLI。
+- `configuration/`：URDF、USD 资源（如 `configuration/v8/`）
 - `web/`：测试网页（`index.html`）
 
 ### 文档
@@ -133,6 +135,18 @@ io/pi_feedback.py (daemon 线程)                                       │
 - `doc/head2bridge.md`：上层 → bridge API 规范（v2.2，含到位回传）
 - `doc/bridge2pi.md`：bridge → Pi UDP 规范（V2.1）
 - `doc/pi2camera.md`：Pi → 相机/仿真 WebSocket 广播规范
+
+## 命令行（CLI）
+
+仅保留网络相关参数，其余见 `config.py`：
+
+- `--sim`：启动 Isaac Sim
+- `--listen`：TCP 监听地址（默认 `CONFIG.listen_host`）
+- `--port`：TCP JSON 端口（默认 `CONFIG.default_tcp_port`，一般为 `9888`）
+- `--rpi-ip`：树莓派 IP（默认 `CONFIG.rpi_ip`；不设则不下发 UDP）
+- `--rpi-port`：树莓派 UDP 端口（默认 `CONFIG.default_udp_port`，一般为 `9870`）
+
+无头仿真、HTTP 绑定、IK/USD 路径等：改 **`SIM_CONFIG`** / **`CONFIG`** / **`IK_CONFIG`**。
 
 ## 快速启动
 
@@ -143,18 +157,18 @@ io/pi_feedback.py (daemon 线程)                                       │
 # 无仿真开环下发
 ./arm_control_bridge/start_pc_control.sh nosim 192.168.1.100
 
-# 仅本地仿真（无树莓派）
-~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --web-port 8877 --web-host 0.0.0.0
+# 仅本地仿真（无树莓派）；HTTP/无头等在 SIM_CONFIG
+~/isaacsim/python.sh -m arm_control_bridge.run_control --sim
 
-# 无窗口仿真（降低 GPU 负载）
-~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --headless --web-port 8877 --web-host 0.0.0.0
+# 显式指定监听与树莓派（可选）
+~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --listen 0.0.0.0 --port 9888 --rpi-ip 192.168.1.100
 ```
 
 ## 与树莓派对接方案
 
 ### 下行（Bridge → Pi）
 
-Bridge 以 25Hz 向 Pi 发送 UDP 108B 帧，无需额外配置，`--rpi-ip` 指定 Pi 地址即可。
+Bridge 以 `CONFIG.control_hz` 向 Pi 发送 UDP 108B 帧；`--rpi-ip` 或默认 `CONFIG.rpi_ip` 指定 Pi 地址。
 
 ### 上行（Pi → Bridge，用于到位判定）
 
