@@ -27,7 +27,7 @@ COMMON_ARGS=(
 
 if [[ "${MODE}" == "sim" ]]; then
   echo "[start_pc_control] Launch SIM mode -> udp://${RPI_IP}:${RPI_PORT}"
-  ~/isaacsim/python.sh -m arm_control_bridge.run_control --sim "${COMMON_ARGS[@]}"
+  ~/isaac-sim/python.sh -m arm_control_bridge.run_control --sim "${COMMON_ARGS[@]}"
 elif [[ "${MODE}" == "nosim" ]]; then
   echo "[start_pc_control] Launch NOSIM mode -> udp://${RPI_IP}:${RPI_PORT}"
   python3 -m arm_control_bridge.run_control "${COMMON_ARGS[@]}"
