@@ -1,7 +1,7 @@
 # bridge2pi API 规范（arm_control_bridge -> icecreamPi，v2.1）
 
 - 文档状态：stable
-- 适用模块：`arm_control_bridge/PiController.py`、`icecreamPi/listener.py`
+- 适用模块：`arm_control_bridge/io/pi_controller.py`（兼容导入：`arm_control_bridge.PiController`）、`icecreamPi/listener.py`
 - 对端：`arm_control_bridge` -> 树莓派（UDP）
 - 相关文档：`docs/head2bridge.md`、`docs/pi2camera.md`
 

@@ -6,13 +6,14 @@ arm_control_bridge 入口：新架构启动入口（4轴主臂 + claw独立通�
 from __future__ import annotations
 
 import argparse
-import collections
 import os
 import queue
 import sys
-import threading
 import time
 from typing import Optional
+
+from .exceptions import UDPTransportError
+from .runtime import ReachTracker, log_udp_frame_preview, start_reply_worker, stop_reply_worker
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,34 +48,6 @@ DEFAULT_URDF = _default_urdf_path()
 _INITIAL_POSITION_MD = os.path.join(_ICECREAM_ROOT, "initial_position.md")
 
 
-def _ensure_v8_arm_payload_symlinks(usd_path: str) -> None:
-    """保证 ice_cream_v8_arm.usd 内 @configuration/*.usd@ payload 能解析。
-
-    该资源从 Omniverse 导出时，payload 路径为相对于 composer 目录的
-    configuration/ice_cream_v8_arm_{physics,sensor}.usd，即要求存在
-    configuration/configuration/*.usd。将三个分块放在同一目录时，需额外建
-    configuration/ 子目录链并链回同级文件，否则 PhysX 层永不加载，场景中无关节链。
-    """
-    if os.path.basename(usd_path) != "ice_cream_v8_arm.usd":
-        return
-    parent = os.path.dirname(os.path.abspath(usd_path))
-    nested = os.path.join(parent, "configuration")
-    for name in (
-        "ice_cream_v8_arm_physics.usd",
-        "ice_cream_v8_arm_sensor.usd",
-        "ice_cream_v8_arm_base.usd",
-    ):
-        src = os.path.join(parent, name)
-        dst = os.path.join(nested, name)
-        if not os.path.isfile(src) or os.path.lexists(dst):
-            continue
-        try:
-            os.makedirs(nested, exist_ok=True)
-            os.symlink(os.path.join("..", name), dst)
-        except OSError:
-            pass
-
-
 def run_loop(
     *,
     listen_host: str,
@@ -87,121 +60,28 @@ def run_loop(
     web_port: int = 0,
     web_host: str = "127.0.0.1",
     log_print: bool = True,
+    udp_strict: bool = True,
 ) -> None:
     import numpy as np
     from arm_control_bridge.calculator import CalculatorEngine, CalculatorState, URDFKinematics
 
-    from .PiController import RPiUDPStreamer, RpiProtocolAdapter, motor
-    from .config import (
-        CONTROL_DT, CONTROL_HZ, REACHED_CLAW_DELAY_S, REACHED_STABLE_FRAMES,
-        REACHED_TIMEOUT_S, load_calibration_deg,
-    )
-    from .listener import ClawCommand, MotionCommand4Axis, ReplySlot, claw_listener, network_listener, start_http_server
-    from .pi_feedback import PiFeedbackClient
+    from .config import CONTROL_DT, CONTROL_HZ, load_calibration_deg
+    from .io import PiFeedbackClient, RPiUDPStreamer, RpiProtocolAdapter, motor
+    from .io.listener import ClawCommand, MotionCommand4Axis, claw_listener, network_listener, start_http_server
 
     def log(msg: str) -> None:
         if log_print:
             print(msg, flush=True)
 
-    # ------------------------------------------------------------------
-    # 到位追踪器（内联，无锁，仅控制循环访问）
-    # ------------------------------------------------------------------
-    class _ReachTracker:
-        def __init__(self) -> None:
-            self.waiting = False
-            self.cmd_kind = ""
-            self._buf: collections.deque[bool] = collections.deque(maxlen=REACHED_STABLE_FRAMES)
-            self._deadline = 0.0
-            self._tcp_conn: Optional[object] = None
-            self._http_slot: Optional[ReplySlot] = None
-            self._claw_timer: Optional[threading.Timer] = None
-            # 回传队列：控制循环 put，回传线程 get
-            self.reply_q: queue.Queue = queue.Queue()
-
-        def register_pending(self, *, tcp_conn=None, http_slot=None) -> None:
-            """listener 线程调用，仅写 pending 字段（原子赋值，无锁）。"""
-            self._pending_tcp = tcp_conn
-            self._pending_slot = http_slot
-
-        def accept(self, kind: str) -> None:
-            """控制循环处理命令时调用。"""
-            if self._claw_timer is not None:
-                self._claw_timer.cancel()
-                self._claw_timer = None
-            self.waiting = True
-            self.cmd_kind = kind
-            self._buf.clear()
-            self._deadline = time.monotonic() + REACHED_TIMEOUT_S
-            self._tcp_conn = getattr(self, "_pending_tcp", None)
-            self._http_slot = getattr(self, "_pending_slot", None)
-            self._pending_tcp = None
-            self._pending_slot = None
-            if kind == "claw":
-                t = threading.Timer(REACHED_CLAW_DELAY_S, self._claw_done)
-                t.daemon = True
-                t.start()
-                self._claw_timer = t
-
-        def feed(self, reached: bool, result: dict) -> None:
-            """控制循环每帧调用（claw 跳过）。"""
-            if not self.waiting or self.cmd_kind == "claw":
-                return
-            if time.monotonic() > self._deadline:
-                self._finish({"ok": False, "reached": False, "error": "timeout"})
-                return
-            self._buf.append(reached)
-            if len(self._buf) == REACHED_STABLE_FRAMES and all(self._buf):
-                self._finish(result)
-
-        def _claw_done(self) -> None:
-            self._finish({"ok": True, "reached": True})
-
-        def _finish(self, result: dict) -> None:
-            self.waiting = False
-            self._claw_timer = None
-            self.reply_q.put_nowait((result, self._tcp_conn, self._http_slot))
-            self._tcp_conn = None
-            self._http_slot = None
-
-    tracker = _ReachTracker()
+    tracker = ReachTracker()
 
     def _on_pending(*, tcp_conn=None, http_slot=None) -> None:
         tracker.register_pending(tcp_conn=tcp_conn, http_slot=http_slot)
 
-    # 回传线程：异步发送，不阻塞控制循环
-    def _reply_worker() -> None:
-        import json
-        while True:
-            item = tracker.reply_q.get()
-            if item is None:
-                break
-            result, tcp_conn, http_slot = item
-            if tcp_conn is not None:
-                try:
-                    tcp_conn.sendall((json.dumps(result) + "\n").encode())
-                except OSError:
-                    pass
-            if http_slot is not None:
-                http_slot.result = result
-                http_slot.event.set()
+    def _on_tcp_reply_error(_conn: object, exc: BaseException) -> None:
+        log(f"[runner][reply] TCP sendall 失败: {type(exc).__name__}: {exc}")
 
-    reply_thread = threading.Thread(target=_reply_worker, daemon=True)
-    reply_thread.start()
-
-    def _log_udp_frame_preview(frame) -> None:
-        p6 = np.zeros(6, dtype=float)
-        w6 = np.zeros(6, dtype=float)
-        p6[:4] = frame.arm_rel_deg[:4]
-        w6[:4] = frame.arm_omega_rad_s[:4]
-        p6[4] = float(getattr(frame, "wrist_rel_deg", 0.0))
-        w6[4] = float(getattr(frame, "wrist_omega_rad_s", 0.0))
-        p6[5] = float(getattr(frame, "grip_state", 0.0))
-        w6[5] = 0.0
-        log(
-            "[runner][UDP] 即将发送一帧: "
-            + f"p_rel_deg={np.array2string(p6, precision=3)} "
-            + f"omega_rad_s={np.array2string(w6, precision=3)}"
-        )
+    start_reply_worker(tracker, on_tcp_send_error=_on_tcp_reply_error)
 
     q_calib_deg = np.array(load_calibration_deg(calib_file or ""), dtype=float)
     q_calib_rad = np.deg2rad(q_calib_deg)
@@ -239,7 +119,7 @@ def run_loop(
     adapter: Optional[RpiProtocolAdapter] = None
     pi_fb: Optional[PiFeedbackClient] = None
     if rpi_ip:
-        streamer = RPiUDPStreamer(rpi_ip, rpi_port)
+        streamer = RPiUDPStreamer(rpi_ip, rpi_port, strict_udp=udp_strict)
         adapter = RpiProtocolAdapter(streamer)
         arm_motor = motor(adapter)
         pi_fb = PiFeedbackClient(rpi_ip)
@@ -291,7 +171,7 @@ def run_loop(
 
             frame = engine.step(None, state, dt=CONTROL_DT)
             if dump_next_udp_frame:
-                _log_udp_frame_preview(frame)
+                log_udp_frame_preview(frame, log, tag="[runner][UDP]")
                 dump_next_udp_frame = False
             if arm_motor is not None:
                 arm_motor.send(frame)
@@ -315,9 +195,13 @@ def run_loop(
                 time.sleep(sleep_t)
             else:
                 next_t = time.monotonic()
+    except UDPTransportError as exc:
+        log(f"[runner] UDP 发送失败，退出: {exc}")
+        raise SystemExit(1) from exc
     except KeyboardInterrupt:
         log("[runner] 退出")
     finally:
+        stop_reply_worker(tracker)
         server.close()
         if adapter is not None:
             adapter.close()
@@ -345,18 +229,24 @@ def run_sim_loop(
     log_print: bool = True,
     sim_gain_scale: float = 1.0,
     sim_resync: bool = True,
+    udp_strict: bool = True,
 ) -> None:
     import numpy as np
     from isaacsim import SimulationApp
 
-    from .PiController import RPiUDPStreamer, RpiProtocolAdapter, motor
     from .calculator import CalculatorEngine, CalculatorState, NUM_JOINTS, URDFKinematics
-    from .config import (
-        REACHED_CLAW_DELAY_S, REACHED_STABLE_FRAMES, REACHED_TIMEOUT_S,
-        SIM_TRACK_SNAP_THRESHOLD_RAD, load_calibration_deg,
+    from .config import DEFAULT_SIMULATION_CONFIG, SIM_TRACK_SNAP_THRESHOLD_RAD, load_calibration_deg
+    from .io import RPiUDPStreamer, RpiProtocolAdapter, motor
+    from .io.listener import ClawCommand, MotionCommand4Axis, network_listener, start_http_server
+    from .sim import (
+        ensure_v8_arm_payload_symlinks,
+        find_articulation_root,
+        log_prim_world_pose,
+        receiver,
+        resolve_sim_usd,
+        set_marker_xyz,
+        show,
     )
-    from .listener import ClawCommand, MotionCommand4Axis, ReplySlot, network_listener, start_http_server
-    from .shower import receiver, show
 
     simulation_app = SimulationApp({"headless": headless})
 
@@ -364,98 +254,15 @@ def run_sim_loop(
         if log_print:
             print(msg, flush=True)
 
-    # 到位追踪器（与 run_loop 相同结构，内联）
-    class _ReachTracker:
-        def __init__(self) -> None:
-            self.waiting = False
-            self.cmd_kind = ""
-            self._buf: collections.deque[bool] = collections.deque(maxlen=REACHED_STABLE_FRAMES)
-            self._deadline = 0.0
-            self._tcp_conn = None
-            self._http_slot: Optional[ReplySlot] = None
-            self._claw_timer: Optional[threading.Timer] = None
-            self.reply_q: queue.Queue = queue.Queue()
-
-        def register_pending(self, *, tcp_conn=None, http_slot=None) -> None:
-            self._pending_tcp = tcp_conn
-            self._pending_slot = http_slot
-
-        def accept(self, kind: str) -> None:
-            if self._claw_timer is not None:
-                self._claw_timer.cancel()
-                self._claw_timer = None
-            self.waiting = True
-            self.cmd_kind = kind
-            self._buf.clear()
-            self._deadline = time.monotonic() + REACHED_TIMEOUT_S
-            self._tcp_conn = getattr(self, "_pending_tcp", None)
-            self._http_slot = getattr(self, "_pending_slot", None)
-            self._pending_tcp = None
-            self._pending_slot = None
-            if kind == "claw":
-                t = threading.Timer(REACHED_CLAW_DELAY_S, self._claw_done)
-                t.daemon = True
-                t.start()
-                self._claw_timer = t
-
-        def feed(self, reached: bool, result: dict) -> None:
-            if not self.waiting or self.cmd_kind == "claw":
-                return
-            if time.monotonic() > self._deadline:
-                self._finish({"ok": False, "reached": False, "error": "timeout"})
-                return
-            self._buf.append(reached)
-            if len(self._buf) == REACHED_STABLE_FRAMES and all(self._buf):
-                self._finish(result)
-
-        def _claw_done(self) -> None:
-            self._finish({"ok": True, "reached": True})
-
-        def _finish(self, result: dict) -> None:
-            self.waiting = False
-            self._claw_timer = None
-            self.reply_q.put_nowait((result, self._tcp_conn, self._http_slot))
-            self._tcp_conn = None
-            self._http_slot = None
-
-    tracker = _ReachTracker()
+    tracker = ReachTracker()
 
     def _on_pending(*, tcp_conn=None, http_slot=None) -> None:
         tracker.register_pending(tcp_conn=tcp_conn, http_slot=http_slot)
 
-    def _reply_worker() -> None:
-        import json
-        while True:
-            item = tracker.reply_q.get()
-            if item is None:
-                break
-            result, tcp_conn, http_slot = item
-            if tcp_conn is not None:
-                try:
-                    tcp_conn.sendall((json.dumps(result) + "\n").encode())
-                except OSError:
-                    pass
-            if http_slot is not None:
-                http_slot.result = result
-                http_slot.event.set()
+    def _on_tcp_reply_error(_conn: object, exc: BaseException) -> None:
+        log(f"[sim][reply] TCP sendall 失败: {type(exc).__name__}: {exc}")
 
-    reply_thread = threading.Thread(target=_reply_worker, daemon=True)
-    reply_thread.start()
-
-    def _log_udp_frame_preview(frame) -> None:
-        p6 = np.zeros(6, dtype=float)
-        w6 = np.zeros(6, dtype=float)
-        p6[:4] = frame.arm_rel_deg[:4]
-        w6[:4] = frame.arm_omega_rad_s[:4]
-        p6[4] = float(getattr(frame, "wrist_rel_deg", 0.0))
-        w6[4] = float(getattr(frame, "wrist_omega_rad_s", 0.0))
-        p6[5] = float(getattr(frame, "grip_state", 0.0))
-        w6[5] = 0.0
-        log(
-            "[sim][UDP] 即将发送一帧: "
-            + f"p_rel_deg={np.array2string(p6, precision=3)} "
-            + f"omega_rad_s={np.array2string(w6, precision=3)}"
-        )
+    start_reply_worker(tracker, on_tcp_send_error=_on_tcp_reply_error)
 
     q_calib_deg = np.array(load_calibration_deg(calib_file or ""), dtype=float)
     q_calib_rad = np.deg2rad(q_calib_deg)
@@ -499,7 +306,7 @@ def run_sim_loop(
     arm_motor: Optional[motor] = None
     adapter: Optional[RpiProtocolAdapter] = None
     if rpi_ip:
-        streamer = RPiUDPStreamer(rpi_ip, rpi_port)
+        streamer = RPiUDPStreamer(rpi_ip, rpi_port, strict_udp=udp_strict)
         adapter = RpiProtocolAdapter(streamer)
         arm_motor = motor(adapter)
 
@@ -513,97 +320,29 @@ def run_sim_loop(
             on_pending=_on_pending,
         )
 
-    ARM_PRIM_PATH = "/World/IceCreamArm"
-    TARGET_MARKER_PATH = "/World/TargetJoint4Marker"
-    MARKER_Z_LIFT = 0.04
-
-    def _log_prim_world_pose(stage, prim_path: str, tag: str) -> None:
-        try:
-            from pxr import Usd, UsdGeom
-            prim = stage.GetPrimAtPath(prim_path)
-            if not prim.IsValid():
-                log(f"[sim][frame] {tag}: prim not found: {prim_path}")
-                return
-            xf = UsdGeom.Xformable(prim)
-            m = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-            t = m.ExtractTranslation()
-            # 只打印平移；目前问题先聚焦「原点不一致」
-            log(
-                f"[sim][frame] {tag}: path={prim_path} world_t=({float(t[0]):+.4f}, {float(t[1]):+.4f}, {float(t[2]):+.4f})"
-            )
-        except Exception as ex:
-            log(f"[sim][frame] {tag}: failed to read world pose: {ex}")
-
-    def _find_articulation_root(stage, under_path: str):
-        try:
-            from pxr import UsdPhysics
-        except ImportError:
-            return None
-        prim = stage.GetPrimAtPath(under_path)
-        if not prim.IsValid():
-            return None
-        if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
-            return under_path
-        for child in prim.GetAllChildren():
-            path = child.GetPath().pathString
-            if child.HasAPI(UsdPhysics.ArticulationRootAPI):
-                return path
-            found = _find_articulation_root(stage, path)
-            if found:
-                return found
-        return None
-
-    def _resolve_sim_usd(sim_usd_arg):
-        if sim_usd_arg is not None:
-            path = os.path.abspath(sim_usd_arg)
-            if not os.path.isfile(path):
-                raise FileNotFoundError(f"仿真 USD 不存在: {path}")
-            return path
-        for name in (
-            "ice_cream_v8_arm.usd",
-            "ice_cream_single_arm.usd",
-            "ice_cream_arm.usd",
-        ):
-            p = os.path.join(_PKG_DIR, "configuration", name)
-            if os.path.isfile(p):
-                return p
-        raise FileNotFoundError(
-            "未在 arm_control_bridge/configuration/ 找到 ice_cream_v8_arm.usd / ice_cream_single_arm.usd / ice_cream_arm.usd，请用 --sim-usd 指定。"
-        )
-
-    def _set_marker_xyz(stage, xyz: np.ndarray) -> None:
-        try:
-            from pxr import Gf, UsdGeom
-            prim = stage.GetPrimAtPath(TARGET_MARKER_PATH)
-            if not prim.IsValid():
-                return
-            xf = UsdGeom.Xformable(prim)
-            xf.ClearXformOpOrder()
-            xf.AddTranslateOp().Set(Gf.Vec3d(float(xyz[0]), float(xyz[1]), float(xyz[2]) + MARKER_Z_LIFT))
-        except Exception:
-            pass
-
-    usd_path = _resolve_sim_usd(sim_usd)
-    _ensure_v8_arm_payload_symlinks(usd_path)
+    sim_cfg = DEFAULT_SIMULATION_CONFIG
+    usd_path = resolve_sim_usd(_PKG_DIR, sim_usd)
+    ensure_v8_arm_payload_symlinks(usd_path, on_warn=log)
     world = World(stage_units_in_meters=1.0, physics_dt=physics_dt, rendering_dt=physics_dt)
     world.scene.add_default_ground_plane()
     stage = get_current_stage()
-    arm_prim = add_reference_to_stage(usd_path=usd_path, prim_path=ARM_PRIM_PATH)
+    arm_prim = add_reference_to_stage(usd_path=usd_path, prim_path=sim_cfg.arm_prim_path)
     try:
         arm_prim.Load()
-    except Exception:
-        pass
-    found_root = _find_articulation_root(stage, ARM_PRIM_PATH)
-    articulation_path = found_root if found_root else ARM_PRIM_PATH
+    except Exception as ex:
+        log(f"[sim] arm_prim.Load() 跳过: {type(ex).__name__}: {ex}")
+    found_root = find_articulation_root(stage, sim_cfg.arm_prim_path)
+    articulation_path = found_root if found_root else sim_cfg.arm_prim_path
     arm = world.scene.add(SingleArticulation(articulation_path, name="ice_cream_arm"))
     world.reset()
-    _log_prim_world_pose(stage, ARM_PRIM_PATH, "arm_prim")
-    if articulation_path != ARM_PRIM_PATH:
-        _log_prim_world_pose(stage, articulation_path, "articulation_root")
+    log_prim_world_pose(stage, sim_cfg.arm_prim_path, "arm_prim", log)
+    if articulation_path != sim_cfg.arm_prim_path:
+        log_prim_world_pose(stage, articulation_path, "articulation_root", log)
 
     q0 = arm.get_joint_positions()
     n_dof = len(q0) if q0 is not None else 0
     if n_dof == 0:
+        stop_reply_worker(tracker)
         tcp.close()
         simulation_app.close()
         return
@@ -624,11 +363,14 @@ def run_sim_loop(
         _ctrl = arm.get_articulation_controller()
         _g = float(sim_gain_scale) if sim_gain_scale else 1.0
         _ctrl.set_gains(
-            kps=np.full(n_dof, 1e4 * _g, dtype=float),
-            kds=np.full(n_dof, 1e3 * _g, dtype=float),
+            kps=np.full(n_dof, sim_cfg.pd_kp_base * _g, dtype=float),
+            kds=np.full(n_dof, sim_cfg.pd_kd_base * _g, dtype=float),
         )
         if log_print:
-            log(f"[sim] Articulation PD 已设 kps≈{1e4 * _g:g} kds≈{1e3 * _g:g}（cartesian_ik_verify 同量级）")
+            log(
+                f"[sim] Articulation PD 已设 kps≈{sim_cfg.pd_kp_base * _g:g} "
+                f"kds≈{sim_cfg.pd_kd_base * _g:g}（cartesian_ik_verify 同量级）"
+            )
     except Exception as ex:
         if log_print:
             log(f"[sim] set_gains 跳过: {ex}")
@@ -663,7 +405,7 @@ def run_sim_loop(
                     "[sim][frame] pose target interpreted as link0/local = "
                     + f"({float(state.pose_xyz[0]):+.4f}, {float(state.pose_xyz[1]):+.4f}, {float(state.pose_xyz[2]):+.4f})"
                 )
-                _set_marker_xyz(stage, state.pose_xyz)
+                set_marker_xyz(stage, state.pose_xyz, log=log)
 
         for _ in range(n_physics_substeps):
             world.step(render=True)
@@ -684,8 +426,8 @@ def run_sim_loop(
                         q_snap[4] = float(state.q_cmd[4])
                     try:
                         arm.set_joint_positions(q_snap)
-                    except Exception:
-                        pass
+                    except Exception as ex:
+                        log(f"[sim][SYNC] set_joint_positions 失败: {type(ex).__name__}: {ex}")
                     if log_print:
                         log(
                             f"[sim][SYNC] ‖q_actual−q_cmd‖={diff_b:.3f} rad > {SIM_TRACK_SNAP_THRESHOLD_RAD:.2f}，已对齐仿真到指令"
@@ -693,12 +435,16 @@ def run_sim_loop(
 
         frame = engine.step(None, state, dt=ik_dt)
         if dump_next_udp_frame:
-            _log_udp_frame_preview(frame)
+            log_udp_frame_preview(frame, log, tag="[sim][UDP]")
             dump_next_udp_frame = False
         frame_rx.accept(frame)
         viewer.apply(frame_rx.latest())
         if arm_motor is not None:
-            arm_motor.send(frame)
+            try:
+                arm_motor.send(frame)
+            except UDPTransportError as exc:
+                log(f"[sim] UDP 发送失败，退出: {exc}")
+                raise SystemExit(1) from exc
 
         if tracker.waiting:
             q_sim_raw = arm.get_joint_positions()
@@ -714,6 +460,7 @@ def run_sim_loop(
                 result = {"ok": True, "reached": True, "error_joints_deg": round(err, 3)}
             tracker.feed(reached, result)
 
+    stop_reply_worker(tracker)
     if adapter is not None:
         adapter.close()
     tcp.close()
@@ -721,7 +468,11 @@ def run_sim_loop(
 
 
 def main() -> None:
-    from arm_control_bridge.config import DEFAULT_TCP_PORT, DEFAULT_UDP_PORT
+    from arm_control_bridge.config import (
+        BridgeRuntimeConfig,
+        DEFAULT_TCP_PORT,
+        DEFAULT_UDP_PORT,
+    )
 
     p = argparse.ArgumentParser(description="arm_control_bridge 新架构：网络指令 + 可选 Isaac Sim")
     p.add_argument("--listen", default="0.0.0.0", help="TCP 监听地址")
@@ -765,6 +516,11 @@ def main() -> None:
         help="关闭仿真与指令偏差过大时自动对齐（仅 --sim）；默认把仿真关节 snap 到 q_cmd，不拉回内部状态",
     )
     p.add_argument("--no-rate-limits", action="store_true", help="关闭限速（仅 --sim）")
+    p.add_argument(
+        "--no-udp-strict",
+        action="store_true",
+        help="UDP 发送失败时不抛错退出（不推荐）；默认开启严格模式以便发现网络问题",
+    )
     p.add_argument("--web-port", type=int, default=8765, help="HTTP 测试页端口，0 关闭")
     p.add_argument("--web-host", default="127.0.0.1", help="HTTP 绑定地址")
     p.add_argument("--tol", type=float, default=1e-5, help="IK 位置容差（米）")
@@ -783,6 +539,7 @@ def main() -> None:
         sys.exit(1)
     calib = args.calib_file or _INITIAL_POSITION_MD
 
+    bridge_runtime = BridgeRuntimeConfig(udp_strict=not args.no_udp_strict)
     if args.sim:
         run_sim_loop(
             listen_host=args.listen,
@@ -804,6 +561,7 @@ def main() -> None:
             no_rate_limits=args.no_rate_limits,
             sim_gain_scale=args.sim_gain_scale,
             sim_resync=not args.no_sim_resync,
+            udp_strict=bridge_runtime.udp_strict,
         )
     else:
         run_loop(
@@ -816,6 +574,7 @@ def main() -> None:
             q5_deg=args.q5_deg,
             web_port=args.web_port,
             web_host=args.web_host,
+            udp_strict=bridge_runtime.udp_strict,
         )
 
 

@@ -15,23 +15,23 @@
 上层策略
   │  TCP JSON行 / HTTP POST
   ▼
-listener.py  ──────────────────────────────────────────────────────
+io/listener.py  ───────────────────────────────────────────────────
   CommandNormalizer 归一化命令                                      │
   register_pending(tcp_conn / http_slot)  ← 预注册回传上下文        │
   │                                                                 │
   ▼                                                                 │
 run_control.py 控制循环（25Hz）                                     │
-  tracker.accept(kind)   ← 消费预注册上下文，开始计时               │
+  runtime/reach_tracker  ← 到位追踪 + 异步回传队列                   │
   engine.apply_command() ← 更新 IK/关节目标                         │
   engine.step()          ← 生成 JointFrame                          │
-  tracker.feed(reached, result)  ← 无锁到位判定 + put_nowait        │
+  tracker.feed(reached, result)                                     │
   │                                                                 │
-  ├─ PiController.py → UDP 108B → 树莓派                            │
+  ├─ io/pi_controller.py → UDP 108B → 树莓派                        │
   │                                                                 │
   └─ reply_q (daemon 线程)                                          │
        conn.sendall / slot.event.set  ← 异步回传，不阻塞控制循环    │
                                                                     │
-pi_feedback.py (daemon 线程)                                        │
+io/pi_feedback.py (daemon 线程)                                       │
   WebSocket 订阅 ws://rpi_ip:8765                                   │
   解析 feedback.fb_arm_rad / mit_arm_rad                            │
   get_fb_arm_rad() → 供 is_reached() 使用实机关节角 ───────────────┘
@@ -98,23 +98,29 @@ pi_feedback.py (daemon 线程)                                        │
 
 ## 文件职责
 
-### 核心运行入口
+### 目录与职责（按功能分包）
 
-- `run_control.py`：主入口、参数解析、sim/nosim 主循环。内联 `_ReachTracker`（到位判定 + 稳定缓冲 + 异步回传队列）和 `_reply_worker`（daemon 回传线程）
+| 路径 | 职责 |
+|------|------|
+| `run_control.py` | CLI 入口、`run_loop` / `run_sim_loop` 编排 |
+| `config.py` / `exceptions.py` | 全局配置与桥接层异常 |
+| `calculator.py` | 对 `control/`、`kinematics/` 的聚合导出 |
+| `control/`、`kinematics/` | 状态机、IK、URDF 运动学 |
+| `io/` | TCP/HTTP（`listener.py`）、树莓派 UDP（`pi_controller.py`）、WS 回传（`pi_feedback.py`） |
+| `sim/` | Isaac 场景引导（`bootstrap.py`）、关节可视化（`shower.py`） |
+| `runtime/` | 到位追踪与回传线程（`reach_tracker.py`）、UDP 帧调试（`udp_debug.py`） |
+| `PiController.py` | 兼容旧导入，转发至 `io.pi_controller` |
 
-### 命令入口与协议 I/O
+### 命令入口与协议 I/O（`io/`）
 
-- `listener.py`：TCP/HTTP 服务与命令归一化。新增 `ReplySlot`（HTTP 阻塞等待容器）和 `on_pending` 回调接口
-- `PiController.py`：UDP 帧打包与下发
+- `io/listener.py`：TCP/HTTP、`CommandNormalizer`、`ReplySlot`、`on_pending`
+- `io/pi_controller.py`：UDP V2.1 帧与 `motor` / `servoMotor`
+- `io/pi_feedback.py`：`PiFeedbackClient`（WebSocket）
 
 ### 运动学与控制
 
-- `calculator.py`：IK/FK、命令应用、控制帧生成。新增 `CalculatorEngine.is_reached()`：joints 模式逐轴判断，pose 模式判断 FK 位置范数，支持传入实机关节角覆盖内部指令角
-- `shower.py`：仿真侧状态显示辅助
-
-### 树莓派回传
-
-- `pi_feedback.py`：WebSocket 客户端，后台线程订阅树莓派状态广播，线程安全地暴露 `get_fb_arm_rad()`
+- `calculator.py`：对外稳定导入；实现见 `control/`、`kinematics/`
+- `sim/shower.py`：仿真 `ArticulationViewer` / `FrameReceiver`
 
 ### 配置与资源
 

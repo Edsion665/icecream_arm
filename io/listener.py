@@ -1,9 +1,9 @@
 """
 统一监听与命令归一化。
 
-- frontend_listener: 供 HTTP/前端调用，接收 dict 并入统一队列
-- network_listener: 供 TCP 网络输入调用，接收 JSON 行并入统一队列
-- claw_listener: 从统一指令中筛出 claw 指令（用于实机控制路径）
+- ``FrontendListener`` / ``frontend_listener``: HTTP 入口
+- ``NetworkListener`` / ``network_listener``: TCP JSON 行协议
+- ``ClawListener`` / ``claw_listener``: 仅爪通道队列
 """
 
 from __future__ import annotations
@@ -13,13 +13,16 @@ import os
 import queue
 import socket
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable, Optional
 
+LogFn = Optional[Callable[[str], None]]
+PendingFn = Optional[Callable[..., None]]
+
 
 class ReplySlot:
-    """HTTP handler 与回传线程之间的结果容器。"""
+    """HTTP 与异步回传线程之间的结果槽。"""
 
     def __init__(self) -> None:
         self.event = threading.Event()
@@ -28,12 +31,16 @@ class ReplySlot:
 
 @dataclass
 class MotionCommand4Axis:
+    """主臂四轴 + 笛卡尔类命令。"""
+
     kind: str
     payload: dict[str, Any]
 
 
 @dataclass
 class ClawCommand:
+    """腕/爪独立通道。"""
+
     kind: str
     payload: dict[str, Any]
 
@@ -42,7 +49,7 @@ NormalizedCommand = MotionCommand4Axis | ClawCommand
 
 
 class CommandNormalizer:
-    """把前端/LAN 输入统一为内部命令。"""
+    """将 JSON/dict 规范为 ``MotionCommand4Axis`` 或 ``ClawCommand``。"""
 
     @staticmethod
     def _command_from_obj(obj: dict[str, Any]) -> str:
@@ -68,6 +75,17 @@ class CommandNormalizer:
 
     @classmethod
     def normalize_obj(cls, obj: dict[str, Any]) -> NormalizedCommand:
+        """解析完整命令对象。
+
+        Args:
+            obj: 至少含 ``cmd`` 或 ``type`` 字段。
+
+        Returns:
+            归一化后的命令实例。
+
+        Raises:
+            ValueError: 字段缺失、长度非法或未知命令字。
+        """
         k = cls._command_from_obj(obj)
         if k in ("pose", "set_pose", "xyz"):
             for key in ("x", "y", "z"):
@@ -116,6 +134,7 @@ class CommandNormalizer:
 
     @classmethod
     def normalize_line(cls, line: str) -> Optional[NormalizedCommand]:
+        """解析单行 JSON；空行返回 ``None``。"""
         line = line.strip()
         if not line:
             return None
@@ -127,11 +146,13 @@ class CommandNormalizer:
 
 
 class BaseListener:
+    """命令入队基类。"""
+
     def __init__(
         self,
         command_queue: "queue.Queue[Optional[NormalizedCommand]]",
-        on_log: Optional[Callable[[str], None]] = None,
-    ):
+        on_log: LogFn = None,
+    ) -> None:
         self._queue = command_queue
         self._on_log = on_log or (lambda s: None)
 
@@ -148,12 +169,12 @@ class BaseListener:
             self.emit(cmd)
 
 
-class frontend_listener(BaseListener):
-    """HTTP 前端入口；调用 emit_from_obj 即可。"""
+class FrontendListener(BaseListener):
+    """HTTP 测试页等入口使用的监听器。"""
 
 
-class claw_listener(BaseListener):
-    """抓手专用监听；只接受 claw 指令。"""
+class ClawListener(BaseListener):
+    """仅将 ``claw`` 类命令写入独立队列。"""
 
     def emit(self, cmd: NormalizedCommand) -> None:
         if isinstance(cmd, ClawCommand):
@@ -163,24 +184,24 @@ class claw_listener(BaseListener):
             self._queue.put(ClawCommand(kind="claw", payload=cmd.payload))
 
 
-class network_listener(BaseListener):
-    """TCP 网络监听。"""
+class NetworkListener(BaseListener):
+    """TCP ``accept`` + 每连接按行 JSON 解析。"""
 
     def __init__(
         self,
         host: str,
         port: int,
         command_queue: "queue.Queue[Optional[NormalizedCommand]]",
-        on_log: Optional[Callable[[str], None]] = None,
-        on_pending: Optional[Callable[..., None]] = None,
-    ):
+        on_log: LogFn = None,
+        on_pending: PendingFn = None,
+    ) -> None:
         super().__init__(command_queue, on_log=on_log)
         self._host = host
         self._port = port
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
-        self._on_pending = on_pending  # on_pending(tcp_conn=conn)
+        self._on_pending = on_pending
 
     def start_background(self) -> None:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -205,7 +226,7 @@ class network_listener(BaseListener):
             t = threading.Thread(target=self._handle_client, args=(conn, addr), daemon=True)
             t.start()
 
-    def _handle_client(self, conn: socket.socket, addr: tuple[Any, Any]) -> None:
+    def _handle_client(self, conn: socket.socket, addr: tuple[Any, ...]) -> None:
         self._on_log(f"[TCP] 连接 {addr}")
         buf = b""
         try:
@@ -244,11 +265,14 @@ class network_listener(BaseListener):
 
 @dataclass
 class Command:
+    """遗留扁平结构（见 ``parse_line``）。"""
+
     kind: str
     payload: dict[str, Any]
 
 
 def parse_line(line: str) -> Optional[Command]:
+    """遗留 API：将一行 JSON 转为 ``Command``。"""
     cmd = CommandNormalizer.normalize_line(line)
     if cmd is None:
         return None
@@ -256,41 +280,45 @@ def parse_line(line: str) -> Optional[Command]:
 
 
 def handle_command_obj(cmd: Command) -> Command:
+    """遗留 API：二次归一化（排除 claw）。"""
     normalized = CommandNormalizer.normalize_obj(dict(cmd.payload, cmd=cmd.kind))
     if not isinstance(normalized, MotionCommand4Axis):
         raise ValueError("unknown_cmd: claw 指令应走 claw_listener")
     return Command(kind=normalized.kind, payload=normalized.payload)
 
 
-class TCPCommandServer(network_listener):
+class TCPCommandServer(NetworkListener):
+    """与 ``NetworkListener`` 等价的历史类型名。"""
+
     def __init__(
         self,
         host: str,
         port: int,
         command_queue: "queue.Queue[Optional[Command]]",
-        on_log=None,
-    ):
+        on_log: LogFn = None,
+    ) -> None:
         super().__init__(host=host, port=port, command_queue=command_queue, on_log=on_log)
 
 
 def start_http_server(
-    cmd_q: "queue.Queue",
+    cmd_q: "queue.Queue[Any]",
     *,
     host: str,
     port: int,
     web_dir: str,
     on_log: Callable[[str], None],
-    on_pending: Optional[Callable[..., None]] = None,
+    on_pending: PendingFn = None,
 ) -> threading.Thread:
-    from .config import REACHED_TIMEOUT_S
+    """在后台线程启动 ``HTTPServer``，路由见内部 ``Handler``。"""
+    from ..config import REACHED_TIMEOUT_S
 
-    frontend = frontend_listener(cmd_q, on_log=on_log)
+    frontend = FrontendListener(cmd_q, on_log=on_log)
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt: str, *args) -> None:
-            pass
+        def log_message(self, fmt: str, *args: object) -> None:
+            del fmt, args
 
-        def _send_json(self, code: int, obj: dict) -> None:
+        def _send_json(self, code: int, obj: dict[str, Any]) -> None:
             b = json.dumps(obj).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -361,12 +389,16 @@ def start_http_server(
             else:
                 self._send_json(200, {"ok": True})
 
-    def _run() -> None:
+    def _run_http() -> None:
         httpd = HTTPServer((host, port), Handler)
         on_log(f"[HTTP] 服务 http://{host}:{port}/")
         httpd.serve_forever()
 
-    t = threading.Thread(target=_run, daemon=True)
+    t = threading.Thread(target=_run_http, daemon=True)
     t.start()
     return t
 
+
+frontend_listener = FrontendListener
+claw_listener = ClawListener
+network_listener = NetworkListener

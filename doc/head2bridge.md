@@ -1,7 +1,7 @@
 # head2bridge API 规范（上位机 -> arm_control_bridge，v2.2）
 
 - 文档状态：stable
-- 适用模块：`arm_control_bridge/listener.py`、`arm_control_bridge/calculator.py`
+- 适用模块：`arm_control_bridge/io/listener.py`、`arm_control_bridge/calculator.py`
 - 对端：上位机（UI/策略/脚本）-> `arm_control_bridge`
 - 相关文档：`docs/bridge2pi.md`
 

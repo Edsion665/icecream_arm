@@ -15,23 +15,23 @@
 Upper-layer policy
   │  TCP JSON lines / HTTP POST
   ▼
-listener.py  ──────────────────────────────────────────────────────
+io/listener.py  ───────────────────────────────────────────────────
   CommandNormalizer normalizes commands                             │
   register_pending(tcp_conn / http_slot)  ← pre-register callback  │
   │                                                                 │
   ▼                                                                 │
 run_control.py control loop (25Hz)                                  │
-  tracker.accept(kind)   ← consume pending context, start timer    │
+  runtime/reach_tracker  ← reached tracking + async reply queue     │
   engine.apply_command() ← update IK / joint target                │
   engine.step()          ← generate JointFrame                     │
-  tracker.feed(reached, result)  ← lock-free check + put_nowait    │
+  tracker.feed(reached, result)                                    │
   │                                                                 │
-  ├─ PiController.py → UDP 108B → Raspberry Pi                     │
+  ├─ io/pi_controller.py → UDP 108B → Raspberry Pi                 │
   │                                                                 │
   └─ reply_q (daemon thread)                                        │
        conn.sendall / slot.event.set  ← async reply, non-blocking  │
                                                                     │
-pi_feedback.py (daemon thread)                                      │
+io/pi_feedback.py (daemon thread)                                    │
   WebSocket subscribe ws://rpi_ip:8765                              │
   parse feedback.fb_arm_rad / mit_arm_rad                          │
   get_fb_arm_rad() → real joint angles for is_reached() ───────────┘
@@ -96,25 +96,29 @@ Reached detection rules:
 - `claw`: no hardware feedback; auto-reached 2s after command received
 - Stability buffer: 5 consecutive frames (@25Hz ≈ 200ms) must all satisfy the threshold before triggering reply — prevents transient false positives
 
-## File Responsibilities
+## Layout (by concern)
 
-### Core runtime
+| Path | Role |
+|------|------|
+| `run_control.py` | CLI entry and `run_loop` / `run_sim_loop` orchestration |
+| `config.py`, `exceptions.py` | Global settings and bridge-specific errors |
+| `calculator.py` | Re-exports `control/` and `kinematics/` for stable imports |
+| `control/`, `kinematics/` | State, IK, URDF kinematics |
+| `io/` | TCP/HTTP (`listener.py`), Pi UDP (`pi_controller.py`), WS feedback (`pi_feedback.py`) |
+| `sim/` | Isaac scene helpers (`bootstrap.py`), articulation viewer (`shower.py`) |
+| `runtime/` | Reached tracking / reply thread (`reach_tracker.py`), UDP frame debug (`udp_debug.py`) |
+| `PiController.py` | Compatibility shim forwarding to `io.pi_controller` |
 
-- `run_control.py`: main entrypoint, CLI args, sim/nosim loop. Inlines `_ReachTracker` (reached detection + stability buffer + async reply queue) and `_reply_worker` (daemon reply thread)
+### Command ingress and protocol I/O (`io/`)
 
-### Command ingress and protocol I/O
-
-- `listener.py`: TCP/HTTP server and command normalization. Adds `ReplySlot` (HTTP blocking container) and `on_pending` callback interface
-- `PiController.py`: UDP frame packing and downstream sending
+- `io/listener.py`: TCP/HTTP, `CommandNormalizer`, `ReplySlot`, `on_pending`
+- `io/pi_controller.py`: UDP V2.1 framing and `motor` / `servoMotor`
+- `io/pi_feedback.py`: `PiFeedbackClient` (WebSocket)
 
 ### Kinematics and control
 
-- `calculator.py`: IK/FK, command application, frame generation. Adds `CalculatorEngine.is_reached()`: per-axis check for joints mode, FK position norm for pose mode; accepts real joint angles to override internal command angles
-- `shower.py`: simulation-side visualization helpers
-
-### Pi feedback
-
-- `pi_feedback.py`: WebSocket client; background thread subscribes to Pi state broadcast and exposes `get_fb_arm_rad()` in a thread-safe manner
+- `calculator.py`: stable public imports; implementations under `control/` and `kinematics/`
+- `sim/shower.py`: `ArticulationViewer` / `FrameReceiver` for Isaac Sim
 
 ### Configuration and assets
 
