@@ -3,6 +3,7 @@
 #include "MotorControl/motor_control.h"
 #include "../Hardware/Serial.h"
 #include "../Hardware/Servo.h"
+#include "serial_frame.h"
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_rcc.h"
 #include "fb_report_timer.h"
@@ -54,6 +55,14 @@ void USB_LP_CAN1_RX0_IRQHandler(void)
                     Motor_States[i].pos = uint_to_float(p_int, Runtime_P_Min[i], Runtime_P_Max[i], 16);
                     Motor_States[i].vel = uint_to_float(v_int, Runtime_V_Min[i], Runtime_V_Max[i], 12);
                     Motor_States[i].tor = uint_to_float(t_int, Runtime_T_Min[i], Runtime_T_Max[i], 12);
+                    Motor_States[i].tor_raw12 = t_int;
+                    Motor_States[i].raw_dlc = rx.DLC > 8u ? 8u : rx.DLC;
+                    {
+                        uint8_t _b;
+                        for (_b = 0; _b < Motor_States[i].raw_dlc; _b++) {
+                            Motor_States[i].raw_frame[_b] = rx.Data[_b];
+                        }
+                    }
 
                     if (rx.DLC >= 8) {
                         Motor_States[i].mos_temp   = rx.Data[6];
@@ -84,12 +93,12 @@ int main(void)
     Hardware_Init();
     Delay_ms(3000);
 
-#if MOTOR_DEBUG_LOG_ENABLE
-    /* USART1：调试 FB 上行（波特率见 Serial.h SERIAL_USART1_BAUD） */
+#if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
+    /* USART1：FB 上行 / MIT 二进制下行（波特率见 Serial.h） */
     Serial_Init();
 #endif
 
-#if MOTOR_DEBUG_LOG_ENABLE
+#if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
     /* TIM2：按 FB_REPORT_HZ 置位，供主循环轮询 FB */
     FB_ReportTimer_Init();
 #endif
@@ -144,10 +153,30 @@ int main(void)
     Servo_Init();
 
     while (1) {
-        /* USART1 RX 经 DMA 排空；MIT 由 TIM4 ISR 周期下发 */
         Serial_ServiceRxDma();
 
-#if MOTOR_DEBUG_LOG_ENABLE
+#if MIT_HEX_MODE
+        {
+            RpiBinFrame_t bin_frame;
+            if (Serial_GetNextBinFrame(&bin_frame)) {
+                MitCmd_t cmds[4];
+                ServoCmd_t servo;
+                if (SerialFrame_ParseBinMit(&bin_frame, cmds, &servo)) {
+                    int mi;
+                    for (mi = 0; mi < 4; mi++) {
+                        Motor_MIT_Send_Raw(mi,
+                                           cmds[mi].p, cmds[mi].v,
+                                           cmds[mi].kp, cmds[mi].kd,
+                                           cmds[mi].t);
+                    }
+                    Servo_SetWristUs(servo.wrist_us);
+                    Servo_SetGripperUs(servo.gripper_us);
+                }
+            }
+        }
+#endif
+
+#if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
         FB_Report_ServicePending();
 #endif
 
@@ -157,8 +186,9 @@ int main(void)
             continue;
         }
 
-        /* 刚性保持由 TIM4 ISR 按快照周期下发；此处刷新快照使 Current_Targets 与 homed 及时同步 */
+#if !MIT_HEX_MODE
         MotorHoldTimer_PublishSnapshot();
+#endif
 
 #if !PWM_PB01_TEST_ENABLE
         Servo_Update();

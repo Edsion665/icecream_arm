@@ -18,6 +18,12 @@ void Servo_SetWrist(int16_t raw);
 /* 机械爪：0=1500us 中位 */
 void Servo_SetGripper(int16_t raw);
 
+/* 树莓派二进制帧：直接写脉宽 us（500~2500），供 MIT_HEX 下行 */
+void Servo_SetWristUs(uint16_t us);
+void Servo_SetGripperUs(uint16_t us);
+uint16_t Servo_GetCurrentWristUs(void);
+uint16_t Servo_GetCurrentGripperUs(void);
+
 /* 渐变速度：0~100，越大步进越快；影响 Servo_Update 的步长 */
 void Servo_SetRampSpeed(uint8_t speed);
 

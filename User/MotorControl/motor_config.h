@@ -18,9 +18,12 @@ typedef struct {
     float pos;
     float vel;
     float tor;
+    uint16_t tor_raw12;
     uint8_t err;
     uint8_t mos_temp;
     uint8_t rotor_temp;
+    uint8_t raw_frame[8];
+    uint8_t raw_dlc;
 } Motor_Status_t;
 
 typedef struct {
@@ -40,6 +43,20 @@ typedef struct {
 
 #define INTERVAL_MS      2
 
+/*
+ * MIT_HEX_MODE=1：STM32 仅作执行器，四轴 MIT 来自树莓派 39 字节二进制帧；
+ * TIM4 刚性保持关闭（与 6fee739 一致）。
+ */
+#ifndef MIT_HEX_MODE
+#define MIT_HEX_MODE  1
+#endif
+
+#define MOTOR_HOLD_TIM4_ENABLE   1
+#if MIT_HEX_MODE
+#undef MOTOR_HOLD_TIM4_ENABLE
+#define MOTOR_HOLD_TIM4_ENABLE   0
+#endif
+
 /*================ 必要新增参数：请与上位机“控制幅值”保持一致 ================*/
 #define MIT_P_MIN       (-12.5f)
 #define MIT_P_MAX       ( 12.5f)
@@ -48,12 +65,13 @@ typedef struct {
 #define MIT_T_MIN       (-18.0f)
 #define MIT_T_MAX       ( 18.0f)
 
-/*================ 硬性保持参数（TIM4 周期刚性保持 / 读反馈 MIT） ================*/
+/* MIT_HEX_MODE=0 时：TIM4 刚性保持与读反馈 MIT 使用下列 Kp/Kd/Tff（MIT_HEX=1 时不在此配置） */
+#if !MIT_HEX_MODE
 #define EXTREME_HOLD_KP {\
-    18.0f,   /* 电机1 */\
-    62.0f,   /* 电机2：主承重，4340可给更硬 */\
-    42.0f,   /* 电机3 */\
-    24.0f    /* 电机4 */\
+    18.0f,\
+    62.0f,\
+    42.0f,\
+    24.0f\
 }
 
 #define EXTREME_HOLD_KD {\
@@ -63,35 +81,23 @@ typedef struct {
     1.8f\
 }
 
-/* 到位后的前馈扭矩，用于持续托住重力（试跑可全 0 关固定前馈，恢复时取消下面注释块） */
 #define EXTREME_HOLD_TFF {\
     0.0f,\
     0.0f,\
     0.0f,\
     0.0f\
 }
-/*
-#define EXTREME_HOLD_TFF_ORIG {\
-    0.0f,\
-    0.45f,\
-    0.85f,\
-    0.0f\
-}
-*/
 
 #define LOCK_KP {10.0f, 16.0f, 16.0f, 10.0f}
 #define LOCK_KD {1.2f, 1.8f, 1.8f, 1.2f}
 
-/*================ 前馈力矩补偿（保持 / 读反馈 MIT） ================*/
 #define HOLD_TFF          {0.0f, 0.10f, 0.80f, 0.0f}
 
 #define MOTOR2_HOLD_TFF     0.20f
+#endif
 
 /*================ 物理限位 ================*/
 /* 已关闭：motor_control / motor_world_exec 不再做软件 P_LIMIT 夹紧（机械安全请靠硬件/驱动器） */
-
-/* TIM4 周期刚性保持（ISR 内 Apply_Rigid_Hold_OnBuffers_NoPostDelay） */
-#define MOTOR_HOLD_TIM4_ENABLE   1
 
 /*================ 调试日志开关 ================*/
 /*
@@ -100,8 +106,11 @@ typedef struct {
  */
 #define MOTOR_DEBUG_LOG_ENABLE   1
 
-/* FB 回传节拍（Hz），由 TIM2 产生标志供主循环轮询 */
+#if MIT_HEX_MODE
+#define FB_REPORT_HZ             25
+#else
 #define FB_REPORT_HZ             10
+#endif
 
 /*================ 额外流程参数 ================*/
 #define REG_READ_WAIT_MS         30

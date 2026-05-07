@@ -5,17 +5,31 @@
 float Current_Targets[MOTOR_NUM];
 uint8_t Motor_Homed[MOTOR_NUM];
 
+#if !MIT_HEX_MODE
 static const float lock_kp[MOTOR_NUM] = LOCK_KP;
 static const float lock_kd[MOTOR_NUM] = LOCK_KD;
 static const float extreme_hold_kp[MOTOR_NUM] = EXTREME_HOLD_KP;
 static const float extreme_hold_kd[MOTOR_NUM] = EXTREME_HOLD_KD;
 static const float extreme_hold_tff[MOTOR_NUM] = EXTREME_HOLD_TFF;
 static const float hold_tff[MOTOR_NUM] = HOLD_TFF;
+#else
+/* MIT_HEX=1 时不在 motor_config 暴露 LOCK/EXTREME；读反馈/（若启用）保持仍用同数值 */
+static const float lock_kp[MOTOR_NUM] = { 10.0f, 16.0f, 16.0f, 10.0f };
+static const float lock_kd[MOTOR_NUM] = { 1.2f, 1.8f, 1.8f, 1.2f };
+static const float extreme_hold_kp[MOTOR_NUM] = { 18.0f, 62.0f, 42.0f, 24.0f };
+static const float extreme_hold_kd[MOTOR_NUM] = { 1.8f, 3.2f, 2.8f, 1.8f };
+static const float extreme_hold_tff[MOTOR_NUM] = { 0.0f, 0.0f, 0.0f, 0.0f };
+static const float hold_tff[MOTOR_NUM] = { 0.0f, 0.10f, 0.80f, 0.0f };
+#endif
 
 static float Get_Hold_Tff(int idx)
 {
     if (idx == 1) {
+#if !MIT_HEX_MODE
         return MOTOR2_HOLD_TFF;
+#else
+        return 0.20f;
+#endif
     }
     return hold_tff[idx];
 }

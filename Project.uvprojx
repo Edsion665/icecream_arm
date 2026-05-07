@@ -692,6 +692,11 @@
               <FilePath>.\User\fb_report_timer.c</FilePath>
             </File>
             <File>
+              <FileName>serial_frame.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\User\serial_frame.c</FilePath>
+            </File>
+            <File>
               <FileName>motor_hold_timer.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\User\MotorControl\motor_hold_timer.c</FilePath>

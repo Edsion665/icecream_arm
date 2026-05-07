@@ -2,34 +2,61 @@
 #include "MotorControl/motor_config.h"
 #include "MotorControl/motor_can.h"
 #include "../Hardware/Serial.h"
+#include "../Hardware/Servo.h"
 #include "stm32f10x.h"
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_tim.h"
-#include <stdio.h>
 
-#if MOTOR_DEBUG_LOG_ENABLE
+#if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
+/*
+ * 上行二进制帧：0xAA 0x55 + 4×8字节原始CAN + wrist_us(BE) + gripper_us(BE) + XOR = 39字节
+ */
+static void FB_Report_SendBinaryUplink(const Motor_Status_t snap[MOTOR_NUM])
+{
+    uint8_t frame[39];
+    int i, b;
+    uint8_t x;
+    uint16_t wrist_us, gripper_us;
+
+    frame[0] = 0xAA;
+    frame[1] = 0x55;
+    for (i = 0; i < 4; i++) {
+        uint8_t *dst = &frame[2 + i * 8];
+        for (b = 0; b < 8; b++) {
+            dst[b] = (b < (int)snap[i].raw_dlc) ? snap[i].raw_frame[b] : 0x00;
+        }
+    }
+    wrist_us   = Servo_GetCurrentWristUs();
+    gripper_us = Servo_GetCurrentGripperUs();
+    frame[34] = (uint8_t)(wrist_us >> 8);
+    frame[35] = (uint8_t)(wrist_us & 0xFFu);
+    frame[36] = (uint8_t)(gripper_us >> 8);
+    frame[37] = (uint8_t)(gripper_us & 0xFFu);
+    x = 0;
+    for (i = 0; i < 38; i++) {
+        x ^= frame[i];
+    }
+    frame[38] = x;
+    Serial_SendArray(frame, 39);
+}
+#endif
+
+#if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
 void FB_Report_SendLine(void)
 {
-    /*
-     * CAN 反馈位置场为 16 位无符号；与 uint_to_float 映射一致：
-     *   0～65535 线性映射到 [Runtime_P_Min, Runtime_P_Max]（默认 MIT ±12.5 rad，同步驱动器后以 Runtime_* 为准）。
-     * Motor_States[i].pos 即为该状态空间下的弧度。
-     */
-    char out[224];
+    int k;
+    Motor_Status_t snap[MOTOR_NUM];
 
-    snprintf(out, sizeof(out),
-             "FB %.5f %.5f %.5f %.5f j1:%.3f j2:%.3f j3:%.3f j4:%.3f\r\n",
-             Motor_States[0].pos, Motor_States[1].pos,
-             Motor_States[2].pos, Motor_States[3].pos,
-             Motor_States[0].tor, Motor_States[1].tor,
-             Motor_States[2].tor, Motor_States[3].tor);
-    Serial_SendString(out);
+    for (k = 0; k < MOTOR_NUM; k++) {
+        snap[k] = Motor_States[k];
+    }
+    FB_Report_SendBinaryUplink(snap);
 }
 #else
 void FB_Report_SendLine(void) { }
 #endif
 
-#if MOTOR_DEBUG_LOG_ENABLE
+#if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
 void FB_Report_ServicePending(void)
 {
     if (FB_ReportTimer_TakePending()) {
@@ -40,7 +67,7 @@ void FB_Report_ServicePending(void)
 void FB_Report_ServicePending(void) { }
 #endif
 
-#if MOTOR_DEBUG_LOG_ENABLE
+#if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
 void FB_ReportTimer_Init(void)
 {
     TIM_TimeBaseInitTypeDef tb;

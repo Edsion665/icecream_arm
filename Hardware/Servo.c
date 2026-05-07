@@ -137,6 +137,38 @@ void Servo_SetGripper(int16_t raw)
     s_target_gripper_us = raw_to_us_gripper(raw);
 }
 
+void Servo_SetWristUs(uint16_t us)
+{
+    if (us < SERVO_MIN_US) {
+        us = SERVO_MIN_US;
+    }
+    if (us > SERVO_MAX_US) {
+        us = SERVO_MAX_US;
+    }
+    s_target_wrist_us = us;
+}
+
+void Servo_SetGripperUs(uint16_t us)
+{
+    if (us < SERVO_MIN_US) {
+        us = SERVO_MIN_US;
+    }
+    if (us > SERVO_MAX_US) {
+        us = SERVO_MAX_US;
+    }
+    s_target_gripper_us = us;
+}
+
+uint16_t Servo_GetCurrentWristUs(void)
+{
+    return s_current_wrist_us;
+}
+
+uint16_t Servo_GetCurrentGripperUs(void)
+{
+    return s_current_gripper_us;
+}
+
 void Servo_SetRampSpeed(uint8_t speed)
 {
     s_ramp_speed = (speed > 100u) ? 100u : speed;
