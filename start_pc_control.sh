@@ -23,7 +23,7 @@ COMMON_ARGS=(
 
 if [[ "${MODE}" == "sim" ]]; then
   ISAAC_PY=""
-  for d in "${HOME}/isaac-sim" "${HOME}/isaacsim"; do
+  for d in "${HOME}/isaacsim" "${HOME}/isaac-sim"; do
     [[ -x "${d}/python.sh" ]] && ISAAC_PY="${d}/python.sh" && break
   done
   if [[ -z "${ISAAC_PY}" ]]; then
