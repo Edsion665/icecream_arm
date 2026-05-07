@@ -1,0 +1,66 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-wheel-metadata/
+
+# --- 虚拟环境 / 本地密钥 ---
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# --- 测试与类型检查 ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- 编辑器与系统 ---
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- 日志与临时文件 ---
+*.log
+*.tmp
+*.temp
+
+# --- Isaac / Omniverse 常见本地缓存（按需保留或删除）---
+**/.thumbs/
+**/omni.log
+**/.nvidia-omniverse/
