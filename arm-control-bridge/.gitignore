@@ -1,0 +1,6 @@
+arm_control_bridge/
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
