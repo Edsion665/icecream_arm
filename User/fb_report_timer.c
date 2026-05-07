@@ -2,46 +2,19 @@
 #include "MotorControl/motor_config.h"
 #include "MotorControl/motor_can.h"
 #include "../Hardware/Serial.h"
-#include "../Hardware/Serial2.h"
 #include "stm32f10x.h"
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_tim.h"
 #include <stdio.h>
 
-#if GRAVITY_FF_PI_MODE
-#include "MotorControl/gravity_pi_feedforward.h"
-#endif
-
 #if MOTOR_DEBUG_LOG_ENABLE
 void FB_Report_SendLine(void)
 {
     /*
-     * CAN 反馈位置场为 16 位无符号；与 motor_utils.uint_to_float 一致：
+     * CAN 反馈位置场为 16 位无符号；与 uint_to_float 映射一致：
      *   0～65535 线性映射到 [Runtime_P_Min, Runtime_P_Max]（默认 MIT ±12.5 rad，同步驱动器后以 Runtime_* 为准）。
      * Motor_States[i].pos 即为该状态空间下的弧度。
      */
-#if GRAVITY_FF_PI_MODE
-    char out[384];
-    float tcmd[4];
-    float tpi[4];
-
-    GravityPi_GetLastMitTorqueCmd(tcmd);
-    GravityPi_GetPiReceivedTau(tpi);
-    snprintf(out, sizeof(out),
-             "FB %.5f %.5f %.5f %.5f j1:%.3f j2:%.3f j3:%.3f j4:%.3f "
-             "tcmd1:%.4f tcmd2:%.4f tcmd3:%.4f tcmd4:%.4f "
-             "tpi1:%.4f tpi2:%.4f tpi3:%.4f tpi4:%.4f "
-             "tau_ok:%lu tau_fail:%lu last_tau:%d\r\n",
-             Motor_States[0].pos, Motor_States[1].pos,
-             Motor_States[2].pos, Motor_States[3].pos,
-             Motor_States[0].tor, Motor_States[1].tor,
-             Motor_States[2].tor, Motor_States[3].tor,
-             tcmd[0], tcmd[1], tcmd[2], tcmd[3],
-             tpi[0], tpi[1], tpi[2], tpi[3],
-             (unsigned long)GravityPi_GetTauParseOkCount(),
-             (unsigned long)GravityPi_GetTauParseFailCount(),
-             (int)GravityPi_GetLastTauParseResult());
-#else
     char out[224];
 
     snprintf(out, sizeof(out),
@@ -50,31 +23,24 @@ void FB_Report_SendLine(void)
              Motor_States[2].pos, Motor_States[3].pos,
              Motor_States[0].tor, Motor_States[1].tor,
              Motor_States[2].tor, Motor_States[3].tor);
-#endif
     Serial_SendString(out);
-    Serial2_SendString(out);
 }
 #else
 void FB_Report_SendLine(void) { }
 #endif
 
-#if MOTOR_DEBUG_LOG_ENABLE || GRAVITY_FF_PI_MODE
+#if MOTOR_DEBUG_LOG_ENABLE
 void FB_Report_ServicePending(void)
 {
     if (FB_ReportTimer_TakePending()) {
-#if MOTOR_DEBUG_LOG_ENABLE
         FB_Report_SendLine();
-#endif
-#if GRAVITY_FF_PI_MODE
-        GravityPi_ApplyAll();
-#endif
     }
 }
 #else
 void FB_Report_ServicePending(void) { }
 #endif
 
-#if MOTOR_DEBUG_LOG_ENABLE || GRAVITY_FF_PI_MODE
+#if MOTOR_DEBUG_LOG_ENABLE
 void FB_ReportTimer_Init(void)
 {
     TIM_TimeBaseInitTypeDef tb;

@@ -2,7 +2,6 @@
 #define MOTOR_CAN_H
 
 #include "stm32f10x.h"
-#include "motor_types.h"
 #include "motor_config.h"
 
 /*================ 全局变量声明 ================*/
@@ -44,5 +43,10 @@ void Disable_All_Motors(void);
 
 /*================ 硬件初始化 ================*/
 void Hardware_Init(void);
+
+/*================ MIT 浮点与寄存器打包（原 motor_utils） ================*/
+uint16_t float_to_uint(float x, float x_min, float x_max, int bits);
+float uint_to_float(int x_int, float x_min, float x_max, int bits);
+float u32_to_float(uint32_t u);
 
 #endif /* MOTOR_CAN_H */

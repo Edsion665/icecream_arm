@@ -12,7 +12,7 @@ void MotorHoldTimer_PublishSnapshot(void);
 void MotorHoldTimer_StreamEnter(void);
 void MotorHoldTimer_StreamExit(void);
 
-/* 调试：插补深度（>0 时 TIM4 不发保持，由 Move_* 发 MIT） */
+/* 调试：流式深度（>0 时 TIM4 ISR 跳过保持下发，预留与上位机流式指令配合） */
 uint32_t MotorHoldTimer_GetStreamDepth(void);
 
 /* TIM4 ISR 内统计（可选自接调试器查看；主循环已不再打印） */

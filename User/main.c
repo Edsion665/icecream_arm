@@ -1,127 +1,17 @@
 #include "MotorControl/motor_config.h"
-#include "MotorControl/motor_types.h"
 #include "MotorControl/motor_can.h"
 #include "MotorControl/motor_control.h"
-#include "MotorControl/motor_utils.h"
-#include "Coordinate/world_coord.h"
 #include "../Hardware/Serial.h"
-#include "../Hardware/Serial2.h"
 #include "../Hardware/Servo.h"
-#include "../Hardware/PWM.h"
-#include "serial_frame.h"
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_rcc.h"
 #include "fb_report_timer.h"
-#include "motor_hold_timer.h"
-#if GRAVITY_FF_PI_MODE
-#include "MotorControl/gravity_pi_feedforward.h"
-#endif
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
+#include "MotorControl/motor_hold_timer.h"
 
 /* 周期性 FB：实现见 fb_report_timer.c（主循环 + 插补内均调用 ServicePending） */
 
 /* 1=PB0/PB1 PWM 测试（50Hz，1.5ms 中位），直接验证舵机引脚；0=正常舵机控制 */
 #define PWM_PB01_TEST_ENABLE  0
-
-/* 与 motor_config.h 中 WORLD_HOME_ABS 同源（标定零位对应的绝对 rad） */
-static const float s_rpi_home_abs_rad[4] = WORLD_HOME_ABS;
-
-static float Rpi_ClampRelDeg(float deg)
-{
-    if (deg > RPI_REL_DEG_LIMIT) {
-        return RPI_REL_DEG_LIMIT;
-    }
-    if (deg < -RPI_REL_DEG_LIMIT) {
-        return -RPI_REL_DEG_LIMIT;
-    }
-    return deg;
-}
-
-/* tmp 已为全小写；允许首尾空白，避免上位机多打空格/Tab 导致 strcmp("start") 失败 */
-static int Rpi_LineIsStartCmd(const char *tmp)
-{
-    const char *p = tmp;
-
-    if (tmp == 0) {
-        return 0;
-    }
-    while (*p == ' ' || *p == '\t') {
-        p++;
-    }
-    if (strncmp(p, "start", 5) != 0) {
-        return 0;
-    }
-    p += 5;
-    while (*p == ' ' || *p == '\t') {
-        p++;
-    }
-    return *p == '\0' ? 1 : 0;
-}
-
-/*================ 处理树莓派 6 个角度：前 4 为相对零位的度×100，±180° 内 -> 绝对 rad；后 2 为舵机 ================*/
-static void Process_Rpi_Raw6(const int16_t raw[6])
-{
-    float target_abs[4];
-    uint8_t i;
-    char out[160];
-
-    /* 后 2 路：舵机，-18000~18000（度×100）直接映射到 500~2500us */
-    Servo_SetWrist(raw[4]);
-    Servo_SetGripper(raw[5]);
-
-    /* 前 4 路：相对标定零位的角（度×100），限幅 ±RPI_REL_DEG_LIMIT 后再换算绝对目标 */
-    for (i = 0; i < 4; i++) {
-        float rel_deg = ((float)raw[i]) / 100.0f;
-        rel_deg       = Rpi_ClampRelDeg(rel_deg);
-        float rel_rad = rel_deg * MOTOR_PI / 180.0f;
-        target_abs[i] = s_rpi_home_abs_rad[i] + rel_rad;
-    }
-
-    snprintf(out, sizeof(out),
-            "RES abs_rad: %.4f %.4f %.4f %.4f (rel deg*100->HOME+clamp, drv rad)\r\n",
-            target_abs[0], target_abs[1], target_abs[2], target_abs[3]);
-    Serial_SendString(out);
-    Serial2_SendString(out);
-
-    Read_All_Current_Positions();
-    /* 插补起点与反馈一致（与 Move_Four_Motors_FromFeedback_To_Rels 开头相同） */
-    for (i = 0; i < 4; i++) {
-        Current_Targets[i] = Motor_States[i].pos;
-    }
-
-    /*
-     * 已在 MOVE_DIST_TOL_RAD 内则不再跑四轴插补：避免重复同一 DATA 时
-     * StreamEnter 长时间关掉 TIM4 保持（轨迹用 move_kp，体感像失力）。
-     */
-    {
-        uint8_t already_there = 1u;
-        for (i = 0; i < 4; i++) {
-            if (fabsf(target_abs[i] - Motor_States[i].pos) >= MOVE_DIST_TOL_RAD) {
-                already_there = 0u;
-                break;
-            }
-        }
-        if (already_there) {
-            for (i = 0; i < 4; i++) {
-                Current_Targets[i] = target_abs[i];
-                Motor_Homed[i] = 1u;
-            }
-            MotorHoldTimer_PublishSnapshot();
-            return;
-        }
-    }
-
-    {
-        uint8_t mark[4] = {1, 1, 1, 1};
-        Move_Four_Motors_To_Targets(0, target_abs[0],
-                                    1, target_abs[1],
-                                    2, target_abs[2],
-                                    3, target_abs[3],
-                                    mark);
-    }
-}
 
 /*================ CAN 中断 ================*/
 void USB_LP_CAN1_RX0_IRQHandler(void)
@@ -194,21 +84,15 @@ int main(void)
     Hardware_Init();
     Delay_ms(3000);
 
-#if MOTOR_DEBUG_LOG_ENABLE || GRAVITY_FF_PI_MODE
-    /* USART1：调试 FB / 树莓派 TAU 前馈（波特率见 Serial.h SERIAL_USART1_BAUD） */
+#if MOTOR_DEBUG_LOG_ENABLE
+    /* USART1：调试 FB 上行（波特率见 Serial.h SERIAL_USART1_BAUD） */
     Serial_Init();
 #endif
 
-    /* 串口2（USART2, PA2/PA3）：仅用于定时发送测试帧 */
-    Serial2_Init();
-
-#if MOTOR_DEBUG_LOG_ENABLE || GRAVITY_FF_PI_MODE
-    /* TIM2：按 FB_REPORT_HZ 置位；Pi 模式下同时驱动 GravityPi_ApplyAll */
+#if MOTOR_DEBUG_LOG_ENABLE
+    /* TIM2：按 FB_REPORT_HZ 置位，供主循环轮询 FB */
     FB_ReportTimer_Init();
 #endif
-
-    /* 世界坐标(HOME)初始化 + 目标对齐（避免上电跳动） */
-    WorldCoord_InitFixedHomeFromConfig();
 
     /* 使能 */
     for (i = 0; i < 25; i++) {
@@ -249,7 +133,6 @@ int main(void)
         Sync_CurrentTargets_From_Feedback();
         if (motor_connected) {
             Serial_SendString("motor connected!\r\n");
-            Serial2_SendString("motor connected!\r\n");
         }
     }
 
@@ -257,69 +140,14 @@ int main(void)
     MotorHoldTimer_Init();
     MotorHoldTimer_PublishSnapshot();
 
-#if PWM_PB01_TEST_ENABLE
-    /* PB0/PB1 PWM 测试：50Hz，1.5ms 脉宽（舵机中位） */
-    PWM_Init();
-#else
-    /* 舵机：PB0 腕部、PB1 机械爪，50Hz PWM */
+    /* 舵机：PB0 腕部、PB1 机械爪，50Hz PWM（PWM.c 已移出工程，不再保留 PB01 独立测试分支） */
     Servo_Init();
-#endif
-
-    /* 串口1（USART1）：按行字符串控制；串口2（USART2）：转发串口1 收发 */
-
-    /* 串口1 解析状态：收到 start 后永久开启电机角度解析 */
-    static uint8_t s_parsing_enabled = 0;
 
     while (1) {
-        /* USART1 RX 经 DMA；MIT 由 TIM4（量产）或 TIM2+Pi（GRAVITY_FF_PI_MODE）发 */
+        /* USART1 RX 经 DMA 排空；MIT 由 TIM4 ISR 周期下发 */
         Serial_ServiceRxDma();
 
-        /* 串口1：每轮主循环最多处理 1 行；先转发串口2 再解析（与历史版本一致） */
-        {
-            char line[RPI_LINE_MAX_LEN];
-            if (Serial_GetNextLine(line, sizeof(line))) {
-                char tmp[RPI_LINE_MAX_LEN];
-                uint8_t i;
-
-                Serial2_SendString(line);
-                Serial2_SendString("\r\n");
-
-                for (i = 0; line[i] != '\0'; i++) {
-                    tmp[i] = (line[i] >= 'A' && line[i] <= 'Z') ?
-                             (char)(line[i] - 'A' + 'a') : line[i];
-                }
-                tmp[i] = '\0';
-
-                if (Rpi_LineIsStartCmd(tmp)) {
-                    Serial_SendString("OK\r\n");
-                    Serial2_SendString("OK\r\n");
-                    s_parsing_enabled = 1;
-                } else if (s_parsing_enabled) {
-                    int16_t raw6[6];
-#if GRAVITY_FF_PI_MODE
-                    {
-                        float tau4[4];
-                        if (SerialFrame_IsTauLine(line)) {
-                            if (SerialFrame_ParseTau(line, tau4)) {
-                                GravityPi_OnTorqueLine(tau4);
-                                GravityPi_NotifyTauParseResult(1);
-                            } else {
-                                GravityPi_NotifyTauParseResult(0);
-                            }
-                        } else if (SerialFrame_ParseData(line, raw6)) {
-                            Process_Rpi_Raw6(raw6);
-                        }
-                    }
-#else
-                    if (SerialFrame_ParseData(line, raw6)) {
-                        Process_Rpi_Raw6(raw6);
-                    }
-#endif
-                }
-            }
-        }
-
-#if MOTOR_DEBUG_LOG_ENABLE || GRAVITY_FF_PI_MODE
+#if MOTOR_DEBUG_LOG_ENABLE
         FB_Report_ServicePending();
 #endif
 

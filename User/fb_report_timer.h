@@ -9,10 +9,7 @@ uint8_t FB_ReportTimer_TakePending(void);
 
 /* 发一行 FB：四轴 MIT 映射弧度（与 CAN 0～65535→Runtime_P 一致）+ j1..j4 力矩(Nm)；周期=FB_REPORT_HZ */
 void FB_Report_SendLine(void);
-/*
- * TakePending 为真：可选 SendLine（MOTOR_DEBUG_LOG_ENABLE）、GravityPi_ApplyAll（GRAVITY_FF_PI_MODE）。
- * 插补循环内亦调用，避免主循环阻塞时无 FB / 无 Pi MIT。
- */
+/* TakePending 为真时可选 SendLine（MOTOR_DEBUG_LOG_ENABLE）；插补循环内亦调用，避免主循环阻塞时无 FB */
 void FB_Report_ServicePending(void);
 
 #endif

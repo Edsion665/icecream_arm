@@ -667,39 +667,9 @@
           <GroupName>Hardware</GroupName>
           <Files>
             <File>
-              <FileName>Key.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\Hardware\Key.c</FilePath>
-            </File>
-            <File>
-              <FileName>LED.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\Hardware\LED.c</FilePath>
-            </File>
-            <File>
-              <FileName>OLED.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\Hardware\OLED.c</FilePath>
-            </File>
-            <File>
               <FileName>Serial.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\Hardware\Serial.c</FilePath>
-            </File>
-            <File>
-              <FileName>Motor.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\Hardware\Motor.c</FilePath>
-            </File>
-            <File>
-              <FileName>PWM.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\Hardware\PWM.c</FilePath>
-            </File>
-            <File>
-              <FileName>Serial2.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\Hardware\Serial2.c</FilePath>
             </File>
             <File>
               <FileName>Servo.c</FileName>
@@ -717,11 +687,6 @@
               <FilePath>.\User\main.c</FilePath>
             </File>
             <File>
-              <FileName>serial_frame.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\User\serial_frame.c</FilePath>
-            </File>
-            <File>
               <FileName>fb_report_timer.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\User\fb_report_timer.c</FilePath>
@@ -729,17 +694,7 @@
             <File>
               <FileName>motor_hold_timer.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\User\motor_hold_timer.c</FilePath>
-            </File>
-            <File>
-              <FileName>world_coord.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\User\Coordinate\world_coord.c</FilePath>
-            </File>
-            <File>
-              <FileName>motor_world_exec.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\User\MotorControl\motor_world_exec.c</FilePath>
+              <FilePath>.\User\MotorControl\motor_hold_timer.c</FilePath>
             </File>
             <File>
               <FileName>motor_can.c</FileName>
@@ -750,21 +705,6 @@
               <FileName>motor_control.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\User\MotorControl\motor_control.c</FilePath>
-            </File>
-            <File>
-              <FileName>gravity_pi_feedforward.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\User\MotorControl\gravity_pi_feedforward.c</FilePath>
-            </File>
-            <File>
-              <FileName>motor_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\User\MotorControl\motor_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>motor_utils.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\User\MotorControl\motor_utils.c</FilePath>
             </File>
             <File>
               <FileName>stm32f10x_it.c</FileName>
