@@ -81,13 +81,14 @@ class CommandNormalizer:
 
     @staticmethod
     def _normalize_grip_state(v: Any) -> float:
+        """与 head 一致：0=合拢 closed，1=张开 open；内部 state.grip_state 存 0/1。"""
         if isinstance(v, str):
             s = v.strip().lower()
-            if s in ("open", "0", "false"):
-                return 0.0
-            if s in ("close", "closed", "1", "true"):
+            if s in ("open", "1", "true"):
                 return 1.0
-            raise ValueError("invalid_value: grip_state 必须为 0/1")
+            if s in ("close", "closed", "0", "false"):
+                return 0.0
+            raise ValueError("invalid_value: grip_state 必须为 0/1 或 open/close")
         try:
             x = float(v)
         except (TypeError, ValueError) as ex:

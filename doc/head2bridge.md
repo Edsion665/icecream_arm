@@ -95,12 +95,12 @@
 输入要求（必须同时提供）：
 
 1. `wrist_deg`（手腕角度，单位度）
-2. 夹爪状态（`grip_state` 或 `open_close`），最终归一到 `0/1`
+2. 夹爪状态（`grip_state` 或 `open_close`），最终归一到 `0/1`（**`0=合拢`，`1=张开`**）
 
 映射到 bridge->pi 帧：
 
 - `wrist_deg -> p_rel_deg[4]`（仅角度）
-- `grip_state/open_close -> p_rel_deg[5]`（仅状态：`0=open, 1=close`）
+- `grip_state/open_close -> p_rel_deg[5]`（仅状态：**`0=合拢`，`1=张开`**）
 
 约束：
 

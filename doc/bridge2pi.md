@@ -54,7 +54,7 @@
 
 - `0..3`：4 电机关节（J1~J4）
 - `4`：手腕舵机关节角（`wrist_deg`）
-- `5`：夹爪状态（`grip_state`，推荐 `0=open, 1=close`）
+- `5`：夹爪状态（`grip_state`，**`0=合拢`，`1=张开`**）
 
 ### 3.3 字段装载规则
 
@@ -62,7 +62,7 @@
 - `omega_rad_s[0:4] <- JointFrame.arm_omega_rad_s[0:4]`
 - `p_rel_deg[4] <- wrist_deg`（手腕舵机角度）
 - `omega_rad_s[4] <- 0.0`（手腕当前不发送角速度，固定保留 0）
-- `p_rel_deg[5] <- grip_state`（夹爪离散状态：`0=open, 1=close`）
+- `p_rel_deg[5] <- grip_state`（夹爪离散状态：**`0=合拢`，`1=张开`**）
 - `omega_rad_s[5] <- 0.0`（夹爪无角速度语义，固定保留 0）
 
 即：
