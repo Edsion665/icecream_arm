@@ -151,11 +151,11 @@ io/pi_feedback.py (daemon 线程)                                       │
 ## 快速启动
 
 ```bash
-# 仿真 + 下发到树莓派
-./arm_control_bridge/start_pc_control.sh sim 192.168.1.100
+# 仿真 + 下发到树莓派（在仓库根目录执行，例如 icecreamarm/）
+./arm-control-bridge/start_pc_control.sh sim 192.168.1.100
 
 # 无仿真开环下发
-./arm_control_bridge/start_pc_control.sh nosim 192.168.1.100
+./arm-control-bridge/start_pc_control.sh nosim 192.168.1.100
 
 # 仅本地仿真（无树莓派）；HTTP/无头等在 SIM_CONFIG
 ~/isaacsim/python.sh -m arm_control_bridge.run_control --sim
@@ -163,6 +163,8 @@ io/pi_feedback.py (daemon 线程)                                       │
 # 显式指定监听与树莓派（可选）
 ~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --listen 0.0.0.0 --port 9888 --rpi-ip 192.168.1.100
 ```
+
+在仓库根目录（包含 `arm-control-bridge/` 以及符号链接 `arm_control_bridge` → `arm-control-bridge`）下执行上述命令。若缺少该符号链接，在仓库根执行：`ln -sfn arm-control-bridge arm_control_bridge`。
 
 ## 与树莓派对接方案
 
