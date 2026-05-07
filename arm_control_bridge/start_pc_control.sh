@@ -2,9 +2,7 @@
 set -euo pipefail
 
 # PC 端启动脚本（适配 PC_RPI_UDP_PROTOCOL.md）
-# 仓库布局：icecreamarm/arm-control-bridge/start_pc_control.sh（本文件）
-#          仓库根 = 本目录上一级；根目录下需有 arm_control_bridge -> arm-control-bridge 的符号链接，
-#          以便 python -m arm_control_bridge.run_control 能解析包名。
+# 仓库布局：仓库根下的 arm_control_bridge/（与 Python 包名一致，本文件位于该目录内）。
 # 用法：
 #   ./start_pc_control.sh sim 192.168.1.100
 #   ./start_pc_control.sh nosim 192.168.1.100
@@ -20,12 +18,6 @@ BRIDGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${BRIDGE_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
-
-if [[ ! -d "${REPO_ROOT}/arm_control_bridge" ]]; then
-  echo "[start_pc_control] 缺少包名目录 ${REPO_ROOT}/arm_control_bridge（应为指向 arm-control-bridge 的符号链接）。" >&2
-  echo "  在仓库根执行: ln -sfn arm-control-bridge arm_control_bridge" >&2
-  exit 1
-fi
 
 COMMON_ARGS=(
   --listen "${LISTEN_HOST}"

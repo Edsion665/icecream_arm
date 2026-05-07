@@ -150,10 +150,10 @@ Headless sim, HTTP bind, IK tuning, USD paths: edit **`SIM_CONFIG`** / **`CONFIG
 
 ```bash
 # simulation + downlink to Pi (from clone root, e.g. icecreamarm/)
-./arm-control-bridge/start_pc_control.sh sim 192.168.1.100
+./arm_control_bridge/start_pc_control.sh sim 192.168.1.100
 
 # open-loop downlink without simulation
-./arm-control-bridge/start_pc_control.sh nosim 192.168.1.100
+./arm_control_bridge/start_pc_control.sh nosim 192.168.1.100
 
 # local simulation only (no Pi); HTTP/sim flags in SIM_CONFIG
 ~/isaacsim/python.sh -m arm_control_bridge.run_control --sim
@@ -162,7 +162,7 @@ Headless sim, HTTP bind, IK tuning, USD paths: edit **`SIM_CONFIG`** / **`CONFIG
 ~/isaacsim/python.sh -m arm_control_bridge.run_control --sim --listen 0.0.0.0 --port 9888 --rpi-ip 192.168.1.100
 ```
 
-Run these from the repository root (the directory that contains `arm-control-bridge/` and the `arm_control_bridge` → `arm-control-bridge` symlink). If the symlink is missing, create it with: `ln -sfn arm-control-bridge arm_control_bridge`.
+Run these from the repository root (the directory that contains the `arm_control_bridge/` package folder).
 
 ## Pi Integration
 
