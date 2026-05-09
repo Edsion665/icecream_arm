@@ -1,0 +1,8 @@
+curl -sS -X POST http://127.0.0.1:8776/api/detection \
+  -H 'Content-Type: application/json' \
+  -d '{"frame":"robot_base","objects":[{"role":"target","class_id":1,"label":"slot","position":{"x":0.0,"y":-0.4,"z":0.45},"wrist_yaw_deg":0.0}]}'
+  
+curl -sS -X POST http://127.0.0.1:8776/api/detection \
+  -H 'Content-Type: application/json' \
+  -d '{"frame":"robot_base","objects":[{"role":"object","class_id":2,"label":"cone","position":{"x":0.4,"y":0.0,"z":0.35},"wrist_yaw_deg":0.0}]}'
+

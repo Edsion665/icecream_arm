@@ -1,0 +1,37 @@
+# Copy to config.yaml and adjust. Paths relative to cwd when starting.
+
+bridge_base_url: "http://127.0.0.1:8775"
+ingest_host: "0.0.0.0"
+ingest_port: 8776
+# Optional TCP JSON lines (camera2head §2.1); set null to disable
+ingest_tcp_port: null
+
+merge_pos_eps_m: 0.005
+merge_yaw_eps_deg: 3.0
+
+observe1_axes_rel_deg: [0.0, 0.0, -45.0, -60.0]
+observe2_axes_rel_deg: [0.0, 5.0, -30.0, -50.0]
+
+state_timeout_s: 60.0
+refresh_wait_s: 2.0
+
+# Optional: PLAN must see object with confidence >= this (0 = off)
+min_object_confidence: 0.0
+
+# --- v3 FSM ---
+# null 或省略：在 obs1/obs2 一直等到帧内出现 target/object（推荐联调，避免超时后整轮重跑来回摆）
+# 正数：有限超时（秒）；超时抛错后 run_forever 会重跑整轮 → 易表现为 obs1/obs2 反复运动
+camera_wait_timeout_s: null
+# Step 7 pick / step 11 place (bridge grip_state)
+claw_closed_for_pick: true
+claw_open_for_place: false
+# obs1 / 抓取后回到 obs1：腕零与 claw 同发时的 wrist_deg
+claw_after_joints_wrist_deg: 0.0
+# Before obs2 joints (first visit): wrist on claw + joints
+obs2_entry_wrist_deg: 0.0
+# Extra claw POST on every micro-transition (joints/pose/plan boundaries)
+emit_claw_on_every_transition: false
+# BridgeClient initial grip: true=张开 → 下发 grip_state=1；false=合拢 → grip_state=0
+initial_grip_open: true
+# 每次 obs1 / obs2 / 抓取后回 obs1 的关节到位后清空相机缓存帧；wait 必须收到**新** ingest 才继续（避免上一轮 _last_frame 让 step2 与 step3 同一时刻触发）
+require_fresh_detection_after_obs: true

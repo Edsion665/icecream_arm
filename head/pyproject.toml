@@ -1,0 +1,29 @@
+[project]
+name = "icecream-head"
+version = "0.1.0"
+description = "Icecream robot head: camera ingestion, tracker, planner, bridge speaker, FSM"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.28.0",
+  "PyYAML>=6.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=7.0",
+]
+
+[project.scripts]
+icecream-head = "src.run:main"
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
