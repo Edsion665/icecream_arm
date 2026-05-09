@@ -1,2 +1,2 @@
 # 本包特有：避免误把同名嵌套目录加入版本库（通用规则见仓库根 .gitignore）
-arm_control_bridge/
+arm_control_bridge/__pycache__/
