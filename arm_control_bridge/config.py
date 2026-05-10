@@ -32,7 +32,7 @@ class ControlConfig:
     reached_pose_tol_m: float = 0.005
     reached_wrist_tol_deg: float = 5.0
     reached_claw_delay_s: float = 2.0
-    reached_timeout_s: float = 10.0
+    reached_timeout_s: float = 1.0
     reached_stable_frames: int = 5
     rpi_ws_port: int = 8765
     pi_feedback_reconnect_interval_s: float = 3.0
@@ -67,9 +67,11 @@ class IKConfig:
 class SimulationConfig:
     """Isaac Sim 场景与关节 PD 默认值。"""
 
-    sim_track_snap_threshold_rad: float = 0.35
+    sim_track_snap_threshold_rad: float = 0.001
     arm_prim_path: str = "/World/IceCreamArm"
     target_marker_path: str = "/World/TargetJoint4Marker"
+    # 沿父空间 +Z 平移手臂根 prim（米）；父为 /World 时即世界 +Z 抬高整臂（含 link0）。例：0.1 = 抬高 10 cm。
+    arm_world_z_offset_m: float = 0.2
     marker_z_lift_m: float = 0.04
     arm_usd_relpath: str = "v8/ice_cream_v8_arm.usd"
     arm_urdf_relpath: str = "v8/ice_cream_v8.SLDASM.urdf"

@@ -237,6 +237,7 @@ def run_sim_loop(
     from .io.listener import ClawCommand, MotionCommand4Axis, network_listener, start_http_server
     from .sim import (
         add_grid_ground,
+        apply_arm_prim_world_z_offset,
         find_articulation_root,
         log_prim_world_pose,
         receiver,
@@ -319,6 +320,9 @@ def run_sim_loop(
         arm_prim.Load()
     except Exception as ex:
         log(f"[sim] arm_prim.Load() 跳过: {type(ex).__name__}: {ex}")
+    apply_arm_prim_world_z_offset(
+        stage, sim_cfg.arm_prim_path, sim_cfg.arm_world_z_offset_m, log=log
+    )
     if sim_cfg.articulation_prim_path:
         articulation_path = sim_cfg.articulation_prim_path
     else:
@@ -419,10 +423,6 @@ def run_sim_loop(
                         arm.set_joint_positions(q_snap)
                     except Exception as ex:
                         log(f"[sim][SYNC] set_joint_positions 失败: {type(ex).__name__}: {ex}")
-                    if log_print:
-                        log(
-                            f"[sim][SYNC] ‖q_actual−q_cmd‖={diff_b:.3f} rad > {SIM_CONFIG.sim_track_snap_threshold_rad:.2f}，已对齐仿真到指令"
-                        )
 
         frame = engine.step(None, state, dt=ik_dt)
         if dump_next_udp_frame:

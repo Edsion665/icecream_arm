@@ -52,6 +52,37 @@ def log_prim_world_pose(stage: Any, prim_path: str, tag: str, log: LogFn) -> Non
         log(f"[sim][frame] {tag}: failed to read world pose: {type(exc).__name__}: {exc}")
 
 
+def apply_arm_prim_world_z_offset(
+    stage: Any,
+    prim_path: str,
+    dz_m: float,
+    *,
+    log: Optional[LogFn] = None,
+) -> None:
+    """在手臂根 prim 的 Xform 栈上追加沿父空间 +Z 的平移（米）。
+
+    根 prim 的父级一般为 ``/World`` 时，效果为世界坐标系竖直向上平移整臂（link0 随动）。
+    """
+    dz = float(dz_m)
+    if abs(dz) < 1e-12:
+        return
+    try:
+        from pxr import Gf, UsdGeom
+
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            if log is not None:
+                log(f"[sim][arm_z] prim not found: {prim_path}")
+            return
+        xf = UsdGeom.Xformable(prim)
+        xf.AddTranslateOp(opSuffix="world_z_offset").Set(Gf.Vec3d(0.0, 0.0, dz))
+        if log is not None:
+            log(f"[sim][arm_z] {prim_path} append translate (0, 0, {dz:+.4f}) m")
+    except Exception as exc:
+        if log is not None:
+            log(f"[sim][arm_z] failed: {type(exc).__name__}: {exc}")
+
+
 def set_marker_xyz(
     stage: Any,
     xyz: np.ndarray,
