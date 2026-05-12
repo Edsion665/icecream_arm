@@ -6,6 +6,51 @@ import os
 from dataclasses import dataclass
 
 
+#
+# ---- 统一静态调参区 ----
+# 这一段集中存放跨模块共享的协议与映射常量。将这些“只读超参数”统一放在这里，
+# 便于后续只改 config 就能完成行为调整，避免在 UDP、映射、重力补偿等文件中分散修改。
+#
+
+# MOTOR_AXIS_SIGN 定义四个电机轴在“电机坐标系”和“关节坐标系”之间的方向关系，
+# 顺序固定为 motor1..motor4。取值 +1 表示正方向一致，-1 表示方向相反。
+# 该符号会被目标映射、反馈反算、关节力矩到电机力矩转换等链路共同复用，
+# 用于保证整条控制链在符号约定上的一致性。
+MOTOR_AXIS_SIGN: tuple[float, float, float, float] = (-1.0, -1.0, 1.0, 1.0)
+
+# GRAVITY_AXIS_SCALE 是重力补偿在电机力矩空间下的逐轴缩放系数，顺序为 motor1..motor4。
+# 它会在 Pinocchio 输出并投影到电机空间之后生效，主要用于实机逐轴精细调参。
+GRAVITY_AXIS_SCALE: tuple[float, float, float, float] = (1.0, 1.3, 1.2, 1.2)
+
+# 以下常量定义 bridge2pi 的 UDP 二进制帧格式。当前协议为：
+# seq(uint32) + ts(float64) + p_rel_deg[6](float64) + omega_rad_s[6](float64)。
+# UDP_PACKET_FMT/UDP_PACKET_SIZE/UDP_VECTOR_DIM 必须保持一致，修改任一项时需同步检查其余项。
+UDP_VECTOR_DIM: int = 6
+UDP_PACKET_FMT: str = "=Id" + "d" * (UDP_VECTOR_DIM * 2)
+UDP_PACKET_SIZE: int = 4 + 8 + UDP_VECTOR_DIM * 8 * 2
+
+# WRIST_MIN_DEG 与 WRIST_MAX_DEG 定义腕部舵机角度语义的物理范围（单位：度），
+# 对应 bridge2pi 在 p_rel_deg[4] 中传输的 wrist 角度。
+WRIST_MIN_DEG: float = -180.0
+WRIST_MAX_DEG: float = 180.0
+
+# 夹爪状态语义通过 UDP 的 p_rel_deg[5] 传输。约定 0.0 为闭合、1.0 为张开，
+# 中间值可通过阈值转换为离散开合指令。
+GRIP_CLOSED_STATE: float = 0.0
+GRIP_OPEN_STATE: float = 1.0
+
+# GRIP_THRESHOLD 为夹爪状态离散化阈值：大于等于阈值判定为 open，否则判定为 closed。
+GRIP_THRESHOLD: float = 0.5
+
+# 以下脉宽映射定义夹爪舵机在 closed/open 两种状态下的目标脉宽（单位：us）。
+GRIP_CLOSED_US: int = 2000
+GRIP_OPEN_US: int = 1300
+
+# GRIP_MIT39_INIT_US 是 MIT39 启动阶段使用的夹爪初始脉宽（单位：us），
+# 仅用于 boot/init，故与运行期基于 UDP 状态的开合映射解耦。
+GRIP_MIT39_INIT_US: int = 1500
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name, "").strip().lower()
     if not raw:
@@ -25,30 +70,6 @@ def _env_int(name: str, default: int) -> int:
         return int(os.environ.get(name, str(default)).strip())
     except ValueError:
         return default
-
-
-@dataclass(frozen=True)
-class InitPremoveConfig:
-    """启动四轴预置位（premove）：从当前反馈角按角速度上限趋近 ``标定 + rel_deg``。
-
-    环境变量接口（与 ``scripts/start.sh`` 中 export 一致）：
-    - ``ARM_CONTROL_RPI_PREMOVE_SKIP``：1/true 跳过；未设时默认真（须显式 0 启用）
-    - ``ARM_CONTROL_RPI_PREMOVE_VMAX``：限速 rad/s（每步 ``±vmax*dt``）
-    - ``ARM_CONTROL_RPI_PREMOVE_TOL_RAD``：到位判据（rad）
-    - ``ARM_CONTROL_RPI_PREMOVE_REL_DEG_1`` … ``_4``：相对标定目标（度）
-    - ``ARM_CONTROL_RPI_PREMOVE_MAX_SEC``：超时秒数（默认 180）
-    """
-
-    skip: bool = _env_bool("ARM_CONTROL_RPI_PREMOVE_SKIP", True)
-    vmax_rad_s: float = max(1e-6, _env_float("ARM_CONTROL_RPI_PREMOVE_VMAX", 0.4))
-    tol_rad: float = max(1e-4, _env_float("ARM_CONTROL_RPI_PREMOVE_TOL_RAD", 0.008))
-    rel_deg: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_RPI_PREMOVE_REL_DEG_1", 18.99),
-        _env_float("ARM_CONTROL_RPI_PREMOVE_REL_DEG_2", -18.64),
-        _env_float("ARM_CONTROL_RPI_PREMOVE_REL_DEG_3", -121.12),
-        _env_float("ARM_CONTROL_RPI_PREMOVE_REL_DEG_4", -77.51),
-    )
-    max_sec: float = max(5.0, _env_float("ARM_CONTROL_RPI_PREMOVE_MAX_SEC", 180.0))
 
 
 @dataclass(frozen=True)
@@ -114,7 +135,6 @@ class ControlConfig:
     # )
     
     kp_float_mode: bool = _env_bool("ARM_CONTROL_MIT_CMD_KP_FLOAT", False)
-    init_premove: InitPremoveConfig = InitPremoveConfig()
     feedback_source: str = os.environ.get("ARM_CONTROL_TAU_FF_INPUT", "mit").strip().lower()
     # 启动后等待首帧关节反馈（秒）。0=不等待（与旧行为一致）。与 arm_control 在无反馈时不发 MIT 的思路一致，避免未收到 STM32 上行就进入主环发空指令。
     init_feedback_wait_sec: float = max(0.0, _env_float("ARM_CONTROL_INIT_FEEDBACK_WAIT_SEC", 10.0))
@@ -126,20 +146,16 @@ class ControlConfig:
         max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M3", 0.5)),
         max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M4", 0.5)),
     )
+    # 启动安全门：在收到首帧 UDP 后，先冻结后续 UDP 输入，按限速从当前位姿追到首帧目标，
+    # 到达后再恢复正常 UDP 逐帧跟踪，以避免“晚启动+首帧跳变”带来的突变风险。
+    startup_safe_gate_enabled: bool = _env_bool("ARM_CONTROL_STARTUP_SAFE_GATE", True)
+    startup_safe_gate_tol_rad: float = max(
+        1e-4, _env_float("ARM_CONTROL_STARTUP_SAFE_GATE_TOL_RAD", 0.01)
+    )
+    startup_safe_gate_timeout_sec: float = max(
+        0.5, _env_float("ARM_CONTROL_STARTUP_SAFE_GATE_TIMEOUT_SEC", 20.0)
+    )
     cold_hold_sec: float = max(0.0, _env_float("ARM_CONTROL_COLD_HOLD_SEC", 0.0))
-    boot_move_enabled: bool = _env_bool("ARM_CONTROL_BOOT_MOVE_ENABLED", False)
-    boot_move_rel_deg: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_BOOT_MOVE_DEG_1", 2.2839),
-        _env_float("ARM_CONTROL_BOOT_MOVE_DEG_2", -53.5752),
-        _env_float("ARM_CONTROL_BOOT_MOVE_DEG_3", 140.9516),
-        _env_float("ARM_CONTROL_BOOT_MOVE_DEG_4", 92.6236),
-    )
-    boot_move_vmax_rad_s: float = max(
-        1e-4, _env_float("ARM_CONTROL_BOOT_MOVE_VMAX", 0.2)
-    )
-    boot_move_tol_rad: float = max(
-        1e-4, _env_float("ARM_CONTROL_BOOT_MOVE_TOL_RAD", 0.01)
-    )
 
 
 @dataclass(frozen=True)

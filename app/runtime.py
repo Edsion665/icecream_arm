@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
-import math
 import time
 
+from .safe_gate import SafeGateConfig, StartupSafeGate
 from ..calculator import warmup_gravity_model_pinocchio
 from ..config import CONFIG
 from ..controller import ArmController
-from ..domain.ports import MotorCommandSink, StatePort
+from ..domain.ports import StatePort
 from ..infra.udp.packet import decode_udp_servo, grip_state_to_us, mit39_init_pulse_us, wrist_deg_to_us
 from ..listener import UdpListener
 from ..serial import SerialManager
@@ -41,63 +41,6 @@ def setup_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
-    )
-
-
-async def _run_premove(
-    store: StatePort,
-    serial_mgr: MotorCommandSink,
-    controller: ArmController,
-) -> None:
-    ip = CONFIG.control.init_premove
-    logger = logging.getLogger(__name__)
-    if ip.skip:
-        logger.info(
-            "premove 已跳过：当前配置为跳过（环境变量未设置时默认跳过）。"
-            "若要启用预旋转：export ARM_CONTROL_RPI_PREMOVE_SKIP=0"
-        )
-        return
-    if not controller.has_arm_feedback():
-        logger.warning("premove skipped: no arm feedback (unsafe to step without p)")
-        return
-    cal = store.get_calibration_rad()
-    target = [cal[i] + math.radians(ip.rel_deg[i]) for i in range(4)]
-    hz = max(1.0, CONFIG.control.tau_hz)
-    dt = 1.0 / hz
-    deadline = time.monotonic() + float(ip.max_sec)
-    logger.info("premove started: target_rel_deg=%s", ip.rel_deg)
-
-    # 从当前反馈角出发，维护独立的 p_cmd 状态，避免每帧从 hold_p_latch 重读导致步进无法累积
-    arm_rad = controller._select_feedback_rad()
-    p_cmd = [float(arm_rad[i]) for i in range(4)]
-    w0, g0 = mit39_init_pulse_us()
-
-    while time.monotonic() < deadline:
-        cmds = controller.build_motor_commands()
-        if not cmds:
-            await asyncio.sleep(dt)
-            continue
-        for i in range(4):
-            err = target[i] - p_cmd[i]
-            step = max(-ip.vmax_rad_s * dt, min(ip.vmax_rad_s * dt, err))
-            p_cmd[i] += step
-            cmds[i]["p"] = p_cmd[i]
-            cmds[i]["v"] = step / dt
-        serial_mgr.send_mit_cmd_with_servo(cmds, w0, g0)
-
-        done = max(abs(target[i] - p_cmd[i]) for i in range(4)) <= ip.tol_rad
-        if done:
-            logger.info("premove completed")
-            # 与 build_motor_commands 的 hold 共用 _hold_p_latch；否则 premove 后仍锁在启动瞬间姿态。
-            controller.set_hold_latch_rad(
-                (float(target[0]), float(target[1]), float(target[2]), float(target[3])),
-            )
-            return
-        await asyncio.sleep(dt)
-
-    logger.warning("premove timeout, continue normal loop")
-    controller.set_hold_latch_rad(
-        (float(p_cmd[0]), float(p_cmd[1]), float(p_cmd[2]), float(p_cmd[3])),
     )
 
 
@@ -195,12 +138,22 @@ async def run_control_loop(
 
 def build_components() -> RuntimeComponents:
     store = StateStore(calibration_rad=CONFIG.control.calibration_rad)
+    hz = max(1.0, CONFIG.control.tau_hz)
+    safe_gate = StartupSafeGate(
+        SafeGateConfig(
+            enabled=bool(CONFIG.control.startup_safe_gate_enabled),
+            vmax_rad_s=tuple(float(v) for v in CONFIG.control.max_cmd_speed_rad_s),
+            tol_rad=float(CONFIG.control.startup_safe_gate_tol_rad),
+            timeout_sec=float(CONFIG.control.startup_safe_gate_timeout_sec),
+            nominal_dt=1.0 / hz,
+        )
+    )
     return RuntimeComponents(
         store=store,
         serial_mgr=SerialManager(CONFIG.serial, store),
         udp_listener=UdpListener(CONFIG.udp, store),
         state_server=StateServer(CONFIG.server, store),
-        controller=ArmController(CONFIG.control, CONFIG.udp, store),
+        controller=ArmController(CONFIG.control, CONFIG.udp, store, safe_gate=safe_gate),
     )
 
 
@@ -221,7 +174,6 @@ async def run_runtime(components: RuntimeComponents) -> None:
     if boot_cmds:
         w0, g0 = mit39_init_pulse_us()
         components.serial_mgr.send_mit_cmd_with_servo(boot_cmds, w0, g0)
-    await _run_premove(components.store, components.serial_mgr, components.controller)
 
     tasks = [
         asyncio.create_task(

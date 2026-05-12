@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from ...calculator import compute_link5_rpy_xyz_link0, link5_hmat_row_major_list_from_rpy_xyz_rxryrz
-from ...infra.udp.packet import GRIP_THRESHOLD
+from ...config import GRIP_THRESHOLD
 from ...state_store import StateStore
 
 LOGGER = logging.getLogger(__name__)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
 import math
 import sys
@@ -14,12 +15,16 @@ from typing import Any
 import numpy as np
 import websockets
 
-# 允许在 ``icecream/icecreamPi`` 下执行 ``python test.py``（仓库根需在 sys.path）
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-from icecreamPi.calculator import link5_rpy_from_R_rxryrz_np
+# 允许在当前仓库根直接执行 ``python3 test.py``：
+# 把“项目父目录”加入 ``sys.path``，再按 ``<项目目录名>.calculator`` 动态导入。
+_PKG_ROOT = Path(__file__).resolve().parent
+_PKG_PARENT = _PKG_ROOT.parent
+if str(_PKG_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PKG_PARENT))
+_PKG_NAME = _PKG_ROOT.name
+link5_rpy_from_R_rxryrz_np = importlib.import_module(
+    f"{_PKG_NAME}.calculator"
+).link5_rpy_from_R_rxryrz_np
 
 
 def _print_chain(steps: Any) -> None:

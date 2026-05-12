@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import logging
 from time import monotonic
+from typing import TYPE_CHECKING
 
 from .calculator import compute_gravity_tau_nm
 from .config import ControlConfig, UdpConfig
 from .domain.mapping import udp_rel_to_motor_pv
 from .domain.ports import StatePort
+
+if TYPE_CHECKING:
+    from .app.safe_gate import StartupSafeGate
 
 LOGGER = logging.getLogger(__name__)
 
@@ -16,10 +20,17 @@ LOGGER = logging.getLogger(__name__)
 class ArmController:
     """Build one cycle of motor command from registers."""
 
-    def __init__(self, cfg: ControlConfig, udp_cfg: UdpConfig, store: StatePort) -> None:
+    def __init__(
+        self,
+        cfg: ControlConfig,
+        udp_cfg: UdpConfig,
+        store: StatePort,
+        safe_gate: "StartupSafeGate | None" = None,
+    ) -> None:
         self._cfg = cfg
         self._udp_cfg = udp_cfg
         self._store = store
+        self._safe_gate = safe_gate
         self._last_cmd_p: list[float] | None = None
         # Hold 时 MIT 的 p 不再每帧跟反馈走，而是冻结为「上一有效目标」：UDP 新鲜时
         # 每帧更新；UDP 断开后沿用最后一次目标（或从未有 UDP 时用首次 hold 的反馈快照）。
@@ -45,8 +56,8 @@ class ArmController:
     def set_hold_latch_rad(self, rad: tuple[float, float, float, float]) -> None:
         """将 hold 目标与 last_cmd_p 同步到给定四轴 rad。
 
-        premove 等开环段会自行步进 MIT 的 p，但不会更新本对象的 _hold_p_latch；若不在段末调用
-        此方法，主循环在 UDP 超时 hold 时仍会回到 prime_hold_latch_from_feedback 时的旧目标。
+        该方法用于在外部流程明确切换 hold 目标时同步内部缓存，避免主循环在 UDP 超时 hold 时
+        回到过旧的目标姿态。
         """
         self._hold_p_latch = [float(rad[i]) for i in range(4)]
         self._last_cmd_p = [float(rad[i]) for i in range(4)]
@@ -97,9 +108,18 @@ class ArmController:
         udp_ok, _age = self._udp_fresh()
         if self._udp_cfg.enabled and udp_ok:
             p_cmd, v_cmd = self._udp_to_motor_pv()
+            if self._safe_gate is not None:
+                gated = self._safe_gate.apply(arm_rad=arm_rad, udp_p_cmd=p_cmd)
+            else:
+                gated = None
+            if gated is not None:
+                p_cmd, v_cmd = gated
+                source = "safe_gate"
+                reason = "startup_first_frame_ramp"
+            else:
+                source = "udp"
+                reason = "ok"
             self._hold_p_latch = [float(x) for x in p_cmd]
-            source = "udp"
-            reason = "ok"
         else:
             if self._hold_p_latch is not None:
                 p_cmd = [float(x) for x in self._hold_p_latch]

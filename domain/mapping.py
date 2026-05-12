@@ -5,10 +5,7 @@ from __future__ import annotations
 import math
 from typing import Sequence
 
-# Per-motor sign: motor angle increase vs URDF joint q (UDP p_rel_deg / feedback deltas).
-# See ``ice_cream_v8.SLDASM.urdf`` revolute axes; analytic FK in ``calculator._LINK5_ANALYTIC_JOINTS``
-# must use the same joint axis xyz as that URDF (joint2–4 are -Z, joint5 +Z).
-MOTOR_AXIS_SIGN: tuple[float, float, float, float] = (-1.0, -1.0, 1.0, 1.0)
+from ..config import MOTOR_AXIS_SIGN
 
 
 def udp_rel_to_motor_pv(

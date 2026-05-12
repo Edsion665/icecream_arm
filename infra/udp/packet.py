@@ -5,24 +5,20 @@ from __future__ import annotations
 import struct
 from typing import Any, Sequence
 
+from ...config import (
+    GRIP_CLOSED_US,
+    GRIP_MIT39_INIT_US,
+    GRIP_OPEN_US,
+    GRIP_THRESHOLD,
+    UDP_PACKET_FMT,
+    UDP_PACKET_SIZE,
+    UDP_VECTOR_DIM,
+    WRIST_MAX_DEG,
+    WRIST_MIN_DEG,
+)
 from ..serial.codec import SERVO_CENTER_US, SERVO_MAX_US
 
-# bridge2pi v2.1: seq(I) ts(d) p_rel_deg(6d) omega_rad_s(6d)
-UDP_PACKET_FMT = "=Id" + "d" * 12
-UDP_PACKET_SIZE = struct.calcsize(UDP_PACKET_FMT)
-UDP_VECTOR_DIM = 6
-
-WRIST_MIN_DEG = -180.0
-WRIST_MAX_DEG = 180.0
-
-GRIP_CLOSED_STATE = 0.0
-GRIP_OPEN_STATE = 1.0
-GRIP_CLOSED_US = 2000
-GRIP_OPEN_US = 1300
-GRIP_THRESHOLD = 0.5
-
-# MIT39 下行夹爪启动脉宽 (us)；仅 boot / premove / 主循环初值。默认与腕 0° 中性（codec SERVO_CENTER_US）一致。
-GRIP_MIT39_INIT_US = SERVO_CENTER_US
+assert UDP_PACKET_SIZE == struct.calcsize(UDP_PACKET_FMT)
 
 
 def unpack_udp_packet(data: bytes) -> dict[str, Any]:

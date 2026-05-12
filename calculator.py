@@ -9,8 +9,8 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from .config import GRAVITY_AXIS_SCALE, MOTOR_AXIS_SIGN
 from .domain.mapping import (
-    MOTOR_AXIS_SIGN,
     joint_tau_to_motor_tau,
     motor_delta_rad_to_joint_deg_x100,
 )
@@ -23,10 +23,6 @@ _MODEL_ROOT = _PROJECT_ROOT / "robotarm"
 
 # Path to the residual MLP model trained in gravity/
 _RESIDUAL_MODEL_PATH = _PROJECT_ROOT / "gravity" / "gravity_residual_model.npz"
-
-# Per-axis manual gain for final gravity feedforward in motor space.
-# Keep all axes at 1.0 by default; tune values here when needed.
-GRAVITY_AXIS_SCALE: tuple[float, float, float, float] = (1.0, 1.3, 1.2, 1.2)
 
 # ---------------------------------------------------------------------------
 # link0→link5 analytic FK (must match test_sim.py for WebSocket / Isaac Sim)
