@@ -29,7 +29,7 @@
 - `infra/udp/packet.py`：UDP 包格式解析
 - `infra/state/presenter.py`：状态 payload 组装
 - `robotarm/icecream_arm_model`：内置 URDF 模型资源（重力补偿使用）
-- `scripts/start.sh`：项目内独立启动脚本
+- `start.sh`：仓库根入口；`scripts/start.sh`：启动逻辑（优先 `.venv`，其次 `uv run --project`）
 - `requirements.txt`：运行时 Python 依赖清单
 - `calibration/collect.py`：重力数据采集脚本（支持增量写入）
 - `calibration/gravity.json`：采集输出数据
@@ -56,28 +56,31 @@
 
 ## 运行方式
 
-依赖清单见 `requirements.txt`。**推荐安装 [uv](https://github.com/astral-sh/uv)**：`scripts/start.sh` 在检测到 `uv` 时，会用  
-`uv run --no-project --with-requirements icecreamPi/requirements.txt python -m icecreamPi.main`  
-在仓库根目录启动（由 uv 解析并缓存依赖，**不要求**仓库内存在 `.venv`）。未安装 `uv` 时回退为系统 `python3`（需自行保证已安装依赖）。
+依赖在 `pyproject.toml` 的 `[project].dependencies` 中声明，并与 `requirements.txt` 对齐。**推荐 [uv](https://github.com/astral-sh/uv)**：在仓库根执行 `uv sync` 会维护根目录 `.venv`。
 
-**首次或更新依赖后**（任选其一）：
+`start.sh` → `scripts/start.sh`：先 `cd` 到仓库的**上一级目录**（使 `python -m icecream.main` 能解析包名 `icecream`），再按顺序选用：
 
-```bash
-# 推荐：用 uv 按 requirements 同步（可在仓库根或 icecreamPi 目录执行）
-cd ~/icecream
-uv pip install -r icecreamPi/requirements.txt
-# 或仅验证一次导入
-uv run --no-project --with-requirements icecreamPi/requirements.txt python -c "import serial, pin; print('ok')"
-```
+1. `icecream/.venv/bin/python -m icecream.main`（若存在）
+2. 否则 `uv run --project <仓库根> python -m icecream.main`
+3. 否则系统 `python3`（需已自行安装依赖）
 
-从仓库根目录启动（与 `scripts/start.sh` 中 `cd` 一致）：
+**首次或更新依赖后**：
 
 ```bash
-cd ~/icecream
-bash icecreamPi/scripts/start.sh
+cd ~/icecream   # 仓库根
+uv sync
+# 或：uv pip install -r requirements.txt
 ```
 
-**无 uv 时**：请自行 `pip install -r icecreamPi/requirements.txt`（系统或用户 site），再执行上述 `bash`。
+启动：
+
+```bash
+cd ~/icecream
+./start.sh
+# 或：bash scripts/start.sh
+```
+
+**无 uv 时**：在上一级目录执行 `python3 -m icecream.main`，且需已 `pip install -r requirements.txt`（或等价环境）。
 
 启动行为说明：
 - 在串口/UDP 循环启动前，运行时会阻塞预热 Pinocchio 重力模型。
@@ -116,7 +119,7 @@ Pinocchio 依赖提示：
 4. 提交前执行检查脚本
 
 ```bash
-cd ~/icecream/icecreamPi
+cd ~/icecream
 bash scripts/guard_readme_sync.sh
 ```
 

@@ -2,18 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-WORKSPACE_ROOT="$(cd "${PROJECT_ROOT}/.." && pwd)"
-
-# Python：优先用 uv 按 requirements.txt 解析依赖并运行（不依赖仓库内 .venv）
-_PY_RUN=(python3 -m icecreamPi.main)
-if command -v uv >/dev/null 2>&1; then
-  _PY_RUN=(
-    uv run --no-project
-    --with-requirements "${PROJECT_ROOT}/requirements.txt"
-    python -m icecreamPi.main
-  )
-fi
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PARENT="$(cd "${REPO_ROOT}/.." && pwd)"
 
 export ARM_CONTROL_RPI_UDP="${ARM_CONTROL_RPI_UDP:-1}"
 export ARM_CONTROL_TAU_HZ="${ARM_CONTROL_TAU_HZ:-25}"
@@ -30,5 +20,14 @@ export ARM_CONTROL_MIT_CMD_KP_FLOAT="${ARM_CONTROL_MIT_CMD_KP_FLOAT:-0}"
 export ARM_CONTROL_GRAVITY_FF="${ARM_CONTROL_GRAVITY_FF:-1}"
 export ARM_CONTROL_INIT_FEEDBACK_WAIT_SEC="${ARM_CONTROL_INIT_FEEDBACK_WAIT_SEC:-10}"
 
-cd "${WORKSPACE_ROOT}"
-exec "${_PY_RUN[@]}"
+cd "${PARENT}"
+
+if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+  exec "${REPO_ROOT}/.venv/bin/python" -m icecream.main
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --project "${REPO_ROOT}" python -m icecream.main
+fi
+
+exec python3 -m icecream.main

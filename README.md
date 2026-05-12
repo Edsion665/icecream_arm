@@ -20,7 +20,7 @@ Second-version runtime implementation for arm control.
 - `infra/udp/packet.py`: UDP packet format/unpack plus servo semantic decode helpers
 - `infra/state/presenter.py`: state payload formatting for external consumers
 - `robotarm/icecream_arm_model`: bundled URDF model assets used by gravity solver
-- `scripts/start.sh`: project-local startup script for standalone run
+- `start.sh`: repo-root launcher; `scripts/start.sh`: run logic (`.venv` first, then `uv run --project`)
 - `requirements.txt`: runtime Python dependencies
 
 ## Layers
@@ -69,27 +69,31 @@ Second-version runtime implementation for arm control.
 
 ## Run
 
-Dependencies live in `requirements.txt`. **Install [uv](https://github.com/astral-sh/uv)** for the default path: `scripts/start.sh` uses  
-`uv run --no-project --with-requirements icecreamPi/requirements.txt python -m icecreamPi.main`  
-from the workspace root when `uv` is on `PATH` (no project-local `.venv` required). If `uv` is missing, the script falls back to `python3` (you must install deps yourself).
+Dependencies are listed in `pyproject.toml` (`[project].dependencies`) and mirrored in `requirements.txt`. **Install [uv](https://github.com/astral-sh/uv)** and run `uv sync` at the repo root to maintain `.venv`.
 
-**After cloning or changing requirements** (pick one):
+`start.sh` delegates to `scripts/start.sh`, which `cd`s to the **parent of the repo** (so `python -m icecream.main` resolves the `icecream` package), then picks:
 
-```bash
-cd ~/icecream
-uv pip install -r icecreamPi/requirements.txt
-# or smoke-test imports
-uv run --no-project --with-requirements icecreamPi/requirements.txt python -c "import serial, pin; print('ok')"
-```
+1. `icecream/.venv/bin/python -m icecream.main` if present  
+2. else `uv run --project <repo-root> python -m icecream.main`  
+3. else `python3` (you must install deps yourself)
 
-Start from the workspace root (matches `scripts/start.sh`):
+**After clone or dependency changes:**
 
 ```bash
 cd ~/icecream
-bash icecreamPi/scripts/start.sh
+uv sync
+# or: uv pip install -r requirements.txt
 ```
 
-**Without uv**: install with `pip install -r icecreamPi/requirements.txt` into your chosen environment, then run the same `bash` line.
+**Start:**
+
+```bash
+cd ~/icecream
+./start.sh
+# or: bash scripts/start.sh
+```
+
+**Without uv**: from the repo parent directory, run `python3 -m icecream.main` after `pip install -r requirements.txt` (or equivalent).
 
 Startup behavior note:
 - Before starting serial/UDP loops, runtime performs a blocking Pinocchio gravity-model warmup.
@@ -108,7 +112,7 @@ For every code change, follow this workflow:
 4. Run the guard script before commit.
 
 ```bash
-cd ~/icecream/icecreamPi
+cd ~/icecream
 bash scripts/guard_readme_sync.sh
 ```
 
