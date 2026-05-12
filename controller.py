@@ -70,9 +70,9 @@ class ArmController:
         return udp_rel_to_motor_pv(cal, udp.p_rel_deg, udp.omega_rad_s)
 
     def _apply_tracking_ramp(
-        self, target_p: list[float]
+        self, target_p: list[float], vmax: tuple[float, ...]
     ) -> tuple[list[float], list[float]]:
-        """从 _ramp_p 向 target_p 以 tracking_speed_rad_s 限速步进。
+        """从 _ramp_p 向 target_p 以 vmax 限速步进（vmax 由 UDP omega_rad_s[:4] 传入）。
         target_p 每帧取最新 UDP 目标，途中更新终点立即生效。
         """
         now = monotonic()
@@ -85,11 +85,11 @@ class ArmController:
             self._ramp_p = [float(v) for v in target_p]
             return (list(self._ramp_p), [0.0, 0.0, 0.0, 0.0])
 
-        vmax = self._cfg.tracking_speed_rad_s
         out_v = [0.0, 0.0, 0.0, 0.0]
         for i in range(4):
             err = target_p[i] - self._ramp_p[i]
-            step = max(-vmax[i] * dt, min(vmax[i] * dt, err))
+            v = max(1e-4, float(vmax[i]))
+            step = max(-v * dt, min(v * dt, err))
             self._ramp_p[i] += step
             out_v[i] = step / dt
         return (list(self._ramp_p), out_v)
@@ -140,8 +140,10 @@ class ArmController:
                 source = "safe_gate"
                 reason = "startup_first_frame_ramp"
             else:
-                # 正常跟踪阶段：持续 ramp 向最新 UDP 目标步进
-                p_cmd, v_cmd = self._apply_tracking_ramp(p_cmd)
+                # 正常跟踪阶段：持续 ramp 向最新 UDP 目标步进，vmax 由 UDP omega_rad_s[:4] 传入
+                udp_snap = self._store.snapshot_udp()
+                vmax_udp = tuple(max(1e-4, float(udp_snap.omega_rad_s[i])) for i in range(4))
+                p_cmd, v_cmd = self._apply_tracking_ramp(p_cmd, vmax_udp)
                 source = "tracking_ramp"
                 reason = "ok"
             self._hold_p_latch = [float(x) for x in p_cmd]
