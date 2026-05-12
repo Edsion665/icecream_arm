@@ -11,7 +11,7 @@ from typing import Sequence
 import numpy as np
 
 from ..calculator import JointFrame
-from ..config import CONFIG
+from ..config import CONFIG, ControlConfig
 from ..exceptions import UDPTransportError
 
 # 协议文档：PC_RPI_UDP_PROTOCOL.md
@@ -76,7 +76,8 @@ class RpiProtocolAdapter:
         p6 = np.zeros(6, dtype=float)
         w6 = np.zeros(6, dtype=float)
         p6[:4] = frame.arm_rel_deg[:4]
-        w6[:4] = frame.arm_omega_rad_s[:4]
+        # w6[:4] 传 tracking_speed_rad_s，Pi端用作 tracking_ramp 的逐轴速度上限
+        w6[:4] = CONFIG.tracking_speed_rad_s[:4]
         p6[4] = float(getattr(frame, "wrist_rel_deg", 0.0))
         w6[4] = float(getattr(frame, "wrist_omega_rad_s", 0.0))
         p6[5] = float(getattr(frame, "grip_state", 0.0))

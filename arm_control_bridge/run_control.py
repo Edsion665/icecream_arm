@@ -372,6 +372,7 @@ def run_sim_loop(
 
     frame_rx = receiver()
     dump_next_udp_frame = False
+    _init_frame_sent = False
 
     ik_dt = 1.0 / ik_follow_hz
     while simulation_app.is_running():
@@ -425,6 +426,9 @@ def run_sim_loop(
                         log(f"[sim][SYNC] set_joint_positions 失败: {type(ex).__name__}: {ex}")
 
         frame = engine.step(None, state, dt=ik_dt)
+        if not _init_frame_sent:
+            frame.arm_omega_rad_s = np.full(4, 0.05, dtype=float)
+            _init_frame_sent = True
         if dump_next_udp_frame:
             log_udp_frame_preview(frame, log, tag="[sim][UDP]")
             dump_next_udp_frame = False

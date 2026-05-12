@@ -27,14 +27,25 @@ class ControlConfig:
     approach_gain_scale: float = 0.1  # APPROACH_GAIN = control_hz * scale
     max_joint_vel_rad_s: float = 0.6
     max_target_rate_rad_s: float = 1.5
+    # 关节速度限制，单位：弧度/秒
+    tracking_speed_rad_s: tuple = (0.5, 0.5, 0.5, 0.5)
+    # 末端速度限制，单位：米/秒
     pose_vel_max_m_s: float = 0.1
+    # 关节位置误差限制，单位：度
     reached_joints_tol_deg: float = 5.0
+    # 末端位置误差限制，单位：米
     reached_pose_tol_m: float = 0.005
+    # 手腕位置误差限制，单位：度
     reached_wrist_tol_deg: float = 5.0
+    # 夹爪延迟时间，单位：秒
     reached_claw_delay_s: float = 2.0
+    # 到位超时时间，单位：秒
     reached_timeout_s: float = 1.0
+    # 稳定帧数
     reached_stable_frames: int = 5
+    # RPi WebSocket 端口
     rpi_ws_port: int = 8765
+    # Pi 反馈重连间隔时间，单位：秒
     pi_feedback_reconnect_interval_s: float = 3.0
 
     @property
