@@ -156,6 +156,13 @@ class ControlConfig:
         0.5, _env_float("ARM_CONTROL_STARTUP_SAFE_GATE_TIMEOUT_SEC", 20.0)
     )
     cold_hold_sec: float = max(0.0, _env_float("ARM_CONTROL_COLD_HOLD_SEC", 0.0))
+    # init后正常跟踪速度（safe_gate完成后生效），与 max_cmd_speed_rad_s 独立
+    tracking_speed_rad_s: tuple[float, float, float, float] = (
+        max(1e-4, _env_float("ARM_CONTROL_TRACK_SPEED_M1", 0.5)),
+        max(1e-4, _env_float("ARM_CONTROL_TRACK_SPEED_M2", 0.5)),
+        max(1e-4, _env_float("ARM_CONTROL_TRACK_SPEED_M3", 0.5)),
+        max(1e-4, _env_float("ARM_CONTROL_TRACK_SPEED_M4", 0.5)),
+    )
 
 
 @dataclass(frozen=True)

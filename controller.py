@@ -32,9 +32,10 @@ class ArmController:
         self._store = store
         self._safe_gate = safe_gate
         self._last_cmd_p: list[float] | None = None
-        # Hold 时 MIT 的 p 不再每帧跟反馈走，而是冻结为「上一有效目标」：UDP 新鲜时
-        # 每帧更新；UDP 断开后沿用最后一次目标（或从未有 UDP 时用首次 hold 的反馈快照）。
         self._hold_p_latch: list[float] | None = None
+        # 持续限速 ramp：safe_gate 完成后接管，每帧向最新 UDP 目标步进
+        self._ramp_p: list[float] | None = None
+        self._ramp_last_mono: float = 0.0
 
     def _select_feedback_rad(self) -> tuple[float, float, float, float] | None:
         fb = self._store.snapshot_feedback()
@@ -46,7 +47,6 @@ class ArmController:
         return self._select_feedback_rad() is not None
 
     def prime_hold_latch_from_feedback(self) -> None:
-        """在首帧反馈就绪后调用：在无 UDP 的 hold 下用当前姿态初始化 _hold_p_latch（对齐 arm_control：勿用未定义 p）。"""
         arm_rad = self._select_feedback_rad()
         if arm_rad is None:
             return
@@ -54,11 +54,6 @@ class ArmController:
             self._hold_p_latch = [float(v) for v in arm_rad]
 
     def set_hold_latch_rad(self, rad: tuple[float, float, float, float]) -> None:
-        """将 hold 目标与 last_cmd_p 同步到给定四轴 rad。
-
-        该方法用于在外部流程明确切换 hold 目标时同步内部缓存，避免主循环在 UDP 超时 hold 时
-        回到过旧的目标姿态。
-        """
         self._hold_p_latch = [float(rad[i]) for i in range(4)]
         self._last_cmd_p = [float(rad[i]) for i in range(4)]
 
@@ -73,6 +68,31 @@ class ArmController:
         udp = self._store.snapshot_udp()
         cal = self._store.get_calibration_rad()
         return udp_rel_to_motor_pv(cal, udp.p_rel_deg, udp.omega_rad_s)
+
+    def _apply_tracking_ramp(
+        self, target_p: list[float]
+    ) -> tuple[list[float], list[float]]:
+        """从 _ramp_p 向 target_p 以 tracking_speed_rad_s 限速步进。
+        target_p 每帧取最新 UDP 目标，途中更新终点立即生效。
+        """
+        now = monotonic()
+        dt = now - self._ramp_last_mono
+        if dt <= 0.0 or dt > 0.5:
+            dt = 1.0 / max(1.0, self._cfg.tau_hz)
+        self._ramp_last_mono = now
+
+        if self._ramp_p is None:
+            self._ramp_p = [float(v) for v in target_p]
+            return (list(self._ramp_p), [0.0, 0.0, 0.0, 0.0])
+
+        vmax = self._cfg.tracking_speed_rad_s
+        out_v = [0.0, 0.0, 0.0, 0.0]
+        for i in range(4):
+            err = target_p[i] - self._ramp_p[i]
+            step = max(-vmax[i] * dt, min(vmax[i] * dt, err))
+            self._ramp_p[i] += step
+            out_v[i] = step / dt
+        return (list(self._ramp_p), out_v)
 
     def build_motor_commands(self) -> list[dict[str, float]]:
         arm_rad = self._select_feedback_rad()
@@ -113,11 +133,16 @@ class ArmController:
             else:
                 gated = None
             if gated is not None:
+                # safe_gate 启动阶段：用 gate 输出，同步 ramp_p 跟随，避免 gate 完成后跳变
                 p_cmd, v_cmd = gated
+                self._ramp_p = [float(x) for x in p_cmd]
+                self._ramp_last_mono = monotonic()
                 source = "safe_gate"
                 reason = "startup_first_frame_ramp"
             else:
-                source = "udp"
+                # 正常跟踪阶段：持续 ramp 向最新 UDP 目标步进
+                p_cmd, v_cmd = self._apply_tracking_ramp(p_cmd)
+                source = "tracking_ramp"
                 reason = "ok"
             self._hold_p_latch = [float(x) for x in p_cmd]
         else:
@@ -178,4 +203,3 @@ class ArmController:
             }
             for i in range(4)
         ]
-
