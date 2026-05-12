@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WORKSPACE_ROOT="$(cd "${PROJECT_ROOT}/.." && pwd)"
+
+# Python：优先用 uv 按 requirements.txt 解析依赖并运行（不依赖仓库内 .venv）
+_PY_RUN=(python3 -m icecreamPi.main)
+if command -v uv >/dev/null 2>&1; then
+  _PY_RUN=(
+    uv run --no-project
+    --with-requirements "${PROJECT_ROOT}/requirements.txt"
+    python -m icecreamPi.main
+  )
+fi
+
+export ARM_CONTROL_RPI_UDP="${ARM_CONTROL_RPI_UDP:-1}"
+export ARM_CONTROL_TAU_HZ="${ARM_CONTROL_TAU_HZ:-25}"
+export ARM_CONTROL_RPI_UDP_PORT="${ARM_CONTROL_RPI_UDP_PORT:-9870}"
+export ARM_CONTROL_RPI_PREMOVE_SKIP="${ARM_CONTROL_RPI_PREMOVE_SKIP:-0}"
+export ARM_CONTROL_RPI_PREMOVE_VMAX="${ARM_CONTROL_RPI_PREMOVE_VMAX:-0.1}"
+export ARM_CONTROL_RPI_PREMOVE_REL_DEG_1="${ARM_CONTROL_RPI_PREMOVE_REL_DEG_1:--0.5477}"
+export ARM_CONTROL_RPI_PREMOVE_REL_DEG_2="${ARM_CONTROL_RPI_PREMOVE_REL_DEG_2:--86.4484}"
+export ARM_CONTROL_RPI_PREMOVE_REL_DEG_3="${ARM_CONTROL_RPI_PREMOVE_REL_DEG_3:--176.7907}"
+export ARM_CONTROL_RPI_PREMOVE_REL_DEG_4="${ARM_CONTROL_RPI_PREMOVE_REL_DEG_4:--19.1485}"
+export ARM_CONTROL_COLD_HOLD_SEC="${ARM_CONTROL_COLD_HOLD_SEC:-0}"
+export ARM_CONTROL_BOOT_MOVE_ENABLED="${ARM_CONTROL_BOOT_MOVE_ENABLED:-0}"
+export ARM_CONTROL_MIT_CMD_KP_FLOAT="${ARM_CONTROL_MIT_CMD_KP_FLOAT:-0}"
+export ARM_CONTROL_GRAVITY_FF="${ARM_CONTROL_GRAVITY_FF:-1}"
+export ARM_CONTROL_INIT_FEEDBACK_WAIT_SEC="${ARM_CONTROL_INIT_FEEDBACK_WAIT_SEC:-10}"
+
+cd "${WORKSPACE_ROOT}"
+exec "${_PY_RUN[@]}"

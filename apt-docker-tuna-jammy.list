@@ -1,1 +1,0 @@
-deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/ubuntu jammy stable

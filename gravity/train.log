@@ -1,0 +1,19 @@
+[ep     1] loss=1.600892  train_mae=0.2484  test_mae=0.2594  test_rmse=0.4460  t=0.0s
+[ep   500] loss=0.505050  train_mae=0.1197  test_mae=0.1404  test_rmse=0.2432  t=1.5s
+[ep  1000] loss=0.280999  train_mae=0.0844  test_mae=0.1260  test_rmse=0.2178  t=3.0s
+[ep  1500] loss=0.203881  train_mae=0.0702  test_mae=0.1378  test_rmse=0.2430  t=4.5s
+[ep  2000] loss=0.164073  train_mae=0.0629  test_mae=0.1484  test_rmse=0.2746  t=6.0s
+[ep  2500] loss=0.141963  train_mae=0.0576  test_mae=0.1465  test_rmse=0.2591  t=7.5s
+[ep  3000] loss=0.128250  train_mae=0.0552  test_mae=0.1425  test_rmse=0.2516  t=9.0s
+[ep  3500] loss=0.118638  train_mae=0.0534  test_mae=0.1372  test_rmse=0.2474  t=10.5s
+[ep  4000] loss=0.108940  train_mae=0.0514  test_mae=0.1435  test_rmse=0.2587  t=12.0s
+[ep  4500] loss=0.102214  train_mae=0.0504  test_mae=0.1461  test_rmse=0.2597  t=13.5s
+[ep  5000] loss=0.098108  train_mae=0.0497  test_mae=0.1462  test_rmse=0.2621  t=15.0s
+
+[final] per-joint MAE on full dataset (residual):
+  joint_0: residual_mae=0.0095 Nm
+  joint_1: residual_mae=0.2103 Nm
+  joint_2: residual_mae=0.1138 Nm
+  joint_3: residual_mae=0.0208 Nm
+
+[saved] /home/phoenix/icecream/icecreamPi/gravity/gravity_residual_model.npz

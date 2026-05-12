@@ -1,0 +1,8 @@
+fingerlink_L.STL
+fingerlink_R.STL
+link0.STL
+link1.STL
+link2.STL
+link3.STL
+link4.STL
+link5.STL

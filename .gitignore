@@ -1,10 +1,4 @@
 icecream/
 __pycache__/
 *.pyc
-.pytest_cache/
-.mypy_cache/
-*.log
-logs/
-.env
-.venv/
-venv/
+
