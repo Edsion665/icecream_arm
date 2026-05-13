@@ -10,7 +10,7 @@ merge_pos_eps_m: 0.005
 merge_yaw_eps_deg: 3.0
 
 observe1_axes_rel_deg: [90.0, 10.0, -90.0, -45.0]
-observe2_axes_rel_deg: [0.0, 10.0, -90.0, -45.0]
+observe2_axes_rel_deg: [-90.0, 10.0, -90.0, -45.0]
 
 state_timeout_s: 60.0
 refresh_wait_s: 2.0
