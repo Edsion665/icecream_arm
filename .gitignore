@@ -64,3 +64,12 @@ Thumbs.db
 **/.thumbs/
 **/omni.log
 **/.nvidia-omniverse/
+
+# YOLO / ROS2 工作区：权重、install、build 等勿入库（整目录忽略）
+/yolo_ros/
+
+# SolidWorks 导出包（URDF/STL 等，体积大；本地保留即可）
+/ice_cream_v9.SLDASM/
+
+# 仿真脚本与本地导出 USD（按需本地保留）
+/sim_code/

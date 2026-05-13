@@ -40,7 +40,7 @@ class ControlConfig:
     # 夹爪延迟时间，单位：秒
     reached_claw_delay_s: float = 2.0
     # 到位超时时间，单位：秒
-    reached_timeout_s: float = 1.0
+    reached_timeout_s: float = 10.0
     # 稳定帧数
     reached_stable_frames: int = 5
     # RPi WebSocket 端口
