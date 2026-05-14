@@ -106,33 +106,33 @@ class ControlConfig:
         _env_float("ARM_CONTROL_CAL_R2", -4.1500),
         _env_float("ARM_CONTROL_CAL_R3", 3.5091),
     )
-    hold_kp: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KP_1", 18.0),
-        _env_float("ARM_CONTROL_HOLD_KP_2", 60.0),
-        _env_float("ARM_CONTROL_HOLD_KP_3", 50.0),
-        _env_float("ARM_CONTROL_HOLD_KP_4", 25.0),
-    )
-
     # hold_kp: tuple[float, float, float, float] = (
-    #     _env_float("ARM_CONTROL_HOLD_KP_1", 0.0),
-    #     _env_float("ARM_CONTROL_HOLD_KP_2", 0.0),
-    #     _env_float("ARM_CONTROL_HOLD_KP_3", 0.0),
-    #     _env_float("ARM_CONTROL_HOLD_KP_4", 0.0),
+    #     _env_float("ARM_CONTROL_HOLD_KP_1", 18.0),
+    #     _env_float("ARM_CONTROL_HOLD_KP_2", 60.0),
+    #     _env_float("ARM_CONTROL_HOLD_KP_3", 50.0),
+    #     _env_float("ARM_CONTROL_HOLD_KP_4", 25.0),
     # )
-    
-    hold_kd: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KD_1", 2.0),
-        _env_float("ARM_CONTROL_HOLD_KD_2", 13.0),
-        _env_float("ARM_CONTROL_HOLD_KD_3", 10),
-        _env_float("ARM_CONTROL_HOLD_KD_4", 2.0),
-    )
 
+    hold_kp: tuple[float, float, float, float] = (
+        _env_float("ARM_CONTROL_HOLD_KP_1", 0.0),
+        _env_float("ARM_CONTROL_HOLD_KP_2", 0.0),
+        _env_float("ARM_CONTROL_HOLD_KP_3", 0.0),
+        _env_float("ARM_CONTROL_HOLD_KP_4", 0.0),
+    )
+    
     # hold_kd: tuple[float, float, float, float] = (
-    #     _env_float("ARM_CONTROL_HOLD_KD_1", 1.0),
-    #     _env_float("ARM_CONTROL_HOLD_KD_2", 3.0),
-    #     _env_float("ARM_CONTROL_HOLD_KD_3", 1.0),
-    #     _env_float("ARM_CONTROL_HOLD_KD_4", 0.3),
+    #     _env_float("ARM_CONTROL_HOLD_KD_1", 2.0),
+    #     _env_float("ARM_CONTROL_HOLD_KD_2", 13.0),
+    #     _env_float("ARM_CONTROL_HOLD_KD_3", 10),
+    #     _env_float("ARM_CONTROL_HOLD_KD_4", 2.0),
     # )
+
+    hold_kd: tuple[float, float, float, float] = (
+        _env_float("ARM_CONTROL_HOLD_KD_1", 1.0),
+        _env_float("ARM_CONTROL_HOLD_KD_2", 3.0),
+        _env_float("ARM_CONTROL_HOLD_KD_3", 1.0),
+        _env_float("ARM_CONTROL_HOLD_KD_4", 0.3),
+    )
     
     kp_float_mode: bool = _env_bool("ARM_CONTROL_MIT_CMD_KP_FLOAT", False)
     feedback_source: str = os.environ.get("ARM_CONTROL_TAU_FF_INPUT", "mit").strip().lower()
