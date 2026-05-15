@@ -101,15 +101,15 @@ typedef struct {
 /*================ 物理限位 ================*/
 /* 已关闭：motor_control / motor_world_exec 不再做软件 P_LIMIT 夹紧（机械安全请靠硬件/驱动器） */
 
-/*================ 调试日志开关 ================*/
+/*================ 调试日志开关 / FB 上行周期 ================*/
 /*
- * 1=打开：FB 回传；主循环轮询 FB_Report_ServicePending
- * 0=关闭：无 FB 定时发送
+ * FB 定时：仅 TIM6（fb_report_timer.c），主循环 FB_Report_ServicePending() 轮询 UIF。
+ * 1=打开 FB 回传；0=关闭（TIM6 不初始化、不上发 39 字节帧）。
  */
 #define MOTOR_DEBUG_LOG_ENABLE   1
 
 #if MIT_HEX_MODE
-#define FB_REPORT_HZ             25
+#define FB_REPORT_HZ             25   /* Hz，与树莓派侧期望一致 */
 #else
 #define FB_REPORT_HZ             10
 #endif

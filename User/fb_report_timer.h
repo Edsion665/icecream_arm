@@ -2,14 +2,20 @@
 #define FB_REPORT_TIMER_H
 
 #include <stdint.h>
+#include "stm32f10x.h"
+
+/*
+ * 周期 FB 上行唯一定时源：TIM6（基本定时器，无引脚，主循环轮询 UIF）。
+ * 频率由 motor_config.h 的 FB_REPORT_HZ 决定（MIT_HEX_MODE=1 时为 25Hz）。
+ * 勿用 TIM2（步进 STEP）/ TIM5（F103C8 无 TIM5）。
+ */
+#define FB_REPORT_TIM_PERIPH          TIM6
+#define FB_REPORT_TIM_PERIPH_RCC      RCC_APB1Periph_TIM6
 
 void FB_ReportTimer_Init(void);
-/* 轮询 TIM6 UIF：到周期返回 1 并清标志（不占 TIM2） */
 uint8_t FB_ReportTimer_TakePending(void);
 
-/* 发 39 字节二进制 FB（与 6fee739 一致）；周期=FB_REPORT_HZ */
 void FB_Report_SendLine(void);
-/* TakePending 为真时可选 SendLine（MOTOR_DEBUG_LOG_ENABLE）；插补循环内亦调用，避免主循环阻塞时无 FB */
 void FB_Report_ServicePending(void);
 
 #endif

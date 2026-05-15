@@ -9,7 +9,7 @@
 #include "fb_report_timer.h"
 #include "MotorControl/motor_hold_timer.h"
 
-/* 周期性 FB：实现见 fb_report_timer.c（主循环 + 插补内均调用 ServicePending） */
+/* 周期性 FB：fb_report_timer.c（TIM6 @ FB_REPORT_HZ），主循环 FB_Report_ServicePending */
 
 /* 1=PB0/PB1 PWM 测试（50Hz，1.5ms 中位），直接验证舵机引脚；0=正常舵机控制 */
 #define PWM_PB01_TEST_ENABLE  0
