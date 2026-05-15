@@ -3,6 +3,7 @@
 #include "MotorControl/motor_can.h"
 #include "../Hardware/Serial.h"
 #include "../Hardware/Servo.h"
+#include "stm32f10x.h"
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_tim.h"
 
@@ -81,8 +82,7 @@ void FB_ReportTimer_Init(void)
         hz = 1u;
     }
 
-    RCC_APB1PeriphClockCmd(FB_REPORT_TIM_PERIPH_RCC, ENABLE);
-    TIM_DeInit(FB_REPORT_TIM_PERIPH);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
 
     RCC_GetClocksFreq(&clk);
     timclk = clk.PCLK1_Frequency;
@@ -95,7 +95,7 @@ void FB_ReportTimer_Init(void)
         target_ticks = 2u;
     }
 
-    psc = (target_ticks + 65535u - 1u) / 65535u;
+    psc = (target_ticks + 65535u - 1u) / 65536u;
     if (psc < 1u) {
         psc = 1u;
     }
@@ -116,18 +116,18 @@ void FB_ReportTimer_Init(void)
     tb.TIM_CounterMode   = TIM_CounterMode_Up;
     tb.TIM_Period        = (uint16_t)(arr - 1u);
     tb.TIM_ClockDivision = TIM_CKD_DIV1;
-    TIM_TimeBaseInit(FB_REPORT_TIM_PERIPH, &tb);
+    TIM_TimeBaseInit(TIM2, &tb);
 
-    TIM_ClearFlag(FB_REPORT_TIM_PERIPH, TIM_FLAG_Update);
-    TIM_SetCounter(FB_REPORT_TIM_PERIPH, 0);
-    TIM_ITConfig(FB_REPORT_TIM_PERIPH, TIM_IT_Update, DISABLE);
-    TIM_Cmd(FB_REPORT_TIM_PERIPH, ENABLE);
+    TIM_ClearFlag(TIM2, TIM_FLAG_Update);
+    TIM_SetCounter(TIM2, 0);
+    TIM_ITConfig(TIM2, TIM_IT_Update, DISABLE);
+    TIM_Cmd(TIM2, ENABLE);
 }
 
 uint8_t FB_ReportTimer_TakePending(void)
 {
-    if (TIM_GetFlagStatus(FB_REPORT_TIM_PERIPH, TIM_FLAG_Update) != RESET) {
-        TIM_ClearFlag(FB_REPORT_TIM_PERIPH, TIM_FLAG_Update);
+    if (TIM_GetFlagStatus(TIM2, TIM_FLAG_Update) != RESET) {
+        TIM_ClearFlag(TIM2, TIM_FLAG_Update);
         return 1u;
     }
     return 0u;

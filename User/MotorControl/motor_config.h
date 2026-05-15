@@ -103,8 +103,8 @@ typedef struct {
 
 /*================ 调试日志开关 / FB 上行周期 ================*/
 /*
- * FB 定时：仅 TIM6（fb_report_timer.c），主循环 FB_Report_ServicePending() 轮询 UIF。
- * 1=打开 FB 回传；0=关闭（TIM6 不初始化、不上发 39 字节帧）。
+ * FB 定时：TIM2（fb_report_timer.c），主循环 FB_Report_ServicePending() 轮询 UIF。
+ * 1=打开 FB 回传；0=关闭。步进 STEP 使用 TIM4/PB7，勿与 TIM2 共用。
  */
 #define MOTOR_DEBUG_LOG_ENABLE   1
 

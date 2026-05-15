@@ -99,7 +99,7 @@ int main(void)
 #endif
 
 #if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
-    /* TIM6：按 FB_REPORT_HZ 置位，供主循环轮询 FB（TIM2 留给步进 PA0） */
+    /* TIM2：按 FB_REPORT_HZ(25Hz) 轮询 UIF，触发 USART1 上行 FB；步进 STEP 用 TIM4/PB7 */
     FB_ReportTimer_Init();
 #endif
 

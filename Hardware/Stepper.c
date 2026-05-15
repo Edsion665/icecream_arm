@@ -1,6 +1,9 @@
 /**
- * 步进电机：PA0=STEP(TIM2_CH1 PWM)，PA1=DIR(GPIO)
+ * 步进电机：PB7=STEP(TIM4_CH2 PWM)，PA1=DIR(GPIO)
  * 共阴极；4 细分，800 脉冲/转
+ *
+ * 说明：F103C8 上 PB7 默认可用 TIM4_CH2；TIM6 为基本定时器且无引脚 PWM，
+ * 无法在 PB7 输出脉冲，故步进使用 TIM4（MIT_HEX=1 时 MOTOR_HOLD_TIM4 已关闭）。
  */
 #include "Stepper.h"
 #include "stm32f10x.h"
@@ -8,16 +11,15 @@
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_tim.h"
 
-#define STEPPER_STEP_GPIO_PORT      GPIOA
-#define STEPPER_STEP_GPIO_PIN       GPIO_Pin_0
+#define STEPPER_STEP_GPIO_PORT      GPIOB
+#define STEPPER_STEP_GPIO_PIN       GPIO_Pin_7
 #define STEPPER_DIR_GPIO_PORT       GPIOA
 #define STEPPER_DIR_GPIO_PIN        GPIO_Pin_1
 
-#define STEPPER_PWM_TIM             TIM2
-#define STEPPER_PWM_TIM_RCC         RCC_APB1Periph_TIM2
-#define STEPPER_PWM_CHANNEL         TIM_Channel_1
+#define STEPPER_PWM_TIM             TIM4
+#define STEPPER_PWM_TIM_RCC         RCC_APB1Periph_TIM4
+#define STEPPER_PWM_CHANNEL         TIM_Channel_2
 
-/* 脉冲频率上下限（Hz），可按驱动器手册调整 */
 #define STEPPER_STEP_HZ_MIN         1u
 #define STEPPER_STEP_HZ_MAX         50000u
 
@@ -96,9 +98,9 @@ static void stepper_apply_pwm_hz(uint32_t hz)
     oc.TIM_OutputState = TIM_OutputState_Enable;
     oc.TIM_OCPolarity  = TIM_OCPolarity_High;
     oc.TIM_Pulse       = pulse;
-    TIM_OC1Init(STEPPER_PWM_TIM, &oc);
+    TIM_OC2Init(STEPPER_PWM_TIM, &oc);
 
-    TIM_OC1PreloadConfig(STEPPER_PWM_TIM, TIM_OCPreload_Enable);
+    TIM_OC2PreloadConfig(STEPPER_PWM_TIM, TIM_OCPreload_Enable);
     TIM_ARRPreloadConfig(STEPPER_PWM_TIM, ENABLE);
 
     TIM_SetCounter(STEPPER_PWM_TIM, 0);
@@ -117,20 +119,15 @@ void Stepper_Init(void)
     s_dir_forward = 1u;
     s_tim_inited = 0u;
 
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO, ENABLE);
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
     RCC_APB1PeriphClockCmd(STEPPER_PWM_TIM_RCC, ENABLE);
 
-    /*
-     * PA1 = DIR，普通推挽输出（勿配置为 TIM2_CH2）。
-     * 默认拉高：正向；需要反向时调用 Stepper_SetDirection(0) 拉低。
-     */
     gpio.GPIO_Pin   = STEPPER_DIR_GPIO_PIN;
     gpio.GPIO_Mode  = GPIO_Mode_Out_PP;
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(STEPPER_DIR_GPIO_PORT, &gpio);
     GPIO_SetBits(STEPPER_DIR_GPIO_PORT, STEPPER_DIR_GPIO_PIN);
 
-    /* PA0 = STEP，TIM2_CH1 复用推挽（F103C8 上 PA0 对应 TIM2_CH1，见数据手册 AF 表） */
     gpio.GPIO_Pin   = STEPPER_STEP_GPIO_PIN;
     gpio.GPIO_Mode  = GPIO_Mode_AF_PP;
     gpio.GPIO_Speed = GPIO_Speed_50MHz;
@@ -151,9 +148,9 @@ void Stepper_Init(void)
     oc.TIM_OutputState = TIM_OutputState_Enable;
     oc.TIM_OCPolarity  = TIM_OCPolarity_High;
     oc.TIM_Pulse       = 0;
-    TIM_OC1Init(STEPPER_PWM_TIM, &oc);
+    TIM_OC2Init(STEPPER_PWM_TIM, &oc);
 
-    TIM_OC1PreloadConfig(STEPPER_PWM_TIM, TIM_OCPreload_Enable);
+    TIM_OC2PreloadConfig(STEPPER_PWM_TIM, TIM_OCPreload_Enable);
     TIM_ARRPreloadConfig(STEPPER_PWM_TIM, ENABLE);
     TIM_ITConfig(STEPPER_PWM_TIM, TIM_IT_Update, DISABLE);
 
