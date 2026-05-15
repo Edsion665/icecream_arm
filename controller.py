@@ -108,6 +108,20 @@ class ArmController:
         """上一控制周期是否处于 PC UDP 锁存冻结（非 STM32 串口冻结）。"""
         return self._last_build_udp_latched
 
+    def udp_pc_link_state_label(self) -> str:
+        """PC UDP 在日志中的状态：避免从未收包却显示「正常」。"""
+        if not self._udp_cfg.enabled:
+            return "已关闭"
+        ok, _ = self._udp_fresh()
+        if ok:
+            return "跟踪"
+        if self._udp_latch_valid and not ok:
+            return "锁存冻结"
+        udp = self._store.snapshot_udp()
+        if udp.recv_mono <= 0:
+            return "无帧"
+        return "过期无锁存"
+
     def _apply_tracking_ramp(
         self, target_p: list[float], vmax: tuple[float, ...]
     ) -> tuple[list[float], list[float]]:

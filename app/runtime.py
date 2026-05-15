@@ -123,12 +123,12 @@ async def run_control_loop(
         if now - _last_trace_log_mono >= 1.0:
             _last_trace_log_mono = now
             stm32_fz = not controller.serial_feedback_alive()
-            udp_pc_fz = controller.udp_pc_link_latched()
+            udp_pc = controller.udp_pc_link_state_label()
             logger.info(
                 "[trace] freeze STM32=%s PC_UDP=%s | seq=%s src=%s reason=%s udp_p=%s cmd_p=%s "
                 "cmd_kd=%s fb_p=%s fb_t=%s",
                 "冻结" if stm32_fz else "正常",
-                "锁存冻结" if udp_pc_fz else "正常",
+                udp_pc,
                 udp.seq,
                 rt.control_source,
                 rt.safety_reason,
