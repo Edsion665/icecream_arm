@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 void FB_ReportTimer_Init(void);
-/* 轮询 TIM2 UIF：到周期返回 1 并清标志（不在 NVIC 里依赖 TIM2 中断） */
+/* 轮询 TIM6 UIF：到周期返回 1 并清标志（不占 TIM2） */
 uint8_t FB_ReportTimer_TakePending(void);
 
 /* 发 39 字节二进制 FB（与 6fee739 一致）；周期=FB_REPORT_HZ */

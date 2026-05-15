@@ -7,6 +7,10 @@
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_tim.h"
 
+/* FB 周期：TIM6 基本定时器（无引脚，UIF 轮询），TIM2 留给步进 */
+#define FB_REPORT_TIM                 TIM6
+#define FB_REPORT_TIM_RCC             RCC_APB1Periph_TIM6
+
 #if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
 /*
  * 上行二进制帧：0xAA 0x55 + 4×8字节原始CAN + wrist_us(BE) + gripper_us(BE) + XOR = 39字节
@@ -82,7 +86,7 @@ void FB_ReportTimer_Init(void)
         hz = 1u;
     }
 
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+    RCC_APB1PeriphClockCmd(FB_REPORT_TIM_RCC, ENABLE);
 
     RCC_GetClocksFreq(&clk);
     timclk = clk.PCLK1_Frequency;
@@ -116,18 +120,18 @@ void FB_ReportTimer_Init(void)
     tb.TIM_CounterMode   = TIM_CounterMode_Up;
     tb.TIM_Period        = (uint16_t)(arr - 1u);
     tb.TIM_ClockDivision = TIM_CKD_DIV1;
-    TIM_TimeBaseInit(TIM2, &tb);
+    TIM_TimeBaseInit(FB_REPORT_TIM, &tb);
 
-    TIM_ClearFlag(TIM2, TIM_FLAG_Update);
-    TIM_SetCounter(TIM2, 0);
-    TIM_ITConfig(TIM2, TIM_IT_Update, DISABLE);
-    TIM_Cmd(TIM2, ENABLE);
+    TIM_ClearFlag(FB_REPORT_TIM, TIM_FLAG_Update);
+    TIM_SetCounter(FB_REPORT_TIM, 0);
+    TIM_ITConfig(FB_REPORT_TIM, TIM_IT_Update, DISABLE);
+    TIM_Cmd(FB_REPORT_TIM, ENABLE);
 }
 
 uint8_t FB_ReportTimer_TakePending(void)
 {
-    if (TIM_GetFlagStatus(TIM2, TIM_FLAG_Update) != RESET) {
-        TIM_ClearFlag(TIM2, TIM_FLAG_Update);
+    if (TIM_GetFlagStatus(FB_REPORT_TIM, TIM_FLAG_Update) != RESET) {
+        TIM_ClearFlag(FB_REPORT_TIM, TIM_FLAG_Update);
         return 1u;
     }
     return 0u;

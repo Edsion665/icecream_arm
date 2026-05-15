@@ -65,20 +65,23 @@ typedef struct {
 #define MIT_T_MIN       (-18.0f)
 #define MIT_T_MAX       ( 18.0f)
 
-/* MIT_HEX_MODE=0 时：TIM4 刚性保持与读反馈 MIT 使用下列 Kp/Kd/Tff（MIT_HEX=1 时不在此配置） */
-#if !MIT_HEX_MODE
+/*
+ * 读反馈前发的 MIT（Request_Motor_Feedback）与 TIM4 刚性保持（若启用）共用下列刚度。
+ * 与 MIT_HEX_MODE 无关；勿仅在 #if !MIT_HEX_MODE 里定义，否则 HEX=1 时 motor_control.c
+ * 会使用写死的 lock_kp/kd，motor_config.h 里改 LOCK_KP 不生效。
+ */
 #define EXTREME_HOLD_KP {\
-    18.0f,\
-    62.0f,\
-    42.0f,\
-    24.0f\
+    0.0f,\
+    0.0f,\
+    0.0f,\
+    0.0f\
 }
 
 #define EXTREME_HOLD_KD {\
-    1.8f,\
-    3.2f,\
-    2.8f,\
-    1.8f\
+    0.8f,\
+    0.6f,\
+    0.8f,\
+    0.8f\
 }
 
 #define EXTREME_HOLD_TFF {\
@@ -88,13 +91,12 @@ typedef struct {
     0.0f\
 }
 
-#define LOCK_KP {10.0f, 16.0f, 16.0f, 10.0f}
-#define LOCK_KD {1.2f, 1.8f, 1.8f, 1.2f}
+#define LOCK_KP {0.0f, 0.0f, 0.0f, 0.0f}
+#define LOCK_KD {0.8f, 0.8f, 1.0f, 0.2f}
 
 #define HOLD_TFF          {0.0f, 0.10f, 0.80f, 0.0f}
 
 #define MOTOR2_HOLD_TFF     0.20f
-#endif
 
 /*================ 物理限位 ================*/
 /* 已关闭：motor_control / motor_world_exec 不再做软件 P_LIMIT 夹紧（机械安全请靠硬件/驱动器） */
