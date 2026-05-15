@@ -117,7 +117,7 @@ class ControlConfig:
     tau_hz: float = max(1.0, min(500.0, _env_float("ARM_CONTROL_TAU_HZ", 25.0)))
     tau_gain: float = _env_float("ARM_CONTROL_TAU_GAIN", 1.0)
     calibration_rad: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_CAL_R0", 1.99916),
+        _env_float("ARM_CONTROL_CAL_R0", 2.03016),
         _env_float("ARM_CONTROL_CAL_R1", 3.6532),
         _env_float("ARM_CONTROL_CAL_R2", -4.1500),
         _env_float("ARM_CONTROL_CAL_R3", 3.5091),
