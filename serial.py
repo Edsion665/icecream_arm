@@ -11,7 +11,7 @@ from typing import Optional
 
 import serial  # type: ignore[import]
 
-from .config import SerialConfig
+from .config import CONFIG, SerialConfig
 from .infra.serial.codec import (
     MIT_CMD_FRAME_LEN,
     UPLINK_FRAME_LEN,
@@ -41,6 +41,12 @@ class SerialManager(threading.Thread):
         self._last_rx_frame: bytes | None = None
         self._last_rx_kind: str = "none"
         self._last_fb_log_mono: float = 0.0
+
+    def _serial_feedback_fresh_for_log(self) -> bool:
+        fb = self._store.snapshot_feedback()
+        if fb.serial_feedback_mono <= 0.0:
+            return False
+        return time.monotonic() - fb.serial_feedback_mono <= CONFIG.control.serial_feedback_stale_sec
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -191,15 +197,17 @@ class SerialManager(threading.Thread):
             return
         for i, m in enumerate(motors):
             self._store.update_mit_feedback(i, m)
+        self._store.touch_serial_feedback_recv()
         now = time.monotonic()
         if now - self._last_fb_log_mono >= 1.0:
             self._last_fb_log_mono = now
-            LOGGER.info(
-                "[fb] p=[%.4f %.4f %.4f %.4f] t=[%.4f %.4f %.4f %.4f] wrist=%dus gripper=%dus",
-                motors[0]["p"], motors[1]["p"], motors[2]["p"], motors[3]["p"],
-                motors[0]["t"], motors[1]["t"], motors[2]["t"], motors[3]["t"],
-                servo["wrist_us"], servo["gripper_us"],
-            )
+            if self._serial_feedback_fresh_for_log():
+                LOGGER.info(
+                    "[fb] p=[%.4f %.4f %.4f %.4f] t=[%.4f %.4f %.4f %.4f] wrist=%dus gripper=%dus",
+                    motors[0]["p"], motors[1]["p"], motors[2]["p"], motors[3]["p"],
+                    motors[0]["t"], motors[1]["t"], motors[2]["t"], motors[3]["t"],
+                    servo["wrist_us"], servo["gripper_us"],
+                )
 
     def _handle_line(self, line: str) -> None:
         if not line:

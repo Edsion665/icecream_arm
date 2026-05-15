@@ -23,6 +23,8 @@ class FeedbackRegister:
     fb_arm_rad: Optional[tuple[float, float, float, float]] = None
     motors: dict[int, dict[str, Any]] = field(default_factory=dict)
     crc_error_count: int = 0
+    # 最近一次成功解析的 STM32 串口关节反馈（MIT 上行整帧或 FB 行）的本地 monotonic 时间戳。
+    serial_feedback_mono: float = 0.0
 
 
 @dataclass
@@ -110,6 +112,11 @@ class StateStore:
     def set_fb_arm_rad(self, rad: tuple[float, float, float, float]) -> None:
         with self._lock:
             self._feedback.fb_arm_rad = rad
+            self._feedback.serial_feedback_mono = monotonic()
+
+    def touch_serial_feedback_recv(self) -> None:
+        with self._lock:
+            self._feedback.serial_feedback_mono = monotonic()
 
     def inc_crc_error(self) -> None:
         with self._lock:
@@ -122,6 +129,7 @@ class StateStore:
                 fb_arm_rad=self._feedback.fb_arm_rad,
                 motors={k: dict(v) for k, v in self._feedback.motors.items()},
                 crc_error_count=self._feedback.crc_error_count,
+                serial_feedback_mono=float(self._feedback.serial_feedback_mono),
             )
 
     def set_runtime(

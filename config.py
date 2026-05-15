@@ -72,6 +72,22 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_init_feedback_wait_sec() -> float:
+    """>0 为有限超时；<=0 或 inf 表示阻塞直到首帧串口关节反馈（无跳过）。"""
+    raw = os.environ.get("ARM_CONTROL_INIT_FEEDBACK_WAIT_SEC", "").strip().lower()
+    if not raw:
+        return float("inf")
+    if raw in ("inf", "infinity", "none"):
+        return float("inf")
+    try:
+        v = float(raw)
+    except ValueError:
+        return float("inf")
+    if v <= 0:
+        return float("inf")
+    return v
+
+
 @dataclass(frozen=True)
 class SerialConfig:
     port: str = os.environ.get("ARM_CONTROL_SERIAL_PORT", "/dev/ttyAMA2")
@@ -106,38 +122,42 @@ class ControlConfig:
         _env_float("ARM_CONTROL_CAL_R2", -4.1500),
         _env_float("ARM_CONTROL_CAL_R3", 3.5091),
     )
-    # hold_kp: tuple[float, float, float, float] = (
-    #     _env_float("ARM_CONTROL_HOLD_KP_1", 18.0),
-    #     _env_float("ARM_CONTROL_HOLD_KP_2", 60.0),
-    #     _env_float("ARM_CONTROL_HOLD_KP_3", 50.0),
-    #     _env_float("ARM_CONTROL_HOLD_KP_4", 25.0),
-    # )
-
     hold_kp: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KP_1", 0.0),
-        _env_float("ARM_CONTROL_HOLD_KP_2", 0.0),
-        _env_float("ARM_CONTROL_HOLD_KP_3", 0.0),
-        _env_float("ARM_CONTROL_HOLD_KP_4", 0.0),
+        _env_float("ARM_CONTROL_HOLD_KP_1", 18.0),
+        _env_float("ARM_CONTROL_HOLD_KP_2", 60.0),
+        _env_float("ARM_CONTROL_HOLD_KP_3", 50.0),
+        _env_float("ARM_CONTROL_HOLD_KP_4", 25.0),
     )
-    
-    # hold_kd: tuple[float, float, float, float] = (
-    #     _env_float("ARM_CONTROL_HOLD_KD_1", 2.0),
-    #     _env_float("ARM_CONTROL_HOLD_KD_2", 13.0),
-    #     _env_float("ARM_CONTROL_HOLD_KD_3", 10),
-    #     _env_float("ARM_CONTROL_HOLD_KD_4", 2.0),
-    # )
 
+    # hold_kp: tuple[float, float, float, float] = (
+    #     _env_float("ARM_CONTROL_HOLD_KP_1", 0.0),
+    #     _env_float("ARM_CONTROL_HOLD_KP_2", 0.0),
+    #     _env_float("ARM_CONTROL_HOLD_KP_3", 0.0),
+    #     _env_float("ARM_CONTROL_HOLD_KP_4", 0.0),
+    # )
+    
     hold_kd: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KD_1", 1.0),
-        _env_float("ARM_CONTROL_HOLD_KD_2", 3.0),
-        _env_float("ARM_CONTROL_HOLD_KD_3", 1.0),
-        _env_float("ARM_CONTROL_HOLD_KD_4", 0.3),
+        _env_float("ARM_CONTROL_HOLD_KD_1", 2.0),
+        _env_float("ARM_CONTROL_HOLD_KD_2", 13.0),
+        _env_float("ARM_CONTROL_HOLD_KD_3", 10),
+        _env_float("ARM_CONTROL_HOLD_KD_4", 2.0),
     )
+
+    # hold_kd: tuple[float, float, float, float] = (
+    #     _env_float("ARM_CONTROL_HOLD_KD_1", 1.0),
+    #     _env_float("ARM_CONTROL_HOLD_KD_2", 3.0),
+    #     _env_float("ARM_CONTROL_HOLD_KD_3", 1.0),
+    #     _env_float("ARM_CONTROL_HOLD_KD_4", 0.3),
+    # )
     
     kp_float_mode: bool = _env_bool("ARM_CONTROL_MIT_CMD_KP_FLOAT", False)
     feedback_source: str = os.environ.get("ARM_CONTROL_TAU_FF_INPUT", "mit").strip().lower()
-    # 启动后等待首帧关节反馈（秒）。0=不等待（与旧行为一致）。与 arm_control 在无反馈时不发 MIT 的思路一致，避免未收到 STM32 上行就进入主环发空指令。
-    init_feedback_wait_sec: float = max(0.0, _env_float("ARM_CONTROL_INIT_FEEDBACK_WAIT_SEC", 10.0))
+    # 启动后等待首帧串口关节反馈：默认无限阻塞；设为正数则为最长等待秒数（超时后仍继续启动，仅用于调试）。
+    init_feedback_wait_sec: float = _env_init_feedback_wait_sec()
+    # 超过该时间未收到新的 STM32 串口反馈帧则视为掉线，进入 frozen（不发 MIT/舵机占位帧），恢复后按 safe gate 重新锁存首帧 UDP。
+    serial_feedback_stale_sec: float = max(
+        0.02, _env_float("ARM_CONTROL_SERIAL_FEEDBACK_STALE_SEC", 1.5)
+    )
     # 1=开启重力前馈；0=关闭（MIT 帧中 t 全为 0，且不调用 Pinocchio）
     gravity_ff_enabled: bool = _env_bool("ARM_CONTROL_GRAVITY_FF", True)
     max_cmd_speed_rad_s: tuple[float, float, float, float] = (

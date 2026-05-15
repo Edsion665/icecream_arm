@@ -33,6 +33,12 @@ class ArmController:
         self._safe_gate = safe_gate
         self._last_cmd_p: list[float] | None = None
         self._hold_p_latch: list[float] | None = None
+        self._prev_serial_alive: bool = False
+        self._prev_udp_frozen: bool = False
+        self._udp_latch_p: tuple[float, float, float, float, float, float] | None = None
+        self._udp_latch_omega: tuple[float, float, float, float, float, float] | None = None
+        self._udp_latch_valid: bool = False
+        self._last_build_udp_latched: bool = False
         # 持续限速 ramp：safe_gate 完成后接管，每帧向最新 UDP 目标步进
         self._ramp_p: list[float] | None = None
         self._ramp_last_mono: float = 0.0
@@ -45,6 +51,15 @@ class ArmController:
 
     def has_arm_feedback(self) -> bool:
         return self._select_feedback_rad() is not None
+
+    def serial_feedback_alive(self) -> bool:
+        """串口关节反馈在时效内（见 ``serial_feedback_stale_sec``）。"""
+        if not self.has_arm_feedback():
+            return False
+        fb = self._store.snapshot_feedback()
+        if fb.serial_feedback_mono <= 0.0:
+            return False
+        return monotonic() - fb.serial_feedback_mono <= self._cfg.serial_feedback_stale_sec
 
     def prime_hold_latch_from_feedback(self) -> None:
         arm_rad = self._select_feedback_rad()
@@ -66,8 +81,32 @@ class ArmController:
 
     def _udp_to_motor_pv(self) -> tuple[list[float], list[float]]:
         udp = self._store.snapshot_udp()
+        return self._udp_to_motor_pv_from(udp.p_rel_deg, udp.omega_rad_s)
+
+    def _udp_to_motor_pv_from(
+        self,
+        p_rel_deg: tuple[float, float, float, float, float, float],
+        omega_rad_s: tuple[float, float, float, float, float, float],
+    ) -> tuple[list[float], list[float]]:
         cal = self._store.get_calibration_rad()
-        return udp_rel_to_motor_pv(cal, udp.p_rel_deg, udp.omega_rad_s)
+        return udp_rel_to_motor_pv(cal, p_rel_deg, omega_rad_s)
+
+    def _udp_stale_using_latch(self) -> bool:
+        if not self._udp_cfg.enabled or not self._udp_latch_valid:
+            return False
+        ok, _ = self._udp_fresh()
+        return not ok
+
+    def effective_udp_p_rel_deg(self) -> tuple[float, float, float, float, float, float]:
+        """供舵机 UDP 解码：新鲜帧或 PC 断链时的锁存帧。"""
+        if self._udp_cfg.enabled and self._udp_latch_valid:
+            assert self._udp_latch_p is not None
+            return self._udp_latch_p
+        return self._store.snapshot_udp().p_rel_deg
+
+    def udp_pc_link_latched(self) -> bool:
+        """上一控制周期是否处于 PC UDP 锁存冻结（非 STM32 串口冻结）。"""
+        return self._last_build_udp_latched
 
     def _apply_tracking_ramp(
         self, target_p: list[float], vmax: tuple[float, ...]
@@ -95,6 +134,42 @@ class ArmController:
         return (list(self._ramp_p), out_v)
 
     def build_motor_commands(self) -> list[dict[str, float]]:
+        self._last_build_udp_latched = False
+        udp_ok, _age = self._udp_fresh()
+        if self._udp_cfg.enabled and udp_ok:
+            snap = self._store.snapshot_udp()
+            self._udp_latch_p = tuple(float(x) for x in snap.p_rel_deg)
+            self._udp_latch_omega = tuple(float(x) for x in snap.omega_rad_s)
+            self._udp_latch_valid = True
+
+        alive = self.serial_feedback_alive()
+        lost_edge = self._prev_serial_alive and not alive
+        if not alive:
+            if lost_edge:
+                if self._safe_gate is not None:
+                    self._safe_gate.reset()
+                udp_note = (
+                    "锁存(末帧有效)"
+                    if self._udp_stale_using_latch()
+                    else ("跟踪中" if udp_ok else "无有效帧")
+                )
+                LOGGER.info(
+                    "[link] STM32关节反馈=冻结 MIT/舵机串口下发已停 | PC-UDP=%s",
+                    udp_note,
+                )
+            self._prev_serial_alive = False
+            self._prev_udp_frozen = bool(
+                self._udp_cfg.enabled and self._udp_latch_valid and not udp_ok
+            )
+            self._last_build_udp_latched = self._udp_stale_using_latch()
+            self._store.set_runtime(
+                control_source="frozen",
+                safety_reason="serial_feedback_stale",
+                last_tau_nm=(0.0, 0.0, 0.0, 0.0),
+            )
+            return []
+        self._prev_serial_alive = True
+
         arm_rad = self._select_feedback_rad()
         if arm_rad is None:
             self._store.set_runtime(
@@ -125,28 +200,49 @@ class ArmController:
                 )
                 return self._hold_with_zero_tau(arm_rad)
 
-        udp_ok, _age = self._udp_fresh()
-        if self._udp_cfg.enabled and udp_ok:
-            p_cmd, v_cmd = self._udp_to_motor_pv()
+        udp_frozen = (
+            self._udp_cfg.enabled and self._udp_latch_valid and not udp_ok
+        )
+
+        if self._udp_cfg.enabled and self._safe_gate is not None:
+            udp_frozen_edge = udp_frozen and not self._prev_udp_frozen
+            udp_recover_edge = self._prev_udp_frozen and udp_ok
+            if udp_frozen_edge or udp_recover_edge:
+                self._safe_gate.reset()
+            if udp_frozen_edge:
+                LOGGER.info(
+                    "[link] STM32关节反馈=正常 PC-UDP=冻结(锁存上一帧); "
+                    "继续 MIT 下发，safe gate 约束串口目标角过渡"
+                )
+            if udp_recover_edge:
+                LOGGER.info(
+                    "[link] STM32关节反馈=正常 PC-UDP=恢复跟踪; "
+                    "已收到新 UDP，safe gate 已重新武装"
+                )
+        self._prev_udp_frozen = bool(udp_frozen)
+
+        if self._udp_cfg.enabled and self._udp_latch_valid and (udp_ok or udp_frozen):
+            p_deg = self._udp_latch_p
+            o_rad = self._udp_latch_omega
+            p_cmd, v_cmd = self._udp_to_motor_pv_from(p_deg, o_rad)
             if self._safe_gate is not None:
                 gated = self._safe_gate.apply(arm_rad=arm_rad, udp_p_cmd=p_cmd)
             else:
                 gated = None
             if gated is not None:
-                # safe_gate 启动阶段：用 gate 输出，同步 ramp_p 跟随，避免 gate 完成后跳变
                 p_cmd, v_cmd = gated
                 self._ramp_p = [float(x) for x in p_cmd]
                 self._ramp_last_mono = monotonic()
                 source = "safe_gate"
-                reason = "startup_first_frame_ramp"
+                reason = "udp_latch_gate_ramp" if udp_frozen else "startup_first_frame_ramp"
             else:
-                # 正常跟踪阶段：持续 ramp 向最新 UDP 目标步进，vmax 由 UDP omega_rad_s[:4] 传入
-                udp_snap = self._store.snapshot_udp()
-                vmax_udp = tuple(max(1e-4, float(udp_snap.omega_rad_s[i])) for i in range(4))
+                vmax_udp = tuple(max(1e-4, float(o_rad[i])) for i in range(4))
                 p_cmd, v_cmd = self._apply_tracking_ramp(p_cmd, vmax_udp)
                 source = "tracking_ramp"
-                reason = "ok"
+                reason = "udp_stale_latched" if udp_frozen else "ok"
             self._hold_p_latch = [float(x) for x in p_cmd]
+            if udp_frozen:
+                self._last_build_udp_latched = True
         else:
             if self._hold_p_latch is not None:
                 p_cmd = [float(x) for x in self._hold_p_latch]
@@ -155,7 +251,12 @@ class ArmController:
                 self._hold_p_latch = [float(v) for v in arm_rad]
             v_cmd = [0.0, 0.0, 0.0, 0.0]
             source = "hold"
-            reason = "udp_timeout" if self._udp_cfg.enabled else "udp_disabled"
+            if not self._udp_cfg.enabled:
+                reason = "udp_disabled"
+            elif not self._udp_latch_valid:
+                reason = "udp_wait_first_packet"
+            else:
+                reason = "udp_timeout"
 
         kp_list = [0.0, 0.0, 0.0, 0.0] if self._cfg.kp_float_mode else list(self._cfg.hold_kp)
         kd_list = list(self._cfg.hold_kd)

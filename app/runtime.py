@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
+import math
 import time
 
 from .safe_gate import SafeGateConfig, StartupSafeGate
 from ..calculator import warmup_gravity_model_pinocchio
 from ..config import CONFIG
 from ..controller import ArmController
-from ..domain.ports import StatePort
+from ..domain.ports import MotorCommandSink, StatePort
 from ..infra.udp.packet import decode_udp_servo, grip_state_to_us, mit39_init_pulse_us, wrist_deg_to_us
 from ..listener import UdpListener
 from ..serial import SerialManager
@@ -45,20 +46,26 @@ def setup_logging() -> None:
 
 
 async def _wait_for_initial_arm_feedback(controller: ArmController, timeout_sec: float) -> None:
-    """与 arm_control._tau_ff_loop 一致：有 MIT/FB 角度后再可靠下发 hold/UDP，避免 cmds=[] 的空窗。"""
-    if timeout_sec <= 0:
-        return
+    """阻塞直到首帧串口关节反馈；可选有限超时（调试用）。"""
     logger = logging.getLogger(__name__)
+    if math.isfinite(timeout_sec) and timeout_sec > 0:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout_sec:
+            if controller.has_arm_feedback():
+                logger.info("initial arm feedback ready after %.3fs", time.monotonic() - t0)
+                return
+            await asyncio.sleep(0.01)
+        logger.warning(
+            "still no arm feedback after %.1fs (serial/STM32?); continuing without feedback",
+            timeout_sec,
+        )
+        return
     t0 = time.monotonic()
-    while time.monotonic() - t0 < timeout_sec:
+    while True:
         if controller.has_arm_feedback():
             logger.info("initial arm feedback ready after %.3fs", time.monotonic() - t0)
             return
         await asyncio.sleep(0.01)
-    logger.warning(
-        "still no arm feedback after %.1fs (serial/STM32?); main loop will start anyway",
-        timeout_sec,
-    )
 
 
 async def run_control_loop(
@@ -78,17 +85,14 @@ async def run_control_loop(
         next_tick += dt
         cmds = controller.build_motor_commands()
         udp = store.snapshot_udp()
+        p_eff = controller.effective_udp_p_rel_deg()
         udp_servo_ok = False
-        if (
-            CONFIG.udp.enabled
-            and udp.recv_mono > 0
-            and time.monotonic() - udp.recv_mono <= CONFIG.udp.stale_sec
-        ):
+        if CONFIG.udp.enabled:
             try:
-                _wrist_us, _gripper_us = decode_udp_servo(udp.p_rel_deg)
+                _wrist_us, _gripper_us = decode_udp_servo(p_eff)
                 udp_servo_ok = True
             except ValueError:
-                logger.warning("UDP servo decode failed: p_rel_deg=%s", udp.p_rel_deg)
+                logger.warning("UDP servo decode failed: p_rel_deg=%s", p_eff)
         rt = store.snapshot_runtime()
         sc = rt.servo_command
         if sc:
@@ -103,7 +107,7 @@ async def run_control_loop(
                 _gripper_us = max(500, min(2500, int(data['gripper_us'])))
         if cmds:
             serial_mgr.send_mit_cmd_with_servo(cmds, _wrist_us, _gripper_us)
-        elif udp_servo_ok:
+        elif controller.serial_feedback_alive() and udp_servo_ok:
             serial_mgr.send_mit_cmd_with_servo(
                 [dict(m) for m in SERVO_ONLY_MOTOR_CMDS],
                 _wrist_us,
@@ -118,12 +122,17 @@ async def run_control_loop(
         now = time.monotonic()
         if now - _last_trace_log_mono >= 1.0:
             _last_trace_log_mono = now
+            stm32_fz = not controller.serial_feedback_alive()
+            udp_pc_fz = controller.udp_pc_link_latched()
             logger.info(
-                "[trace] seq=%s src=%s reason=%s udp_p=%s cmd_p=%s cmd_kd=%s fb_p=%s fb_t=%s",
+                "[trace] freeze STM32=%s PC_UDP=%s | seq=%s src=%s reason=%s udp_p=%s cmd_p=%s "
+                "cmd_kd=%s fb_p=%s fb_t=%s",
+                "冻结" if stm32_fz else "正常",
+                "锁存冻结" if udp_pc_fz else "正常",
                 udp.seq,
                 rt.control_source,
                 rt.safety_reason,
-                [round(v, 4) for v in udp.p_rel_deg[:4]],
+                [round(v, 4) for v in p_eff[:4]],
                 [round(float(m.get("p", 0.0)), 4) for m in cmds] if cmds else None,
                 [round(float(m.get("kd", 0.0)), 4) for m in cmds] if cmds else None,
                 [round(float(v), 4) for v in fb.mit_arm_rad] if fb.mit_arm_rad else None,

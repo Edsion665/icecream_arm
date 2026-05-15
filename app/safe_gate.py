@@ -33,6 +33,14 @@ class StartupSafeGate:
     def active(self) -> bool:
         return self._cfg.enabled and self._state == "ramping"
 
+    def reset(self) -> None:
+        """STM32 断链后恢复时调用：重新等待「下一帧 UDP」作为限速 ramp 起点。"""
+        self._state = "waiting_first_udp"
+        self._target_p = None
+        self._ramp_p = None
+        self._last_mono = 0.0
+        self._start_mono = 0.0
+
     def apply(
         self,
         arm_rad: Sequence[float],
@@ -52,7 +60,7 @@ class StartupSafeGate:
             self._start_mono = now
             self._last_mono = now
             LOGGER.info(
-                "startup safe gate latched first UDP target: current=%s target=%s vmax=%s tol=%.5f",
+                "safe gate latched first UDP target: current=%s target=%s vmax=%s tol=%.5f",
                 [round(float(v), 4) for v in self._ramp_p],
                 [round(float(v), 4) for v in self._target_p],
                 [round(float(v), 4) for v in self._cfg.vmax_rad_s],
@@ -84,14 +92,14 @@ class StartupSafeGate:
             out_v = [0.0, 0.0, 0.0, 0.0]
             done = True
             LOGGER.warning(
-                "startup safe gate timeout reached (%.2fs), force finish to first target",
+                "safe gate timeout reached (%.2fs), force finish to first target",
                 float(self._cfg.timeout_sec),
             )
 
         if done:
             self._state = "done"
             LOGGER.info(
-                "startup safe gate completed: target=%s elapsed=%.3fs",
+                "safe gate completed: target=%s elapsed=%.3fs",
                 [round(float(v), 4) for v in self._target_p],
                 now - self._start_mono,
             )
