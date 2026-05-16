@@ -171,6 +171,9 @@ class HeadFSM:
         # 7: pick claw + object wrist
         cr = sp.send_claw(obj.wrist_yaw_deg, s.claw_closed_for_pick, context="step7_claw_pick")
         sp.require_claw(cr, "step7_claw_pick")
+        if s.claw_settle_after_pick_s > 0:
+            log.info("step7: wait %.2fs after pick (grip close settle)", s.claw_settle_after_pick_s)
+            time.sleep(s.claw_settle_after_pick_s)
 
         # 规划用 object 已消费，丢弃槽位；下次 object 必须再在 obs2 后等待帧并 clear+apply
         self._discard_slot("object", "step7_discard_object_after_pick")
@@ -220,6 +223,9 @@ class HeadFSM:
         # 11: place claw + target wrist
         cr2 = sp.send_claw(tgt.wrist_yaw_deg, s.claw_open_for_place, context="step11_claw_place")
         sp.require_claw(cr2, "step11_claw_place")
+        if s.claw_settle_after_place_s > 0:
+            log.info("step11: wait %.2fs after place (grip open settle)", s.claw_settle_after_place_s)
+            time.sleep(s.claw_settle_after_place_s)
 
         # 目标位放置后先回 obs1，再腕零（回程保持步11张开+目标腕角直至观测位）
         log.info("step11b: obs1 joints after place, then wrist=%.3f (grip stays open)", tw)

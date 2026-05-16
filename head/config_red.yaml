@@ -9,13 +9,8 @@ ingest_tcp_port: null
 merge_pos_eps_m: 0.005
 merge_yaw_eps_deg: 3.0
 
-
-claw_settle_after_pick_s: 2.0
-claw_settle_after_place_s: 2.0
-# 转盘临位观察位置
-observe1_axes_rel_deg: [90.0, 20.0, -80.0, -90.0]
-# 传送带观察位置
-observe2_axes_rel_deg: [-90.0, 20.0, -90.0, -80.0]
+observe1_axes_rel_deg: [90.0, 10.0, -90.0, -45.0]
+observe2_axes_rel_deg: [-90.0, 10.0, -90.0, -45.0]
 
 state_timeout_s: 60.0
 refresh_wait_s: 2.0

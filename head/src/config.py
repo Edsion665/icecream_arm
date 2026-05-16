@@ -43,6 +43,9 @@ class Settings:
     emit_claw_on_every_transition: bool = False
     # True：启动为张开 → 下发 grip_state=1；False：合拢 → grip_state=0（与 head2bridge 0=合拢1=张开一致）
     initial_grip_open: bool = True
+    # 步7 夹紧 / 步11 松开成功后，再等待若干秒再进入后续关节运动，避免夹爪未到位就抬臂
+    claw_settle_after_pick_s: float = 1.0
+    claw_settle_after_place_s: float = 1.0
     # obs1/obs2/回 obs1 关节到位后丢弃 _last_frame，wait 必须等到下一帧 ingest（避免沿用上一轮缓存导致立刻去 obs2）
     require_fresh_detection_after_obs: bool = True
 
@@ -77,5 +80,7 @@ def load_settings(path: str | Path) -> Settings:
         obs2_entry_wrist_deg=float(raw.get("obs2_entry_wrist_deg", 0.0)),
         emit_claw_on_every_transition=bool(raw.get("emit_claw_on_every_transition", False)),
         initial_grip_open=bool(raw.get("initial_grip_open", True)),
+        claw_settle_after_pick_s=float(raw.get("claw_settle_after_pick_s", 1.0)),
+        claw_settle_after_place_s=float(raw.get("claw_settle_after_place_s", 1.0)),
         require_fresh_detection_after_obs=bool(raw.get("require_fresh_detection_after_obs", True)),
     )

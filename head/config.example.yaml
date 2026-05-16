@@ -25,6 +25,9 @@ camera_wait_timeout_s: null
 # Step 7 pick / step 11 place (bridge grip_state)
 claw_closed_for_pick: true
 claw_open_for_place: false
+# 夹紧/松开指令成功后，再等待若干秒再执行后续关节运动（秒；设为 0 可关闭）
+claw_settle_after_pick_s: 2.0
+claw_settle_after_place_s: 2.0
 # obs1 / 抓取后回到 obs1：腕零与 claw 同发时的 wrist_deg
 claw_after_joints_wrist_deg: 0.0
 # Before obs2 joints (first visit): wrist on claw + joints
