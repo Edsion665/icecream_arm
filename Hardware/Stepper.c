@@ -6,6 +6,7 @@
  * 无法在 PB7 输出脉冲，故步进使用 TIM4（MIT_HEX=1 时 MOTOR_HOLD_TIM4 已关闭）。
  */
 #include "Stepper.h"
+#include "Delay.h"
 #include "stm32f10x.h"
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_gpio.h"
@@ -26,6 +27,23 @@
 static uint32_t s_step_hz;
 static uint8_t  s_dir_forward = 1u;
 static uint8_t  s_tim_inited;
+static int32_t  s_pos_steps;
+
+static float stepper_fabsf(float x)
+{
+    return (x < 0.0f) ? -x : x;
+}
+
+static uint32_t stepper_deg_to_pulses(float deg_mag)
+{
+    float pulses_f;
+
+    pulses_f = deg_mag * (float)STEPPER_PULSES_PER_REV / 360.0f;
+    if (pulses_f < 0.5f) {
+        return 0u;
+    }
+    return (uint32_t)(pulses_f + 0.5f);
+}
 
 static uint32_t stepper_tim_clk_hz(void)
 {
@@ -118,6 +136,7 @@ void Stepper_Init(void)
     s_step_hz = 0u;
     s_dir_forward = 1u;
     s_tim_inited = 0u;
+    s_pos_steps = 0;
 
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
     RCC_APB1PeriphClockCmd(STEPPER_PWM_TIM_RCC, ENABLE);
@@ -220,3 +239,108 @@ float Stepper_GetSpeedRPM(void)
     }
     return (float)s_step_hz * 60.0f / (float)STEPPER_PULSES_PER_REV;
 }
+
+void Stepper_TestRunConstant(float rpm, uint8_t forward)
+{
+    Stepper_SetDirection(forward);
+    Stepper_SetSpeedRPM(rpm);
+}
+
+void Stepper_TestStop(void)
+{
+    Stepper_SetStepFrequencyHz(0u);
+}
+
+int32_t Stepper_GetPosSteps(void)
+{
+    return s_pos_steps;
+}
+
+void Stepper_MoveDegrees(float deg, float rpm)
+{
+    uint32_t pulses;
+    uint32_t done;
+    uint8_t forward;
+    uint16_t last_cnt;
+
+    if (!s_tim_inited) {
+        return;
+    }
+
+    if (deg > 180.0f) {
+        deg = 180.0f;
+    } else if (deg < -180.0f) {
+        deg = -180.0f;
+    }
+
+    if (deg == 0.0f || rpm <= 0.0f) {
+        return;
+    }
+
+    pulses = stepper_deg_to_pulses(stepper_fabsf(deg));
+    if (pulses == 0u) {
+        return;
+    }
+
+    forward = (deg > 0.0f) ? 1u : 0u;
+    Stepper_SetDirection(forward);
+    /* DIR 稳定后再出 STEP（常见驱动器要求） */
+    Delay_ms(2u);
+
+    Stepper_SetSpeedRPM(rpm);
+    if (s_step_hz == 0u) {
+        return;
+    }
+
+    /*
+     * 不用 UIF 轮询：TIM_TimeBaseInit 会置位 UIF，若只读标志不清或清不掉，
+     * 会在空转里瞬间计满 pulses 并 Stop，表现为电机不转。
+     * 改为检测 CNT 回绕，每个 PWM 周期计 1 步。
+     */
+    TIM_ClearITPendingBit(STEPPER_PWM_TIM, TIM_IT_Update);
+    last_cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
+    done = 0u;
+    while (done < pulses) {
+        uint16_t cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
+
+        if (cnt < last_cnt) {
+            done++;
+            if (forward) {
+                s_pos_steps++;
+            } else {
+                s_pos_steps--;
+            }
+        }
+        last_cnt = cnt;
+    }
+
+    Stepper_SetStepFrequencyHz(0u);
+}
+
+#if STEPPER_TEST_ENABLE
+void Stepper_TestRunMoveSequence(void)
+{
+    static const float move_deg[STEPPER_TEST_MOVE_COUNT] = {
+        STEPPER_TEST_MOVE1_DEG,
+        STEPPER_TEST_MOVE2_DEG,
+        STEPPER_TEST_MOVE3_DEG,
+        STEPPER_TEST_MOVE4_DEG,
+        STEPPER_TEST_MOVE5_DEG,
+    };
+    static const float move_rpm[STEPPER_TEST_MOVE_COUNT] = {
+        STEPPER_TEST_MOVE1_RPM,
+        STEPPER_TEST_MOVE2_RPM,
+        STEPPER_TEST_MOVE3_RPM,
+        STEPPER_TEST_MOVE4_RPM,
+        STEPPER_TEST_MOVE5_RPM,
+    };
+    uint8_t i;
+
+    for (i = 0u; i < STEPPER_TEST_MOVE_COUNT; i++) {
+        Stepper_MoveDegrees(move_deg[i], move_rpm[i]);
+        if ((i + 1u) < STEPPER_TEST_MOVE_COUNT) {
+            Delay_ms(STEPPER_TEST_MOVE_PAUSE_MS);
+        }
+    }
+}
+#endif

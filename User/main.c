@@ -3,6 +3,7 @@
 #include "MotorControl/motor_control.h"
 #include "../Hardware/Serial.h"
 #include "../Hardware/Servo.h"
+#include "../Hardware/Stepper.h"
 #include "serial_frame.h"
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_rcc.h"
@@ -103,6 +104,15 @@ int main(void)
     FB_ReportTimer_Init();
 #endif
 
+
+#if STEPPER_TEST_ENABLE
+    Stepper_Init();
+    /* 增量转角试跑：Stepper_MoveDegrees(deg,rpm)，TIM4 计脉冲后 Stop */
+    Stepper_MoveDegrees(30.0f, 12.0f);   // 正向 30°，12 RPM
+    Stepper_MoveDegrees(-60.0f, 20.0f);  // 反向 60°，20 RPM
+#endif
+
+
     /* 使能 */
     for (i = 0; i < 25; i++) {
         for (m = 0; m < MOTOR_NUM; m++) {
@@ -151,6 +161,8 @@ int main(void)
 
     /* 舵机：PB0 腕部、PB1 机械爪，50Hz PWM（PWM.c 已移出工程，不再保留 PB01 独立测试分支） */
     Servo_Init();
+
+
 
     while (1) {
         Serial_ServiceRxDma();

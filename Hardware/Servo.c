@@ -19,7 +19,7 @@
 #define SERVO_WRIST_RAW_SPAN  18000u /* raw ±18000 对应负/正向满行程 */
 
 /* 机械爪：1500us=0°，对称 */
-#define SERVO_GRIPPER_CENTER_US 1500u
+#define SERVO_GRIPPER_CENTER_US 1300u
 
 /* 目标：50Hz = 20ms 周期，1us 分辨率 → 20000 ticks/周期 */
 #define SERVO_PERIOD_US      20000u
