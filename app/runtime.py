@@ -17,6 +17,7 @@ from ..infra.udp.packet import decode_udp_servo, grip_state_to_us, mit39_init_pu
 from ..listener import UdpListener
 from ..serial import SerialManager
 from ..infra.pi2camera.broadcast import run_pi2camera_udp_broadcast
+from ..infra.pi2head.switch_monitor import SwitchGateMonitor
 from ..server import StateServer
 from ..state_store import StateStore
 
@@ -36,6 +37,7 @@ class RuntimeComponents:
     udp_listener: UdpListener
     state_server: StateServer
     controller: ArmController
+    switch_gate: SwitchGateMonitor
 
 
 def setup_logging() -> None:
@@ -163,6 +165,7 @@ def build_components() -> RuntimeComponents:
         udp_listener=UdpListener(CONFIG.udp, store),
         state_server=StateServer(CONFIG.server, store),
         controller=ArmController(CONFIG.control, CONFIG.udp, store, safe_gate=safe_gate),
+        switch_gate=SwitchGateMonitor(CONFIG.switch_gate),
     )
 
 
@@ -174,6 +177,7 @@ async def run_runtime(components: RuntimeComponents) -> None:
     logger.info("gravity model warmup done in %.3fs", time.monotonic() - t0)
     components.serial_mgr.start()
     components.udp_listener.start()
+    components.switch_gate.start()
     await _wait_for_initial_arm_feedback(
         components.controller,
         float(CONFIG.control.init_feedback_wait_sec),
@@ -204,6 +208,8 @@ async def run_runtime(components: RuntimeComponents) -> None:
         await asyncio.gather(*tasks)
     finally:
         components.udp_listener.stop()
+        components.switch_gate.stop()
+        components.switch_gate.join(timeout=2.0)
         components.serial_mgr.stop()
         components.serial_mgr.join(timeout=2.0)
         for t in tasks:

@@ -16,8 +16,7 @@ from dataclasses import dataclass
 # 顺序固定为 motor1..motor4。取值 +1 表示正方向一致，-1 表示方向相反。
 # 该符号会被目标映射、反馈反算、关节力矩到电机力矩转换等链路共同复用，
 # 用于保证整条控制链在符号约定上的一致性。
-MOTOR_AXIS_SIGN: tuple[float, float, float, float] = (-1.0, -1.0, -1.0, 1.0)
-
+MOTOR_AXIS_SIGN: tuple[float, float, float, float] = (-1.0, -1.0, 1.0, 1.0)
 # GRAVITY_AXIS_SCALE 是重力补偿在电机力矩空间下的逐轴缩放系数，顺序为 motor1..motor4。
 # 它会在 Pinocchio 输出并投影到电机空间之后生效，主要用于实机逐轴精细调参。
 GRAVITY_AXIS_SCALE: tuple[float, float, float, float] = (1.0, 1.3, 1.2, 1.2)
@@ -43,8 +42,8 @@ GRIP_OPEN_STATE: float = 1.0
 GRIP_THRESHOLD: float = 0.5
 
 # 以下脉宽映射定义夹爪舵机在 closed/open 两种状态下的目标脉宽（单位：us）。
-GRIP_CLOSED_US: int = 2000
-GRIP_OPEN_US: int = 1300
+GRIP_CLOSED_US: int = 1000
+GRIP_OPEN_US: int = 1400
 
 # GRIP_MIT39_INIT_US 是 MIT39 启动阶段使用的夹爪初始脉宽（单位：us），
 # 仅用于 boot/init，故与运行期基于 UDP 状态的开合映射解耦。
@@ -117,13 +116,13 @@ class ControlConfig:
     tau_hz: float = max(1.0, min(500.0, _env_float("ARM_CONTROL_TAU_HZ", 25.0)))
     tau_gain: float = _env_float("ARM_CONTROL_TAU_GAIN", 1.0)
     calibration_rad: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_CAL_R0", 2.03016),
-        _env_float("ARM_CONTROL_CAL_R1", 3.6532),
-        _env_float("ARM_CONTROL_CAL_R2", -4.1500),
-        _env_float("ARM_CONTROL_CAL_R3", 3.5091),
+        _env_float("ARM_CONTROL_CAL_R0", -2.69911),
+        _env_float("ARM_CONTROL_CAL_R1", 0.3075),
+        _env_float("ARM_CONTROL_CAL_R2", 2.45080),
+        _env_float("ARM_CONTROL_CAL_R3", 0.490005),
     )
     hold_kp: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KP_1", 18.0),
+        _env_float("ARM_CONTROL_HOLD_KP_1", 5.0),
         _env_float("ARM_CONTROL_HOLD_KP_2", 60.0),
         _env_float("ARM_CONTROL_HOLD_KP_3", 50.0),
         _env_float("ARM_CONTROL_HOLD_KP_4", 25.0),
@@ -137,7 +136,7 @@ class ControlConfig:
     # )
     
     hold_kd: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KD_1", 2.0),
+        _env_float("ARM_CONTROL_HOLD_KD_1", 1.0),
         _env_float("ARM_CONTROL_HOLD_KD_2", 13.0),
         _env_float("ARM_CONTROL_HOLD_KD_3", 10),
         _env_float("ARM_CONTROL_HOLD_KD_4", 2.0),
@@ -180,6 +179,17 @@ class ControlConfig:
 
 
 @dataclass(frozen=True)
+class SwitchGateConfig:
+    """ttyAMA4 环路开关闭合时向 head 发 pi2head start（``docs/pi2head.md``）。"""
+
+    head_host: str = "192.168.31.71"
+    head_port: int = 8778
+    port: str = "/dev/ttyAMA4"
+    baudrate: int = 115200
+    poll_interval_sec: float = 0.5
+
+
+@dataclass(frozen=True)
 class PiCameraUdpConfig:
     """Pi → camera JSON on UDP (``docs/pi2camera.md`` §4)."""
 
@@ -196,6 +206,7 @@ class AppConfig:
     udp: UdpConfig = UdpConfig()
     server: ServerConfig = ServerConfig()
     control: ControlConfig = ControlConfig()
+    switch_gate: SwitchGateConfig = SwitchGateConfig()
     camera_udp: PiCameraUdpConfig = PiCameraUdpConfig()
 
 
