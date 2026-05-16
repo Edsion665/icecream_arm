@@ -24,6 +24,15 @@ class Settings:
     ingest_port: int = 8776
     ingest_tcp_port: int | None = None  # optional second listener; None = disabled
 
+    # 树莓派 pi2head：TCP JSON 行，收到 start 后 head 才进入 FSM
+    pi2head_host: str = "0.0.0.0"
+    pi2head_tcp_port: int = 8778
+    # 待命阶段周期向 bridge 下发的关节相对角（deg，长度 4）
+    idle_axes_rel_deg: List[float] | None = None
+    idle_bridge_hz: float = 2.0
+    idle_claw_wrist_deg: float = 0.0
+    idle_grip_state: int = 0  # head2bridge：0=合拢，1=张开
+
     merge_pos_eps_m: float = 0.005
     merge_yaw_eps_deg: float = 3.0
 
@@ -56,6 +65,14 @@ class Settings:
             self.observe2_axes_rel_deg = [0.0, 5.0, -30.0, -50.0]
         if len(self.observe1_axes_rel_deg) != 4 or len(self.observe2_axes_rel_deg) != 4:
             raise ValueError("observe*_axes_rel_deg must have length 4")
+        if self.idle_axes_rel_deg is None:
+            self.idle_axes_rel_deg = [0.0, 0.0, 0.0, 0.0]
+        if len(self.idle_axes_rel_deg) != 4:
+            raise ValueError("idle_axes_rel_deg must have length 4")
+        if self.idle_bridge_hz <= 0:
+            raise ValueError("idle_bridge_hz must be positive")
+        if self.idle_grip_state not in (0, 1):
+            raise ValueError("idle_grip_state must be 0 or 1")
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -66,6 +83,12 @@ def load_settings(path: str | Path) -> Settings:
         ingest_host=str(raw.get("ingest_host", Settings.ingest_host)),
         ingest_port=int(raw.get("ingest_port", Settings.ingest_port)),
         ingest_tcp_port=(int(raw["ingest_tcp_port"]) if raw.get("ingest_tcp_port") is not None else None),
+        pi2head_host=str(raw.get("pi2head_host", Settings.pi2head_host)),
+        pi2head_tcp_port=int(raw.get("pi2head_tcp_port", Settings.pi2head_tcp_port)),
+        idle_axes_rel_deg=list(raw.get("idle_axes_rel_deg") or [0.0, 0.0, 0.0, 0.0]),
+        idle_bridge_hz=float(raw.get("idle_bridge_hz", 2.0)),
+        idle_claw_wrist_deg=float(raw.get("idle_claw_wrist_deg", 0.0)),
+        idle_grip_state=int(raw.get("idle_grip_state", 0)),
         merge_pos_eps_m=float(raw.get("merge_pos_eps_m", 0.005)),
         merge_yaw_eps_deg=float(raw.get("merge_yaw_eps_deg", 3.0)),
         observe1_axes_rel_deg=list(raw.get("observe1_axes_rel_deg") or [0.0, 0.0, -45.0, -60.0]),

@@ -6,6 +6,14 @@ ingest_port: 8776
 # Optional TCP JSON lines (camera2head §2.1); set null to disable
 ingest_tcp_port: null
 
+# 树莓派 pi2head（doc/pi2head.md）：收到 start 后才进入 FSM
+pi2head_host: "0.0.0.0"
+pi2head_tcp_port: 8778
+idle_axes_rel_deg: [0.0, 0.0, 0.0, 0.0]
+idle_bridge_hz: 2.0
+idle_claw_wrist_deg: 0.0
+idle_grip_state: 0
+
 merge_pos_eps_m: 0.005
 merge_yaw_eps_deg: 3.0
 

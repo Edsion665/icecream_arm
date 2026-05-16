@@ -6,6 +6,15 @@
 
 - [doc/head2bridge.md](doc/head2bridge.md) — head → bridge（`joints` / `pose` / `claw`）
 - [doc/camera2head.md](doc/camera2head.md) — camera → head（`detection` v1.1）
+- [doc/pi2head.md](doc/pi2head.md) — 树莓派 → head（`start` / `ping`，放行 FSM）
+
+## 启动与待命（pi2head）
+
+1. head 启动后监听 **`pi2head_tcp_port`**（默认 `8778`），并启动相机 ingestion。
+2. **收到树莓派 TCP `{"cmd":"start"}` 之前**：以 `idle_bridge_hz`（默认 2Hz）向 bridge 周期下发 **全零** `joints`（`idle_axes_rel_deg`，默认 `[0,0,0,0]`）与 `claw`（腕 0、`idle_grip_state` 默认 0）。
+3. 收到 **`start`** 后进入下方 v3 主循环；重复 `start` 不重置已在跑的 FSM。
+
+树莓派示例见 `doc/pi2head.md`。
 
 ## v3 主循环（概要）
 

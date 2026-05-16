@@ -129,3 +129,35 @@ class BridgeClient:
 
     def toggle_grip(self, wrist_deg: float) -> BridgeReply:
         return self.send_claw(wrist_deg, not self._last_grip_closed)
+
+    def send_idle_zeros(
+        self,
+        axes_rel_deg: List[float],
+        *,
+        wrist_deg: float = 0.0,
+        grip_state: int = 0,
+        context: str = "idle_hold",
+    ) -> None:
+        """启动待命：向 bridge 下发全零关节与 claw（不等待到位，仅尽力 POST）。"""
+        if len(axes_rel_deg) != 4:
+            log.warning("send_idle_zeros: axes 长度须为 4，跳过")
+            return
+        jr = self.send_joints(list(axes_rel_deg), context=context)
+        if not jr.ok:
+            log.warning("idle joints failed: %s", jr.error or jr.body)
+        payload = {
+            "cmd": "claw",
+            "wrist_deg": float(wrist_deg),
+            "grip_state": int(grip_state),
+        }
+        log.info(
+            "bridge POST /api/claw (%s) wrist_deg=%.3f grip_state=%s",
+            context,
+            float(wrist_deg),
+            int(grip_state),
+        )
+        cr = self._post("/api/claw", payload)
+        if cr.ok:
+            self._last_grip_closed = int(grip_state) == 0
+        else:
+            log.warning("idle claw failed: %s", cr.error or cr.body)

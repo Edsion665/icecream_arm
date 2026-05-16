@@ -49,24 +49,65 @@ if [[ $# -gt 0 && "$1" == "--" ]]; then
   HEAD_ARGS=("$@")
 fi
 
-cleanup() {
-  if [[ -n "${BRIDGE_PID:-}" ]] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
-    kill "$BRIDGE_PID" 2>/dev/null || true
-    wait "$BRIDGE_PID" 2>/dev/null || true
+# bridge 在独立会话/进程组中启动，便于 Ctrl+C 后一并结束 python3（否则只杀 bash 包装进程会留下 9888 监听）
+stop_bridge() {
+  if [[ -z "${BRIDGE_PID:-}" ]]; then
+    return 0
   fi
+  if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+    BRIDGE_PID=
+    return 0
+  fi
+  echo "[start] 停止 arm_control_bridge (pid=${BRIDGE_PID}) …"
+  if [[ "${BRIDGE_USE_SETSID:-0}" == 1 ]]; then
+    kill -TERM -"$BRIDGE_PID" 2>/dev/null || true
+  else
+    pkill -TERM -P "$BRIDGE_PID" 2>/dev/null || true
+    kill -TERM "$BRIDGE_PID" 2>/dev/null || true
+  fi
+  local i
+  for i in 1 2 3 4 5; do
+    if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+      wait "$BRIDGE_PID" 2>/dev/null || true
+      BRIDGE_PID=
+      return 0
+    fi
+    sleep 0.2
+  done
+  if [[ "${BRIDGE_USE_SETSID:-0}" == 1 ]]; then
+    kill -KILL -"$BRIDGE_PID" 2>/dev/null || true
+  else
+    pkill -KILL -P "$BRIDGE_PID" 2>/dev/null || true
+    kill -KILL "$BRIDGE_PID" 2>/dev/null || true
+  fi
+  wait "$BRIDGE_PID" 2>/dev/null || true
+  BRIDGE_PID=
+}
+
+cleanup() {
+  stop_bridge
 }
 trap cleanup EXIT INT TERM
 
 echo "[start] arm_control_bridge: mode=${MODE} rpi_ip=${IP}"
-"$BRIDGE_SCRIPT" "$MODE" "$IP" &
+BRIDGE_USE_SETSID=0
+if command -v setsid >/dev/null 2>&1; then
+  setsid bash "$BRIDGE_SCRIPT" "$MODE" "$IP" &
+  BRIDGE_USE_SETSID=1
+else
+  bash "$BRIDGE_SCRIPT" "$MODE" "$IP" &
+fi
 BRIDGE_PID=$!
 
 echo "[start] 等待 ${DELAY_S}s 后启动 head …"
 sleep "${DELAY_S}"
 
 echo "[start] head: ${HEAD_SCRIPT} ${HEAD_ARGS[*]:-}"
+set +e
 bash "$HEAD_SCRIPT" "${HEAD_ARGS[@]}"
 RET=$?
+set -e
+
 cleanup
 trap - EXIT INT TERM
 exit "$RET"

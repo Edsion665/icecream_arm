@@ -11,6 +11,7 @@ from typing import Deque, FrozenSet
 from src.config import Settings, load_settings
 from src.listener import IngestionServer
 from src.models import Position, Role, TrackSlot
+from src.pi2head_listener import Pi2HeadServer
 from src.planner import peek_target_track, plan_pick
 from src.speaker import BridgeClient
 from src.tracker import Tracker
@@ -255,6 +256,30 @@ class HeadFSM:
             time.sleep(0.05)
 
 
+def _hold_idle_until_pi_start(settings: Settings, speaker: BridgeClient, pi_server: Pi2HeadServer) -> None:
+    """收到 pi2head ``start`` 前，周期向 bridge 下发全零关节与 claw。"""
+    period = 1.0 / float(settings.idle_bridge_hz)
+    axes = list(settings.idle_axes_rel_deg or [0.0, 0.0, 0.0, 0.0])
+    log.info(
+        "待命：周期 %.2f Hz 向 bridge 下发 idle 全零 joints=%s claw(wrist=%.1f, grip=%s)，"
+        "直至 pi2head TCP 收到 start …",
+        settings.idle_bridge_hz,
+        axes,
+        settings.idle_claw_wrist_deg,
+        settings.idle_grip_state,
+    )
+    while not pi_server.is_started():
+        speaker.send_idle_zeros(
+            axes,
+            wrist_deg=settings.idle_claw_wrist_deg,
+            grip_state=settings.idle_grip_state,
+            context="idle_hold",
+        )
+        if pi_server.wait_started(timeout=period):
+            break
+    log.info("pi2head start 已收到，进入 v3 FSM 主循环")
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser(description="icecream head FSM")
@@ -281,12 +306,17 @@ def main() -> None:
     log.info("ingestion http://%s:%s/ (tcp=%s)", settings.ingest_host, settings.ingest_port, settings.ingest_tcp_port)
     log.info("bridge %s", settings.bridge_base_url)
 
+    pi_server = Pi2HeadServer(settings.pi2head_host, settings.pi2head_tcp_port)
+    pi_server.start_background()
+
     fsm = HeadFSM(settings, tracker, speaker, target_queue)
     try:
+        _hold_idle_until_pi_start(settings, speaker, pi_server)
         fsm.run_forever()
     except KeyboardInterrupt:
         log.info("interrupt")
     finally:
+        pi_server.stop()
         ingest.stop()
         tracker.stop()
 
