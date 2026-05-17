@@ -16,14 +16,19 @@ _PROJECT_ROOT = _HERE.parent
 _MODEL_ROOT = _PROJECT_ROOT / "robotarm"
 
 
+_URDF_V10_PATH = (
+    _MODEL_ROOT
+    / "icecream_arm_model"
+    / "ice_cream_v10.SLDASM"
+    / "urdf"
+    / "ice_cream_v10.SLDASM.urdf"
+)
+
+
 def _resolve_model_root() -> Path:
-    urdf = _MODEL_ROOT / "icecream_arm_model" / "ice_cream_v8.SLDASM" / "urdf" / "ice_cream_v8.SLDASM.urdf"
-    if urdf.is_file():
+    if _URDF_V10_PATH.is_file():
         return _MODEL_ROOT
-    raise FileNotFoundError(
-        "Cannot find robot model assets under "
-        "`icecreamPi/robotarm/icecream_arm_model/...`."
-    )
+    raise FileNotFoundError(f"Cannot find robot URDF: {_URDF_V10_PATH}")
 
 
 def _pin():
@@ -42,7 +47,7 @@ def _pin():
 def _model_and_data():
     pin = _pin()
     model_root = _resolve_model_root()
-    urdf_path = model_root / "icecream_arm_model" / "ice_cream_v8.SLDASM" / "urdf" / "ice_cream_v8.SLDASM.urdf"
+    urdf_path = _URDF_V10_PATH
     package_dirs = [str(model_root / "icecream_arm_model")]
     model, _, _ = pin.buildModelsFromUrdf(str(urdf_path), package_dirs=package_dirs)
     return model, model.createData()

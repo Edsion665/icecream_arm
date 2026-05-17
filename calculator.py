@@ -26,24 +26,24 @@ _RESIDUAL_MODEL_PATH = _PROJECT_ROOT / "gravity" / "gravity_residual_model.npz"
 
 # ---------------------------------------------------------------------------
 # link0→link5 analytic FK (must match test_sim.py for WebSocket / Isaac Sim)
-# Joint origins/axes from ice_cream_v8.SLDASM.urdf — same chain as test_sim.fk_link5.
+# Joint origins/axes from ice_cream_v12.SLDASM.urdf — same chain as test_sim.fk_link5.
 # Fixed origin rotations use R = Rx·Ry·Rz(rpy) (not Rz·Ry·Rx). If Pinocchio/URDF disagree,
 # numeric ``rpy`` in this table may need re-export for this convention.
 # ---------------------------------------------------------------------------
 
 _LINK5_ANALYTIC_JOINTS: tuple[dict[str, np.ndarray], ...] = (
     {
-        "xyz": np.array([0.0, 0.0, 0.102], dtype=float),
+        "xyz": np.array([0.0, 0.0, 0.067], dtype=float),
         "rpy": np.array([0.0, 0.0, 0.0], dtype=float),
         "axis": np.array([0.0, 0.0, -1.0], dtype=float),
     },
     {
-        "xyz": np.array([0.02, -0.03155, 0.0554], dtype=float),
+        "xyz": np.array([0.02, -0.03115, 0.0585], dtype=float),
         "rpy": np.array([1.5707963267949, 0.0, 1.5707963267949], dtype=float),
         "axis": np.array([0.0, 0.0, 1.0], dtype=float),
     },
     {
-        "xyz": np.array([0.31862, 0.0, -0.000025], dtype=float),
+        "xyz": np.array([0.31862, 0.0, 0.0], dtype=float),
         "rpy": np.array([0.0, 0.0, 0.0], dtype=float),
         "axis": np.array([0.0, 0.0, 1.0], dtype=float),
     },
@@ -53,8 +53,8 @@ _LINK5_ANALYTIC_JOINTS: tuple[dict[str, np.ndarray], ...] = (
         "axis": np.array([0.0, 0.0, 1.0], dtype=float),
     },
     {
-        "xyz": np.array([0.09985, 0.0095, -0.028], dtype=float),
-        "rpy": np.array([1.5707963267949, 1.5707963267949, 0.0], dtype=float),
+        "xyz": np.array([0.09985, 0.0, -0.028], dtype=float),
+        "rpy": np.array([-1.5707963267948966, 0.0, -1.5707963267948966], dtype=float),
         "axis": np.array([0.0, 0.0, 1.0], dtype=float),
     },
 )
@@ -230,7 +230,7 @@ def _q_feedback_to_link5_fk_sim(
 
 
 def _resolve_model_root() -> Path:
-    urdf = _MODEL_ROOT / "icecream_arm_model" / "ice_cream_v8.SLDASM" / "urdf" / "ice_cream_v8.SLDASM.urdf"
+    urdf = _MODEL_ROOT / "icecream_arm_model" / "ice_cream_v12.SLDASM" / "urdf" / "ice_cream_v12.SLDASM.urdf"
     if urdf.is_file():
         return _MODEL_ROOT
     raise FileNotFoundError(
@@ -255,7 +255,7 @@ def _pin():
 def _model_and_data():
     pin = _pin()
     model_root = _resolve_model_root()
-    urdf_path = model_root / "icecream_arm_model" / "ice_cream_v8.SLDASM" / "urdf" / "ice_cream_v8.SLDASM.urdf"
+    urdf_path = model_root / "icecream_arm_model" / "ice_cream_v12.SLDASM" / "urdf" / "ice_cream_v12.SLDASM.urdf"
     package_dirs = [str(model_root / "icecream_arm_model")]
     model, _, _ = pin.buildModelsFromUrdf(str(urdf_path), package_dirs=package_dirs)
     return model, model.createData()
