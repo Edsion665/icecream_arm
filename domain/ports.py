@@ -29,7 +29,16 @@ class StateWritePort(Protocol):
 
 class MotorCommandSink(Protocol):
     def send_mit_cmd(self, motors: list[dict[str, float]]) -> None: ...
-    def send_mit_cmd_with_servo(self, motors: list[dict[str, float]], wrist_us: int, gripper_us: int) -> None: ...
+
+    def send_mit_cmd_with_servo(
+        self,
+        motors: list[dict[str, float]],
+        wrist_us: int,
+        gripper_us: int,
+        *,
+        stepper_deg: int = 0,
+        conveyor_run: int = 0,
+    ) -> None: ...
 
 
 class StatePort(StateReadPort, StateWritePort, Protocol):

@@ -14,11 +14,13 @@ import serial  # type: ignore[import]
 from .config import CONFIG, SerialConfig
 from .infra.serial.codec import (
     MIT_CMD_FRAME_LEN,
+    MIT_SERVO_CMD_FRAME_LEN,
     UPLINK_FRAME_LEN,
     decode_mit_cmd_35,
+    decode_mit_cmd_42,
     decode_mit_uplink,
     encode_mit_cmd_35,
-    encode_mit_cmd_39,
+    encode_mit_cmd_42,
 )
 from .state_store import StateStore
 
@@ -61,12 +63,26 @@ class SerialManager(threading.Thread):
     def send_mit_cmd(self, motors: list[dict[str, float]]) -> None:
         self.send_raw(encode_mit_cmd_35(motors))
 
-    def send_mit_cmd_with_servo(self, motors: list[dict[str, float]], wrist_us: int, gripper_us: int) -> None:
-        self.send_raw(encode_mit_cmd_39(motors, wrist_us, gripper_us))
+    def send_mit_cmd_with_servo(
+        self,
+        motors: list[dict[str, float]],
+        wrist_us: int,
+        gripper_us: int,
+        *,
+        stepper_deg: int = 0,
+        conveyor_run: int = 0,
+    ) -> None:
+        self.send_raw(
+            encode_mit_cmd_42(motors, wrist_us, gripper_us, stepper_deg, conveyor_run),
+        )
 
     @staticmethod
     def _is_mit_cmd(data: bytes) -> bool:
-        return len(data) in (MIT_CMD_FRAME_LEN, 39) and data[0] == 0xAA and data[1] == 0x55
+        return (
+            len(data) in (MIT_CMD_FRAME_LEN, MIT_SERVO_CMD_FRAME_LEN)
+            and data[0] == 0xAA
+            and data[1] == 0x55
+        )
 
     def _drop_pending_mit_frames(self) -> None:
         pending: list[bytes] = []
@@ -88,13 +104,27 @@ class SerialManager(threading.Thread):
         with self._debug_lock:
             if self._last_tx_frame is not None:
                 try:
-                    motors, xor_ok = decode_mit_cmd_35(self._last_tx_frame)
-                    tx_decoded = str(motors)
-                    tx_xor_ok = str(xor_ok)
+                    if len(self._last_tx_frame) == MIT_SERVO_CMD_FRAME_LEN:
+                        m42 = decode_mit_cmd_42(self._last_tx_frame)
+                        motors_42, wu, gu, sd, cr, xor_ok = m42
+                        tx_decoded = str(
+                            {
+                                "motors": motors_42,
+                                "wrist_us": wu,
+                                "gripper_us": gu,
+                                "stepper_deg": sd,
+                                "conveyor_run": cr,
+                            },
+                        )
+                        tx_xor_ok = str(xor_ok)
+                    else:
+                        motors, xor_ok = decode_mit_cmd_35(self._last_tx_frame)
+                        tx_decoded = str(motors)
+                        tx_xor_ok = str(xor_ok)
                 except ValueError:
                     tx_decoded = None
                     tx_xor_ok = None
-            if self._last_rx_frame is not None and self._last_rx_kind == "mit39":
+            if self._last_rx_frame is not None and self._last_rx_kind == "mit42":
                 try:
                     motors_d, servo_d = decode_mit_uplink(self._last_rx_frame)
                     rx_decoded = str({"motors": motors_d, "servo": servo_d})
@@ -189,7 +219,7 @@ class SerialManager(threading.Thread):
 
     def _handle_mit(self, raw: bytes) -> None:
         with self._debug_lock:
-            self._last_rx_kind = "mit39"
+            self._last_rx_kind = "mit42"
             self._last_rx_frame = bytes(raw)
         try:
             motors, servo = decode_mit_uplink(raw)
@@ -197,16 +227,19 @@ class SerialManager(threading.Thread):
             return
         for i, m in enumerate(motors):
             self._store.update_mit_feedback(i, m)
+        self._store.update_stm_aux_feedback(servo["stepper_deg"], servo["conveyor_run"])
         self._store.touch_serial_feedback_recv()
         now = time.monotonic()
         if now - self._last_fb_log_mono >= 1.0:
             self._last_fb_log_mono = now
             if self._serial_feedback_fresh_for_log():
                 LOGGER.info(
-                    "[fb] p=[%.4f %.4f %.4f %.4f] t=[%.4f %.4f %.4f %.4f] wrist=%dus gripper=%dus",
+                    "[fb] p=[%.4f %.4f %.4f %.4f] t=[%.4f %.4f %.4f %.4f] "
+                    "wrist=%dus gripper=%dus stepper=%d° conveyor=%d",
                     motors[0]["p"], motors[1]["p"], motors[2]["p"], motors[3]["p"],
                     motors[0]["t"], motors[1]["t"], motors[2]["t"], motors[3]["t"],
                     servo["wrist_us"], servo["gripper_us"],
+                    servo["stepper_deg"], servo["conveyor_run"],
                 )
 
     def _handle_line(self, line: str) -> None:

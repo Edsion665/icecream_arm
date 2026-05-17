@@ -42,8 +42,8 @@ GRIP_OPEN_STATE: float = 1.0
 GRIP_THRESHOLD: float = 0.5
 
 # 以下脉宽映射定义夹爪舵机在 closed/open 两种状态下的目标脉宽（单位：us）。
-GRIP_CLOSED_US: int = 1000
-GRIP_OPEN_US: int = 1400
+GRIP_CLOSED_US: int = 600
+GRIP_OPEN_US: int = 1200
 
 # GRIP_MIT39_INIT_US 是 MIT39 启动阶段使用的夹爪初始脉宽（单位：us），
 # 仅用于 boot/init，故与运行期基于 UDP 状态的开合映射解耦。
@@ -116,13 +116,13 @@ class ControlConfig:
     tau_hz: float = max(1.0, min(500.0, _env_float("ARM_CONTROL_TAU_HZ", 25.0)))
     tau_gain: float = _env_float("ARM_CONTROL_TAU_GAIN", 1.0)
     calibration_rad: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_CAL_R0", -2.69911),
+        _env_float("ARM_CONTROL_CAL_R0", -2.62911),
         _env_float("ARM_CONTROL_CAL_R1", 0.3075),
         _env_float("ARM_CONTROL_CAL_R2", 2.45080),
         _env_float("ARM_CONTROL_CAL_R3", 0.490005),
     )
     hold_kp: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KP_1", 5.0),
+        _env_float("ARM_CONTROL_HOLD_KP_1", 10.0),
         _env_float("ARM_CONTROL_HOLD_KP_2", 60.0),
         _env_float("ARM_CONTROL_HOLD_KP_3", 50.0),
         _env_float("ARM_CONTROL_HOLD_KP_4", 25.0),

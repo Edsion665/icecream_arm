@@ -23,6 +23,9 @@ class FeedbackRegister:
     fb_arm_rad: Optional[tuple[float, float, float, float]] = None
     motors: dict[int, dict[str, Any]] = field(default_factory=dict)
     crc_error_count: int = 0
+    # STM32 上行 v3（docs/pi2stm.md）：步进逻辑位置（°）、传送带 PB6 状态（0/1）。
+    stm_stepper_deg: Optional[int] = None
+    stm_conveyor_run: Optional[int] = None
     # 最近一次成功解析的 STM32 串口关节反馈（MIT 上行整帧或 FB 行）的本地 monotonic 时间戳。
     serial_feedback_mono: float = 0.0
 
@@ -118,6 +121,11 @@ class StateStore:
         with self._lock:
             self._feedback.serial_feedback_mono = monotonic()
 
+    def update_stm_aux_feedback(self, stepper_deg: int, conveyor_run: int) -> None:
+        with self._lock:
+            self._feedback.stm_stepper_deg = int(stepper_deg)
+            self._feedback.stm_conveyor_run = int(conveyor_run)
+
     def inc_crc_error(self) -> None:
         with self._lock:
             self._feedback.crc_error_count += 1
@@ -129,6 +137,8 @@ class StateStore:
                 fb_arm_rad=self._feedback.fb_arm_rad,
                 motors={k: dict(v) for k, v in self._feedback.motors.items()},
                 crc_error_count=self._feedback.crc_error_count,
+                stm_stepper_deg=self._feedback.stm_stepper_deg,
+                stm_conveyor_run=self._feedback.stm_conveyor_run,
                 serial_feedback_mono=float(self._feedback.serial_feedback_mono),
             )
 
