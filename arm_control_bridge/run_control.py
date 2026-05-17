@@ -150,6 +150,18 @@ def run_loop(
                 if c.kind == "stop":
                     log("[runner] estop（当前仅记录，可扩展为保持当前角）")
                     continue
+                if c.kind == "stepper":
+                    state.stepper_deg_cmd = float(
+                        max(-180.0, min(180.0, float(c.payload["stepper_deg"])))
+                    )
+                    log(f"[runner] recv stepper: stepper_deg={state.stepper_deg_cmd:.3f}")
+                    dump_next_udp_frame = True
+                    continue
+                if c.kind == "conveyor":
+                    state.conveyor_run_cmd = float(c.payload["conveyor_run"])
+                    log(f"[runner] recv conveyor: run={state.conveyor_run_cmd:.0f}")
+                    dump_next_udp_frame = True
+                    continue
                 log(f"[runner] recv {c.kind}: {c.payload}")
                 tracker.accept(c.kind)
                 engine.apply_command(c, state)
@@ -175,6 +187,8 @@ def run_loop(
                 dump_next_udp_frame = False
             if arm_motor is not None:
                 arm_motor.send(frame)
+                if state.stepper_deg_cmd != 0.0:
+                    state.stepper_deg_cmd = 0.0
 
             if tracker.waiting:
                 fb = pi_fb.get_fb_arm_rad() if pi_fb is not None else None
@@ -392,6 +406,18 @@ def run_sim_loop(
                 state.servo_deg = np.array([state.wrist_rel_deg, state.grip_state], dtype=float)
                 dump_next_udp_frame = True
                 continue
+            if c.kind == "stepper":
+                state.stepper_deg_cmd = float(
+                    max(-180.0, min(180.0, float(c.payload["stepper_deg"])))
+                )
+                log(f"[sim] recv stepper: stepper_deg={state.stepper_deg_cmd:.3f}")
+                dump_next_udp_frame = True
+                continue
+            if c.kind == "conveyor":
+                state.conveyor_run_cmd = float(c.payload["conveyor_run"])
+                log(f"[sim] recv conveyor: run={state.conveyor_run_cmd:.0f}")
+                dump_next_udp_frame = True
+                continue
             log(f"[sim] recv {c.kind}: {c.payload}")
             tracker.accept(c.kind)
             engine.apply_command(c, state)
@@ -437,6 +463,8 @@ def run_sim_loop(
         if arm_motor is not None:
             try:
                 arm_motor.send(frame)
+                if state.stepper_deg_cmd != 0.0:
+                    state.stepper_deg_cmd = 0.0
             except UDPTransportError as exc:
                 log(f"[sim] UDP 发送失败，退出: {exc}")
                 raise SystemExit(1) from exc

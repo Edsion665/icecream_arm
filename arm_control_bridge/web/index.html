@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>arm_control_bridge — 三类接口测试页</title>
+  <title>arm_control_bridge — 接口测试页</title>
   <style>
     :root { font-family: system-ui, "Segoe UI", sans-serif; background: #1a1d23; color: #e8eaed; }
     body { max-width: 560px; margin: 1.5rem auto; padding: 0 1rem; }
@@ -14,6 +14,7 @@
     input[type="number"], input[type="text"] { width: 100%; box-sizing: border-box; padding: 0.4rem 0.45rem; border-radius: 6px; border: 1px solid #444; background: #2d3139; color: #e8eaed; margin-top: 0.2rem; }
     .row4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.45rem; }
     .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
     button { margin-top: 0.75rem; padding: 0.5rem 0.85rem; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; background: #1a73e8; color: #fff; width: 100%; }
     button.secondary { background: #3c4043; }
     button.warn { background: #5f6368; }
@@ -23,7 +24,7 @@
 </head>
 <body>
   <h1>arm_control_bridge 测试页</h1>
-  <p class="hint">三类接口：关节控制（J1~J4）、舵机控制（wrist+open_close）、位置控制（笛卡尔）。</p>
+  <p class="hint">关节 / 腕爪 / 笛卡尔 / 辅机（步进、传送带）。UDP 下发为 bridge2pi v3（140B）。</p>
   <label>API 基址</label>
   <input type="text" id="base" value="" />
   <section class="card">
@@ -39,6 +40,7 @@
   </section>
   <section class="card">
     <h2>② 舵机信息接口（仅实机）</h2>
+    <p class="hint">夹爪：0=open，1=close（与 bridge2pi 一致）。</p>
     <div class="row3">
       <div><label>wrist_deg</label><input type="number" id="wrist" step="1" value="0" /></div>
       <div><label>open_close（open/close 或 0/1）</label><input type="text" id="openclose" value="open" /></div>
@@ -56,11 +58,21 @@
     </div>
     <button type="button" id="sendAbs" class="warn">POST /api/pose</button>
   </section>
+  <section class="card">
+    <h2>④ 辅机（步进 + 传送带）</h2>
+    <p class="hint">步进：本周期增量角（deg），下一 UDP 帧发出后自动清零。传送带：0=停，1=转（锁存）。</p>
+    <div class="row2">
+      <div><label>stepper_deg</label><input type="number" id="stepperDeg" step="1" value="0" /></div>
+      <div><label>conveyor run（0/1）</label><input type="number" id="conveyorRun" step="1" min="0" max="1" value="0" /></div>
+    </div>
+    <button type="button" id="btnStepper" class="secondary">POST /api/stepper</button>
+    <button type="button" id="btnConveyor" class="secondary">POST /api/conveyor</button>
+  </section>
   <div id="log"></div>
   <script>
     const logEl = document.getElementById("log");
     const baseInput = document.getElementById("base");
-    baseInput.value = window.location.origin || "http://127.0.0.1:8765";
+    baseInput.value = window.location.origin || "http://127.0.0.1:8877";
     function log(msg, isErr) {
       const t = new Date().toISOString().slice(11, 23);
       logEl.textContent = (isErr ? "[ERR] " : "") + t + " " + msg + "\n" + logEl.textContent;
@@ -83,6 +95,14 @@
     document.getElementById("sendAbs").onclick = async () => {
       const body = { x: +x.value, y: +y.value, z: +z.value };
       try { await post("/api/pose", body); log("pose ok " + JSON.stringify(body)); } catch (e) { log(String(e), true); }
+    };
+    document.getElementById("btnStepper").onclick = async () => {
+      const stepper_deg = +stepperDeg.value;
+      try { await post("/api/stepper", { stepper_deg }); log("stepper ok " + JSON.stringify({ stepper_deg })); } catch (e) { log(String(e), true); }
+    };
+    document.getElementById("btnConveyor").onclick = async () => {
+      const run = +conveyorRun.value;
+      try { await post("/api/conveyor", { run }); log("conveyor ok " + JSON.stringify({ run })); } catch (e) { log(String(e), true); }
     };
   </script>
 </body>

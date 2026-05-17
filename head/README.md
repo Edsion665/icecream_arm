@@ -21,7 +21,7 @@
 | 步 | 行为 |
 |---|------|
 | （首） | 每轮开始清空 `target` / `object` 槽（不沿用上一轮） |
-| 1 | `joints` obs1 → `claw`（腕零 + 当前夹爪） |
+| 1 | `joints` obs1 → `claw`（腕零 + **夹爪张开**） |
 | 2 | 在 **obs1** 后等待帧内出现 `target` → `clear` + `apply` target 槽 |
 | 3 | `claw`（obs2 入口腕角）→ `joints` obs2 |
 | 4 | 在 **obs2** 后等待帧内出现 `object` → `clear` + `apply` object 槽 |

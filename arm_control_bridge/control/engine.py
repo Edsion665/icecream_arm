@@ -140,6 +140,8 @@ class CalculatorEngine:
             wrist_rel_deg=float(state.wrist_rel_deg),
             wrist_omega_rad_s=0.0,
             grip_state=float(state.grip_state),
+            stepper_deg_cmd=float(state.stepper_deg_cmd),
+            conveyor_run_cmd=float(state.conveyor_run_cmd),
             mode=state.mode.value,
             timestamp=time.monotonic(),
             joint5_rel_deg=j5_rel,

@@ -18,7 +18,7 @@ from .listener import (
     parse_line,
     start_http_server,
 )
-from .pi_controller import PACKET_V2_SIZE, RPiUDPStreamer, RpiProtocolAdapter, motor, servoMotor
+from .pi_controller import PACKET_V2_SIZE, PACKET_V3_SIZE, RPiUDPStreamer, RpiProtocolAdapter, motor, servoMotor
 from .pi_feedback import PiFeedbackClient
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
     "MotionCommand4Axis",
     "NormalizedCommand",
     "PACKET_V2_SIZE",
+    "PACKET_V3_SIZE",
     "PiFeedbackClient",
     "RPiUDPStreamer",
     "ReplySlot",

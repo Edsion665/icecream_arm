@@ -81,18 +81,41 @@ class CommandNormalizer:
 
     @staticmethod
     def _normalize_grip_state(v: Any) -> float:
-        """与 head 一致：0=合拢 closed，1=张开 open；内部 state.grip_state 存 0/1。"""
+        """与 bridge2pi 一致：0=open，1=close。"""
         if isinstance(v, str):
             s = v.strip().lower()
-            if s in ("open", "1", "true"):
-                return 1.0
-            if s in ("close", "closed", "0", "false"):
+            if s in ("open", "0", "false"):
                 return 0.0
+            if s in ("close", "closed", "1", "true"):
+                return 1.0
             raise ValueError("invalid_value: grip_state 必须为 0/1 或 open/close")
         try:
             x = float(v)
         except (TypeError, ValueError) as ex:
             raise ValueError("invalid_value: grip_state 必须为 0/1") from ex
+        return 1.0 if x >= 0.5 else 0.0
+
+    @staticmethod
+    def _clamp_stepper_deg(v: Any) -> float:
+        try:
+            x = float(v)
+        except (TypeError, ValueError) as ex:
+            raise ValueError("invalid_value: stepper_deg 必须为数字") from ex
+        return float(max(-180.0, min(180.0, x)))
+
+    @staticmethod
+    def _normalize_conveyor_run(v: Any) -> float:
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("0", "stop", "off", "false"):
+                return 0.0
+            if s in ("1", "run", "on", "true"):
+                return 1.0
+            raise ValueError("invalid_value: conveyor run 必须为 0/1")
+        try:
+            x = float(v)
+        except (TypeError, ValueError) as ex:
+            raise ValueError("invalid_value: conveyor run 必须为 0/1") from ex
         return 1.0 if x >= 0.5 else 0.0
 
     @classmethod
@@ -148,6 +171,19 @@ class CommandNormalizer:
             grip_src = grip_state if grip_state is not None else open_close
             payload["grip_state"] = cls._normalize_grip_state(grip_src)
             return ClawCommand(kind="claw", payload=payload)
+        if k in ("stepper",):
+            if "stepper_deg" not in obj:
+                raise ValueError("missing_field: stepper 需要 stepper_deg")
+            payload = dict(obj)
+            payload["stepper_deg"] = cls._clamp_stepper_deg(obj["stepper_deg"])
+            return MotionCommand4Axis(kind="stepper", payload=payload)
+        if k in ("conveyor",):
+            run_val = obj.get("run", obj.get("conveyor_run"))
+            if run_val is None:
+                raise ValueError("missing_field: conveyor 需要 run 或 conveyor_run")
+            payload = dict(obj)
+            payload["conveyor_run"] = cls._normalize_conveyor_run(run_val)
+            return MotionCommand4Axis(kind="conveyor", payload=payload)
         if k in ("stop", "estop", "halt"):
             return MotionCommand4Axis(kind="stop", payload=obj)
         if k in ("ping",):
@@ -381,6 +417,8 @@ def start_http_server(
                 "/api/joints": "joints",
                 "/api/joints_delta": "joints_delta",
                 "/api/claw": "claw",
+                "/api/stepper": "stepper",
+                "/api/conveyor": "conveyor",
             }
             if path not in routes:
                 self._send_json(404, {"ok": False})

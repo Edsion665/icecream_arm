@@ -1,4 +1,4 @@
-"""树莓派控制层：motor + servoMotor（适配 PC<->RPi UDP V2.1）。"""
+"""树莓派控制层：motor + servoMotor（适配 PC<->RPi UDP v3，见 doc/bridge2pi.md）。"""
 
 from __future__ import annotations
 
@@ -11,17 +11,18 @@ from typing import Sequence
 import numpy as np
 
 from ..calculator import JointFrame
-from ..config import CONFIG, ControlConfig
+from ..config import CONFIG
 from ..exceptions import UDPTransportError
 
-# 协议文档：PC_RPI_UDP_PROTOCOL.md
-# 固定 108B: =Id + d*12  (seq, ts, p_rel_deg[6], omega_rad_s[6])
-_FMT_V2 = "=Id" + "d" * 12
-PACKET_V2_SIZE = struct.calcsize(_FMT_V2)
+# bridge2pi v3: =Id + d*16  (seq, ts, p_rel_deg[8], omega_rad_s[8]) -> 140B
+VECTOR_DIM = 8
+_FMT_V3 = "=Id" + "d" * (VECTOR_DIM * 2)
+PACKET_V3_SIZE = struct.calcsize(_FMT_V3)
+PACKET_V2_SIZE = PACKET_V3_SIZE  # 兼容旧导出名
 
 
 class RPiUDPStreamer:
-    """向树莓派发送 V2.1 固定长度 UDP 帧。"""
+    """向树莓派发送 v3 固定长度 UDP 帧。"""
 
     def __init__(
         self,
@@ -35,10 +36,10 @@ class RPiUDPStreamer:
         self.addr = (rpi_ip, port)
         self._seq = 0
         self._strict_udp = strict_udp
-        self._ps = PACKET_V2_SIZE
+        self._ps = PACKET_V3_SIZE
         approx_kbps = self._ps * CONFIG.control_hz / 1024
         print(
-            f"[RPiUDPStreamer] udp://{rpi_ip}:{port} | protocol_v2.1_108B | "
+            f"[RPiUDPStreamer] udp://{rpi_ip}:{port} | protocol_v3_140B | "
             f"{self._ps} B/帧 @ {CONFIG.control_hz:g} Hz ≈ {approx_kbps:.1f} KB/s"
         )
 
@@ -49,12 +50,12 @@ class RPiUDPStreamer:
         servo_deg: Sequence[float] | None = None,
     ) -> None:
         """打包并 ``sendto``；``strict_udp`` 为真时失败抛出 ``UDPTransportError``。"""
-        del servo_deg  # 协议 V2.1 帧内已含 6 维 p/w；保留参数兼容旧调用。
+        del servo_deg
         self._seq += 1
         ts = time.monotonic()
-        p = [float(p_rel_deg[i]) for i in range(6)]
-        w = [float(omega_rad_s[i]) for i in range(6)]
-        payload = struct.pack(_FMT_V2, self._seq, ts, *p, *w)
+        p = [float(p_rel_deg[i]) for i in range(VECTOR_DIM)]
+        w = [float(omega_rad_s[i]) for i in range(VECTOR_DIM)]
+        payload = struct.pack(_FMT_V3, self._seq, ts, *p, *w)
         try:
             self.sock.sendto(payload, self.addr)
         except OSError as exc:
@@ -73,16 +74,19 @@ class RpiProtocolAdapter:
     streamer: RPiUDPStreamer
 
     def send_frame(self, frame: JointFrame) -> None:
-        p6 = np.zeros(6, dtype=float)
-        w6 = np.zeros(6, dtype=float)
-        p6[:4] = frame.arm_rel_deg[:4]
-        # w6[:4] 传 tracking_speed_rad_s，Pi端用作 tracking_ramp 的逐轴速度上限
-        w6[:4] = CONFIG.tracking_speed_rad_s[:4]
-        p6[4] = float(getattr(frame, "wrist_rel_deg", 0.0))
-        w6[4] = float(getattr(frame, "wrist_omega_rad_s", 0.0))
-        p6[5] = float(getattr(frame, "grip_state", 0.0))
-        w6[5] = 0.0
-        self.streamer.send(p6, w6)
+        p8 = np.zeros(VECTOR_DIM, dtype=float)
+        w8 = np.zeros(VECTOR_DIM, dtype=float)
+        p8[:4] = frame.arm_rel_deg[:4]
+        w8[:4] = frame.arm_omega_rad_s[:4]
+        p8[4] = float(getattr(frame, "wrist_rel_deg", 0.0))
+        w8[4] = 0.0
+        p8[5] = float(getattr(frame, "grip_state", 0.0))
+        w8[5] = 0.0
+        p8[6] = float(getattr(frame, "stepper_deg_cmd", 0.0))
+        w8[6] = 0.0
+        p8[7] = float(getattr(frame, "conveyor_run_cmd", 0.0))
+        w8[7] = 0.0
+        self.streamer.send(p8, w8)
 
     def close(self) -> None:
         self.streamer.close()
@@ -106,6 +110,8 @@ class servoMotor:
 
     def send(self, servo_deg: Sequence[float]) -> None:
         sd = np.asarray(servo_deg, dtype=float).ravel()
+        # servo_deg[1]: 0=open, 1=close（与 bridge2pi grip_state 一致）
+        grip = 1.0 if (len(sd) >= 2 and float(sd[1]) >= 0.5) else 0.0
         dummy = JointFrame(
             arm_rel_deg=np.zeros(4, dtype=float),
             joint5_rel_deg=0.0,
@@ -113,7 +119,9 @@ class servoMotor:
             servo_deg=np.array(servo_deg, dtype=float),
             wrist_rel_deg=float(sd[0]) if len(sd) >= 1 else 0.0,
             wrist_omega_rad_s=0.0,
-            grip_state=1.0 if (len(sd) >= 2 and float(sd[1]) >= 0.5) else 0.0,
+            grip_state=grip,
+            stepper_deg_cmd=0.0,
+            conveyor_run_cmd=0.0,
             mode="servo_only",
             timestamp=0.0,
         )

@@ -5,7 +5,7 @@
 `arm_control_bridge` is the control bridge for a 4-axis arm plus claw channel:
 
 - Upper layer → Bridge: TCP / HTTP commands
-- Bridge → Raspberry Pi: UDP binary frames (V2.1, 108B, 25Hz)
+- Bridge → Raspberry Pi: UDP binary frames (v3, 140B, 25Hz)
 - Bridge ← Raspberry Pi: WebSocket state broadcast (pi2camera v1, used for reached detection)
 - Optional Isaac Sim runtime (`--sim`)
 
@@ -26,7 +26,7 @@ run_control.py control loop (25Hz)                                  │
   engine.step()          ← generate JointFrame                     │
   tracker.feed(reached, result)                                    │
   │                                                                 │
-  ├─ io/pi_controller.py → UDP 108B → Raspberry Pi                 │
+  ├─ io/pi_controller.py → UDP 140B → Raspberry Pi                 │
   │                                                                 │
   └─ reply_q (daemon thread)                                        │
        conn.sendall / slot.event.set  ← async reply, non-blocking  │
@@ -58,7 +58,7 @@ io/pi_feedback.py (daemon thread)                                    │
 ### 3) UDP to Pi
 
 - Default target port: `9870` (`CONFIG.default_udp_port`, overridable with `--rpi-port`)
-- Protocol: fixed V2.1 `108B` frame (`=Id + d*12`), 25Hz
+- Protocol: fixed v3 `140B` frame (`=Id + d*16`, 8-dim pos+vel), 25Hz
 - See `doc/bridge2pi.md` for field details
 
 ### 4) Pi feedback (WebSocket)
@@ -114,7 +114,7 @@ Reached detection rules:
 ### Command ingress and protocol I/O (`io/`)
 
 - `io/listener.py`: TCP/HTTP, `CommandNormalizer`, `ReplySlot`, `on_pending`
-- `io/pi_controller.py`: UDP V2.1 framing and `motor` / `servoMotor`
+- `io/pi_controller.py`: UDP v3 framing and `motor` / `servoMotor`
 - `io/pi_feedback.py`: `PiFeedbackClient` (WebSocket)
 
 ### Kinematics and control
@@ -131,7 +131,7 @@ Reached detection rules:
 ### Documentation
 
 - `doc/head2bridge.md`: upper-layer → bridge API spec (v2.2, includes reached reply)
-- `doc/bridge2pi.md`: bridge → Pi UDP spec (V2.1)
+- `doc/bridge2pi.md`: bridge → Pi UDP spec (v3)
 - `doc/pi2camera.md`: Pi → camera/sim WebSocket broadcast spec
 
 ## CLI
@@ -168,7 +168,7 @@ Run these from the repository root (the directory that contains the `arm_control
 
 ### Downlink (Bridge → Pi)
 
-Bridge sends UDP 108B frames at `CONFIG.control_hz`. Set `--rpi-ip` (or default `CONFIG.rpi_ip`) to the Pi address.
+Bridge sends UDP 140B frames at `CONFIG.control_hz`. Set `--rpi-ip` (or default `CONFIG.rpi_ip`) to the Pi address. The HTTP test page also exposes `POST /api/stepper` and `POST /api/conveyor`.
 
 ### Uplink (Pi → Bridge, for reached detection)
 

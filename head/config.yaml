@@ -8,7 +8,7 @@ ingest_tcp_port: null
 
 pi2head_host: "0.0.0.0"
 pi2head_tcp_port: 8778
-idle_axes_rel_deg: [0.0, 0.0, 0.0, 0.0]
+idle_axes_rel_deg: [0.0, 0.0, -20.0, 0.0]
 idle_bridge_hz: 2.0
 idle_claw_wrist_deg: 0.0
 idle_grip_state: 0

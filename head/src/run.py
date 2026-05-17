@@ -32,13 +32,14 @@ class HeadFSM:
     def _cam_wait(self) -> float | None:
         return self.settings.camera_wait_timeout_s
 
-    def _emit_claw(self, wrist_deg: float, label: str) -> None:
-        rep = self.speaker.send_claw(wrist_deg, self.speaker.last_grip_closed, context=label)
+    def _emit_claw(self, wrist_deg: float, label: str, *, closed: bool | None = None) -> None:
+        grip_closed = self.speaker.last_grip_closed if closed is None else closed
+        rep = self.speaker.send_claw(wrist_deg, grip_closed, context=label)
         self.speaker.require_claw(rep, label)
 
-    def _maybe_emit_claw(self, wrist_deg: float, label: str) -> None:
+    def _maybe_emit_claw(self, wrist_deg: float, label: str, *, closed: bool | None = None) -> None:
         if self.settings.emit_claw_on_every_transition:
-            self._emit_claw(wrist_deg, label)
+            self._emit_claw(wrist_deg, label, closed=closed)
 
     def _joints_obs(self, axes: list[float], label: str) -> None:
         rep = self.speaker.send_joints(axes, context=label)
@@ -110,11 +111,11 @@ class HeadFSM:
         self._discard_slot("object", "cycle_start_discard_object")
         self._log_queue("cycle_start (after discard)")
 
-        # 1: 先到 obs1 关节位，再腕零 + 当前夹爪（与抓取/放置后回程顺序一致）
-        log.info("step1: joints obs1 first, then claw wrist=%.3f (same grip)", tw)
+        # 1: 先到 obs1 关节位，再腕零 + 夹爪张开
+        log.info("step1: joints obs1 first, then claw wrist=%.3f + grip open", tw)
         self._joints_obs(list(s.observe1_axes_rel_deg), "step1_obs1_joints")
-        self._emit_claw(tw, "step1_claw_wrist0")
-        self._maybe_emit_claw(tw, "step1_emit_dup")
+        self._emit_claw(tw, "step1_claw_wrist0_open", closed=False)
+        self._maybe_emit_claw(tw, "step1_emit_dup", closed=False)
         self._invalidate_camera_cache("after_step1_obs1_before_wait_target")
 
         # 2: wait camera target; clear + apply target from last frame

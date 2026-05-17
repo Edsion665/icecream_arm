@@ -5,7 +5,7 @@
 `arm_control_bridge` 是 4 轴主臂 + 抓手通道的控制桥接模块：
 
 - 上层策略 → Bridge：TCP / HTTP 命令
-- Bridge → 树莓派：UDP 二进制帧（V2.1，108B，25Hz）
+- Bridge → 树莓派：UDP 二进制帧（v3，140B，25Hz）
 - Bridge ← 树莓派：WebSocket 状态广播（pi2camera v1，用于到位判定）
 - 可选 Isaac Sim 运行模式（`--sim`）
 
@@ -26,7 +26,7 @@ run_control.py 控制循环（25Hz）                                     │
   engine.step()          ← 生成 JointFrame                          │
   tracker.feed(reached, result)                                     │
   │                                                                 │
-  ├─ io/pi_controller.py → UDP 108B → 树莓派                        │
+  ├─ io/pi_controller.py → UDP 140B → 树莓派                        │
   │                                                                 │
   └─ reply_q (daemon 线程)                                          │
        conn.sendall / slot.event.set  ← 异步回传，不阻塞控制循环    │
@@ -58,7 +58,7 @@ io/pi_feedback.py (daemon 线程)                                       │
 ### 3) 下发到 Pi 的 UDP
 
 - 默认目标端口：`9870`（`CONFIG.default_udp_port`，可用 `--rpi-port` 覆盖）
-- 协议：固定 V2.1 `108B`（`=Id + d*12`），25Hz
+- 协议：固定 v3 `140B`（`=Id + d*16`，8 维位置+速度），25Hz
 - 详见 `doc/bridge2pi.md`
 
 ### 4) 接收 Pi 回传（WebSocket）
@@ -116,7 +116,7 @@ io/pi_feedback.py (daemon 线程)                                       │
 ### 命令入口与协议 I/O（`io/`）
 
 - `io/listener.py`：TCP/HTTP、`CommandNormalizer`、`ReplySlot`、`on_pending`
-- `io/pi_controller.py`：UDP V2.1 帧与 `motor` / `servoMotor`
+- `io/pi_controller.py`：UDP v3 帧与 `motor` / `servoMotor`
 - `io/pi_feedback.py`：`PiFeedbackClient`（WebSocket）
 
 ### 运动学与控制
@@ -133,7 +133,7 @@ io/pi_feedback.py (daemon 线程)                                       │
 ### 文档
 
 - `doc/head2bridge.md`：上层 → bridge API 规范（v2.2，含到位回传）
-- `doc/bridge2pi.md`：bridge → Pi UDP 规范（V2.1）
+- `doc/bridge2pi.md`：bridge → Pi UDP 规范（v3）
 - `doc/pi2camera.md`：Pi → 相机/仿真 WebSocket 广播规范
 
 ## 命令行（CLI）
@@ -170,7 +170,7 @@ io/pi_feedback.py (daemon 线程)                                       │
 
 ### 下行（Bridge → Pi）
 
-Bridge 以 `CONFIG.control_hz` 向 Pi 发送 UDP 108B 帧；`--rpi-ip` 或默认 `CONFIG.rpi_ip` 指定 Pi 地址。
+Bridge 以 `CONFIG.control_hz` 向 Pi 发送 UDP 140B 帧；`--rpi-ip` 或默认 `CONFIG.rpi_ip` 指定 Pi 地址。HTTP 测试页另支持 `POST /api/stepper`、`POST /api/conveyor`。
 
 ### 上行（Pi → Bridge，用于到位判定）
 

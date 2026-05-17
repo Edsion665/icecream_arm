@@ -95,12 +95,12 @@
 输入要求（必须同时提供）：
 
 1. `wrist_deg`（手腕角度，单位度）
-2. 夹爪状态（`grip_state` 或 `open_close`），最终归一到 `0/1`（**`0=合拢`，`1=张开`**）
+2. 夹爪状态（`grip_state` 或 `open_close`），最终归一到 `0/1`（**`0=open`，`1=close`**，与 `docs/bridge2pi.md` 一致）
 
 映射到 bridge->pi 帧：
 
 - `wrist_deg -> p_rel_deg[4]`（仅角度）
-- `grip_state/open_close -> p_rel_deg[5]`（仅状态：**`0=合拢`，`1=张开`**）
+- `grip_state/open_close -> p_rel_deg[5]`（仅状态：**`0=open`，`1=close`**）
 
 约束：
 
@@ -132,7 +132,23 @@
 
 **到达确认（v2.2）**：与 `pose` 相同，到位后响应中返回 `actual_pose`（或等价字段），表示本次增量运动完成后的实测末端位置。
 
-### 4.6 其他命令
+### 4.6 辅机接口：`stepper` / `conveyor`
+
+`stepper`（步进增量，deg）
+
+| 字段 | 类型 | 必选 | 说明 |
+|---|---|---:|---|
+| `stepper_deg` | number | 是 | 限幅 `[-180, 180]`；写入下一 UDP 周期的 `p_rel_deg[6]`，发出后 bridge 自动清零 |
+
+`conveyor`（传送带启停）
+
+| 字段 | 类型 | 必选 | 说明 |
+|---|---|---:|---|
+| `run` 或 `conveyor_run` | number | 是 | `0=停`，`1=转`；锁存至 `p_rel_deg[7]` |
+
+HTTP：`POST /api/stepper`、`POST /api/conveyor`。
+
+### 4.7 其他命令
 
 - `stop`（别名 `estop/halt`）：当前仅记录，不执行硬停。
 - `ping`：连通性检查。
@@ -174,6 +190,8 @@
 - `POST /api/joints` -> `cmd=joints`
 - `POST /api/joints_delta` -> `cmd=joints_delta`
 - `POST /api/claw` -> `cmd=claw`
+- `POST /api/stepper` -> `cmd=stepper`
+- `POST /api/conveyor` -> `cmd=conveyor`
 
 **笛卡尔**（`pose` / `pose_delta`）成功且已到达时，响应体示例：
 
@@ -216,6 +234,8 @@
 {"cmd":"joints","axes_rel_deg":[0,10,-90,-70]}
 {"cmd":"joints_delta","deltas_rel_deg":[0,0,2,-1]}
 {"cmd":"claw","wrist_deg":20,"open_close":"close"}
+{"cmd":"stepper","stepper_deg":15}
+{"cmd":"conveyor","run":1}
 {"cmd":"pose","x":0.35,"y":0.20,"z":0.25}
 ```
 

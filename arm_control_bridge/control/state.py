@@ -31,6 +31,8 @@ class JointFrame:
     wrist_rel_deg: float
     wrist_omega_rad_s: float
     grip_state: float
+    stepper_deg_cmd: float
+    conveyor_run_cmd: float
     mode: str
     timestamp: float
     joint5_rel_deg: float = 0.0
@@ -49,7 +51,9 @@ class CalculatorState:
     joint_rel_deg_4: np.ndarray = field(default_factory=lambda: np.zeros(ARM_AXES, dtype=float))
     servo_deg: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
     wrist_rel_deg: float = 0.0
-    grip_state: float = 1.0  # 0=合拢 1=张开；默认张开
+    grip_state: float = 0.0  # 0=open 1=close；默认 open
+    stepper_deg_cmd: float = 0.0
+    conveyor_run_cmd: float = 0.0
     q_full: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     q_cmd: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     initialized: bool = False
