@@ -1,6 +1,6 @@
-# PC <-> RPi UDP Protocol (V2)
+# PC <-> RPi UDP Protocol (V3)
 
-This document defines the PC-to-Raspberry-Pi UDP packet used by `icecreamPi`.
+This document mirrors **`docs/bridge2pi.md` v3** for English readers and defines the PC-to-Raspberry-Pi UDP packet consumed by `icecreamPi`.
 
 ## Transport
 
@@ -10,34 +10,38 @@ This document defines the PC-to-Raspberry-Pi UDP packet used by `icecreamPi`.
 
 ## Binary Layout
 
-The packet is fixed-size and uses Python struct format:
+Fixed-size packet; Python struct:
 
-`=Idddddddddd`
+`=Id` + `d` × **16**
 
 - `=`: native endian, standard size, no alignment padding
 - `I`: `seq` (`uint32`)
-- `d`: `ts` (`float64`, sender monotonic/system timestamp, seconds)
-- `d x 5`: `p_rel_deg[5]` (`float64[5]`, relative joint angles in degree)
-- `d x 5`: `omega_rad_s[5]` (`float64[5]`, joint velocities in rad/s)
+- `d`: `ts` (`float64`, sender timestamp, seconds)
+- `d` × **8**: `p_rel_deg[8]` (`float64`, degrees / semantic floats per axis)
+- `d` × **8**: `omega_rad_s[8]` (`float64`, rad/s)
 
-Total size: 92 bytes.
+**Total size: 140 bytes.**
+
+Semantic indices:
+
+| Index | `p_rel_deg` | `omega_rad_s` |
+|---:|---|---|
+| 0–3 | Arm joints J1–J4 (deg) | Joint velocities (rad/s) |
+| 4 | `wrist_deg` | `0.0` |
+| 5 | `grip_state` (`0=open`, `1=close` recommended) | `0.0` |
+| 6 | `stepper_deg` incremental command (deg), same meaning as `docs/pi2stm.md` downlink | `0.0` |
+| 7 | `conveyor_run` (`0.0` stop / `1.0` run) | `0.0` |
+
+Pi clamps `[6]` to `[-180, 180]` (integer degrees after rounding) and binarizes `[7]` with the same threshold used for grip (`>= 0.5` → `1`), then forwards both into the **42-byte** MIT UART frame (`encode_mit_cmd_42`).
 
 ## Field Semantics
 
-- `seq`
-  - Monotonic incrementing frame index from PC sender.
-  - Used for packet loss detection.
-- `ts`
-  - Sender timestamp in seconds.
-  - Can be used for latency estimation (optional).
-- `p_rel_deg`
-  - Relative angle against calibration zero.
-  - V2 consumes first 4 joints for motor command generation.
-  - 5th value is `joint5_rel_deg` and is used for FK broadcast (`link5_hmat`).
-- `omega_rad_s`
-  - Joint angular velocities.
-  - V2 consumes first 4 joints.
-  - 5th value is reserved.
+- `seq`: monotonic frame index (loss detection).
+- `ts`: sender time (seconds); optional latency use.
+- First four positions drive MIT motor targets after calibration mapping (unchanged).
+- `p_rel_deg[4]` feeds FK / wrist servo path.
+- `p_rel_deg[5]` is gripper discrete state (not FK).
+- `p_rel_deg[6..7]` are forwarded to STM32 **in the same control cycle** as CAN + servos.
 
 ## Mapping in RPi Controller
 
@@ -60,10 +64,10 @@ Velocity follows the same sign mapping.
 
 ## Compatibility Notes
 
-- STM32 serial protocol remains unchanged.
-- This UDP protocol is PC<->RPi only.
+- UART Pi ↔ STM32 uses MIT **v3** (**42** bytes). See `docs/pi2stm.md`.
+- Legacy **108-byte** UDP payloads are **rejected** by `icecreamPi/listener.py`.
 
-## WS State Broadcast (V2)
+## WS State Broadcast
 
 In addition to UDP intake, RPi broadcasts runtime state over WebSocket:
 
@@ -79,8 +83,8 @@ In addition to UDP intake, RPi broadcasts runtime state over WebSocket:
     "udp": {
       "seq": 1234,
       "age_ms": 18.7,
-      "p_rel_deg": [0.0, 10.0, -20.0, 5.0, 0.0],
-      "omega_rad_s": [0.0, 0.2, -0.3, 0.1, 0.0]
+      "p_rel_deg": [0.0, 10.0, -20.0, 5.0, 0.0, 1.0, 0.0, 0.0],
+      "omega_rad_s": [0.0, 0.2, -0.3, 0.1, 0.0, 0.0, 0.0, 0.0]
     },
     "feedback": {
       "mit_arm_rad": [1.57, 1.20, -0.40, 0.30],
@@ -126,4 +130,3 @@ In addition to UDP intake, RPi broadcasts runtime state over WebSocket:
   - joint5 uses UDP relative degree by bridge2pi convention.
 - Nullable behavior:
   - if feedback is unavailable, UDP has not been received, or FK computation fails, value is `null`.
-

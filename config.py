@@ -21,10 +21,10 @@ MOTOR_AXIS_SIGN: tuple[float, float, float, float] = (-1.0, -1.0, 1.0, 1.0)
 # 它会在 Pinocchio 输出并投影到电机空间之后生效，主要用于实机逐轴精细调参。
 GRAVITY_AXIS_SCALE: tuple[float, float, float, float] = (1.0, 1.3, 1.2, 1.2)
 
-# 以下常量定义 bridge2pi 的 UDP 二进制帧格式。当前协议为：
-# seq(uint32) + ts(float64) + p_rel_deg[6](float64) + omega_rad_s[6](float64)。
+# 以下常量定义 bridge2pi 的 UDP 二进制帧格式。当前协议为（与 ``docs/bridge2pi.md`` v3 一致）：
+# seq(uint32) + ts(float64) + p_rel_deg[8](float64) + omega_rad_s[8](float64)。
 # UDP_PACKET_FMT/UDP_PACKET_SIZE/UDP_VECTOR_DIM 必须保持一致，修改任一项时需同步检查其余项。
-UDP_VECTOR_DIM: int = 6
+UDP_VECTOR_DIM: int = 8
 UDP_PACKET_FMT: str = "=Id" + "d" * (UDP_VECTOR_DIM * 2)
 UDP_PACKET_SIZE: int = 4 + 8 + UDP_VECTOR_DIM * 8 * 2
 
@@ -33,6 +33,7 @@ UDP_PACKET_SIZE: int = 4 + 8 + UDP_VECTOR_DIM * 8 * 2
 WRIST_MIN_DEG: float = -180.0
 WRIST_MAX_DEG: float = 180.0
 
+# p_rel_deg[6]/[7] 映射至 Pi→STM32 42B 帧的步进增量角与传送带启停（见 ``docs/pi2stm.md``）。
 # 夹爪状态语义通过 UDP 的 p_rel_deg[5] 传输。约定 0.0 为闭合、1.0 为张开，
 # 中间值可通过阈值转换为离散开合指令。
 GRIP_CLOSED_STATE: float = 0.0

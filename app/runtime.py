@@ -13,7 +13,13 @@ from ..calculator import warmup_gravity_model_pinocchio
 from ..config import CONFIG
 from ..controller import ArmController
 from ..domain.ports import MotorCommandSink, StatePort
-from ..infra.udp.packet import decode_udp_servo, grip_state_to_us, mit39_init_pulse_us, wrist_deg_to_us
+from ..infra.udp.packet import (
+    decode_udp_pi2stm_aux,
+    decode_udp_servo,
+    grip_state_to_us,
+    mit39_init_pulse_us,
+    wrist_deg_to_us,
+)
 from ..listener import UdpListener
 from ..serial import SerialManager
 from ..infra.pi2camera.broadcast import run_pi2camera_udp_broadcast
@@ -89,12 +95,15 @@ async def run_control_loop(
         udp = store.snapshot_udp()
         p_eff = controller.effective_udp_p_rel_deg()
         udp_servo_ok = False
+        _stepper_deg = 0
+        _conveyor_run = 0
         if CONFIG.udp.enabled:
             try:
                 _wrist_us, _gripper_us = decode_udp_servo(p_eff)
+                _stepper_deg, _conveyor_run = decode_udp_pi2stm_aux(p_eff)
                 udp_servo_ok = True
             except ValueError:
-                logger.warning("UDP servo decode failed: p_rel_deg=%s", p_eff)
+                logger.warning("UDP servo/aux decode failed: p_rel_deg=%s", p_eff)
         rt = store.snapshot_runtime()
         sc = rt.servo_command
         if sc:
@@ -108,12 +117,20 @@ async def run_control_loop(
             if 'gripper_us' in data:
                 _gripper_us = max(500, min(2500, int(data['gripper_us'])))
         if cmds:
-            serial_mgr.send_mit_cmd_with_servo(cmds, _wrist_us, _gripper_us)
+            serial_mgr.send_mit_cmd_with_servo(
+                cmds,
+                _wrist_us,
+                _gripper_us,
+                stepper_deg=_stepper_deg,
+                conveyor_run=_conveyor_run,
+            )
         elif controller.serial_feedback_alive() and udp_servo_ok:
             serial_mgr.send_mit_cmd_with_servo(
                 [dict(m) for m in SERVO_ONLY_MOTOR_CMDS],
                 _wrist_us,
                 _gripper_us,
+                stepper_deg=_stepper_deg,
+                conveyor_run=_conveyor_run,
             )
         fb = store.snapshot_feedback()
         rt = store.snapshot_runtime()
@@ -126,15 +143,29 @@ async def run_control_loop(
             _last_trace_log_mono = now
             stm32_fz = not controller.serial_feedback_alive()
             udp_pc = controller.udp_pc_link_state_label()
+            udp_omega = (
+                [round(float(v), 4) for v in udp.omega_rad_s[:4]]
+                if udp.recv_mono > 0.0
+                else None
+            )
+            udp_target = controller.udp_motor_target_p_rad()
+            if udp_target is not None:
+                udp_target = [round(v, 4) for v in udp_target]
+            ramp_vmax = controller.last_tracking_ramp_vmax_rad_s()
+            if ramp_vmax is not None:
+                ramp_vmax = [round(v, 4) for v in ramp_vmax]
             logger.info(
-                "[trace] freeze STM32=%s PC_UDP=%s | seq=%s src=%s reason=%s udp_p=%s cmd_p=%s "
-                "cmd_kd=%s fb_p=%s fb_t=%s",
+                "[trace] freeze STM32=%s PC_UDP=%s | seq=%s src=%s reason=%s "
+                "udp_p=%s udp_omega=%s ramp_vmax=%s udp_target=%s cmd_p=%s cmd_kd=%s fb_p=%s fb_t=%s",
                 "冻结" if stm32_fz else "正常",
                 udp_pc,
                 udp.seq,
                 rt.control_source,
                 rt.safety_reason,
                 [round(v, 4) for v in p_eff[:4]],
+                udp_omega,
+                ramp_vmax,
+                udp_target,
                 [round(float(m.get("p", 0.0)), 4) for m in cmds] if cmds else None,
                 [round(float(m.get("kd", 0.0)), 4) for m in cmds] if cmds else None,
                 [round(float(v), 4) for v in fb.mit_arm_rad] if fb.mit_arm_rad else None,

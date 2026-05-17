@@ -8,13 +8,19 @@ from threading import Lock
 from time import monotonic
 from typing import Any, Optional
 
+from .config import UDP_VECTOR_DIM
+
+
+def _udp_vector_zeros() -> tuple[float, ...]:
+    return (0.0,) * UDP_VECTOR_DIM
+
 
 @dataclass
 class UdpRegister:
     seq: int = -1
     recv_mono: float = 0.0
-    p_rel_deg: tuple[float, float, float, float, float, float] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    omega_rad_s: tuple[float, float, float, float, float, float] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    p_rel_deg: tuple[float, ...] = field(default_factory=_udp_vector_zeros)
+    omega_rad_s: tuple[float, ...] = field(default_factory=_udp_vector_zeros)
 
 
 @dataclass
@@ -75,8 +81,8 @@ class StateStore:
     def update_udp(
         self,
         seq: int,
-        p_rel_deg: tuple[float, float, float, float, float, float],
-        omega_rad_s: tuple[float, float, float, float, float, float],
+        p_rel_deg: tuple[float, ...],
+        omega_rad_s: tuple[float, ...],
     ) -> None:
         with self._lock:
             self._udp.seq = int(seq)

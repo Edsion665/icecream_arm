@@ -35,13 +35,14 @@ class ArmController:
         self._hold_p_latch: list[float] | None = None
         self._prev_serial_alive: bool = False
         self._prev_udp_frozen: bool = False
-        self._udp_latch_p: tuple[float, float, float, float, float, float] | None = None
-        self._udp_latch_omega: tuple[float, float, float, float, float, float] | None = None
+        self._udp_latch_p: tuple[float, ...] | None = None
+        self._udp_latch_omega: tuple[float, ...] | None = None
         self._udp_latch_valid: bool = False
         self._last_build_udp_latched: bool = False
         # 持续限速 ramp：safe_gate 完成后接管，每帧向最新 UDP 目标步进
         self._ramp_p: list[float] | None = None
         self._ramp_last_mono: float = 0.0
+        self._last_ramp_vmax_rad_s: tuple[float, float, float, float] | None = None
 
     def _select_feedback_rad(self) -> tuple[float, float, float, float] | None:
         fb = self._store.snapshot_feedback()
@@ -85,8 +86,8 @@ class ArmController:
 
     def _udp_to_motor_pv_from(
         self,
-        p_rel_deg: tuple[float, float, float, float, float, float],
-        omega_rad_s: tuple[float, float, float, float, float, float],
+        p_rel_deg: tuple[float, ...],
+        omega_rad_s: tuple[float, ...],
     ) -> tuple[list[float], list[float]]:
         cal = self._store.get_calibration_rad()
         return udp_rel_to_motor_pv(cal, p_rel_deg, omega_rad_s)
@@ -97,7 +98,7 @@ class ArmController:
         ok, _ = self._udp_fresh()
         return not ok
 
-    def effective_udp_p_rel_deg(self) -> tuple[float, float, float, float, float, float]:
+    def effective_udp_p_rel_deg(self) -> tuple[float, ...]:
         """供舵机 UDP 解码：新鲜帧或 PC 断链时的锁存帧。"""
         if self._udp_cfg.enabled and self._udp_latch_valid:
             assert self._udp_latch_p is not None
@@ -122,11 +123,29 @@ class ArmController:
             return "无帧"
         return "过期无锁存"
 
+    def udp_motor_target_p_rad(self) -> list[float] | None:
+        """锁存 UDP 映射后的四轴目标角（rad），未经 ramp。"""
+        if not self._udp_latch_valid or self._udp_latch_p is None:
+            return None
+        o = self._udp_latch_omega if self._udp_latch_omega is not None else (0.0,) * 8
+        p_cmd, _ = self._udp_to_motor_pv_from(self._udp_latch_p, o)
+        return [float(p_cmd[i]) for i in range(4)]
+
+    def last_tracking_ramp_vmax_rad_s(self) -> list[float] | None:
+        """上一周期 tracking_ramp 使用的每轴速度上限 (rad/s)，来自 config.max_cmd_speed_rad_s。"""
+        if self._last_ramp_vmax_rad_s is None:
+            return None
+        return [float(v) for v in self._last_ramp_vmax_rad_s]
+
+    def _tracking_ramp_vmax_rad_s(self) -> tuple[float, float, float, float]:
+        """跟踪时 cmd_p 向 UDP 目标靠拢的每轴最大角速度 (rad/s)。"""
+        return tuple(max(1e-4, float(v)) for v in self._cfg.max_cmd_speed_rad_s)
+
     def _apply_tracking_ramp(
         self, target_p: list[float], vmax: tuple[float, ...]
     ) -> tuple[list[float], list[float]]:
-        """从 _ramp_p 向 target_p 以 vmax 限速步进（vmax 由 UDP omega_rad_s[:4] 传入）。
-        target_p 每帧取最新 UDP 目标，途中更新终点立即生效。
+        """从 _ramp_p 向 target_p 以 vmax 限速步进（rad/s）。
+        target_p 每帧取最新 UDP 映射目标，途中更新终点立即生效。
         """
         now = monotonic()
         dt = now - self._ramp_last_mono
@@ -141,7 +160,7 @@ class ArmController:
         out_v = [0.0, 0.0, 0.0, 0.0]
         for i in range(4):
             err = target_p[i] - self._ramp_p[i]
-            v = max(1e-4, float(vmax[i]))
+            v = float(vmax[i])
             step = max(-v * dt, min(v * dt, err))
             self._ramp_p[i] += step
             out_v[i] = step / dt
@@ -250,8 +269,9 @@ class ArmController:
                 source = "safe_gate"
                 reason = "udp_latch_gate_ramp" if udp_frozen else "startup_first_frame_ramp"
             else:
-                vmax_udp = tuple(max(1e-4, float(o_rad[i])) for i in range(4))
-                p_cmd, v_cmd = self._apply_tracking_ramp(p_cmd, vmax_udp)
+                vmax = self._tracking_ramp_vmax_rad_s()
+                self._last_ramp_vmax_rad_s = vmax
+                p_cmd, v_cmd = self._apply_tracking_ramp(p_cmd, vmax)
                 source = "tracking_ramp"
                 reason = "udp_stale_latched" if udp_frozen else "ok"
             self._hold_p_latch = [float(x) for x in p_cmd]

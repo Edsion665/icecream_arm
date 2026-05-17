@@ -16,7 +16,7 @@ from ...config import (
     WRIST_MAX_DEG,
     WRIST_MIN_DEG,
 )
-from ..serial.codec import SERVO_CENTER_US, SERVO_MAX_US
+from ..serial.codec import SERVO_CENTER_US, SERVO_MAX_US, STEPPER_DEG_RANGE
 
 assert UDP_PACKET_SIZE == struct.calcsize(UDP_PACKET_FMT)
 
@@ -45,10 +45,25 @@ def grip_state_to_us(grip_state: float) -> int:
 
 
 def decode_udp_servo(p_rel_deg: Sequence[float]) -> tuple[int, int]:
-    """Decode bridge2pi v2.1 p_rel_deg[4:6] into (wrist_us, gripper_us)."""
+    """Decode bridge2pi ``p_rel_deg[4:6]`` into (wrist_us, gripper_us)."""
     if len(p_rel_deg) < 6:
         raise ValueError("p_rel_deg must contain wrist_deg and grip_state")
     return wrist_deg_to_us(float(p_rel_deg[4])), grip_state_to_us(float(p_rel_deg[5]))
+
+
+def decode_udp_pi2stm_aux(p_rel_deg: Sequence[float]) -> tuple[int, int]:
+    """Map bridge2pi v3 ``p_rel_deg[6], p_rel_deg[7]`` to ``encode_mit_cmd_42`` 参数。
+
+    - ``stepper_deg``：与 ``docs/pi2stm.md`` 下行一致，**增量角**（度），Pi 侧 round 后限幅到 ``STEPPER_DEG_RANGE``。
+    - ``conveyor_run``：float 语义 ``0≈停 / 1≈转``，用 ``GRIP_THRESHOLD`` 同一阈值离散化为 ``0|1``。
+    """
+    if len(p_rel_deg) < 8:
+        raise ValueError("bridge2pi v3 requires len(p_rel_deg) >= 8 for stepper_deg and conveyor_run")
+    raw_s = int(round(float(p_rel_deg[6])))
+    lo, hi = STEPPER_DEG_RANGE
+    stepper_deg = max(lo, min(hi, raw_s))
+    conveyor_run = 1 if float(p_rel_deg[7]) >= GRIP_THRESHOLD else 0
+    return stepper_deg, conveyor_run
 
 
 def mit39_init_pulse_us() -> tuple[int, int]:
