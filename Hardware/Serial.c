@@ -45,7 +45,7 @@ static void queue_push_line(const char *line)
 }
 
 /*================ 二进制下行帧接收状态机 ================*/
-#define BIN_FRAME_LEN  39u
+#define BIN_FRAME_LEN  RPI_BIN_FRAME_LEN
 #define BIN_QUEUE_DEPTH 4u
 
 static uint8_t  s_bin_buf[BIN_FRAME_LEN];

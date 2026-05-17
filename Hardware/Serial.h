@@ -22,8 +22,8 @@ extern volatile uint8_t g_rpi_line_ready;
 extern char g_rpi_line[RPI_LINE_MAX_LEN];
 uint8_t Serial_GetNextLine(char *out, uint16_t cap);
 
-/*================ 二进制下行帧（RPI → STM32） ================*/
-#define RPI_BIN_FRAME_LEN  39u
+/*================ 二进制帧（RPI <-> STM32，v3 固定 42 字节） ================*/
+#define RPI_BIN_FRAME_LEN  42u
 typedef struct {
     uint8_t data[RPI_BIN_FRAME_LEN];
 } RpiBinFrame_t;

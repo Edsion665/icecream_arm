@@ -21,6 +21,10 @@
 #ifndef STEPPER_DIR_SETUP_MS
 #define STEPPER_DIR_SETUP_MS        2u      /* DIR 建立时间，再出 STEP */
 #endif
+/* 与 main 循环 Delay_ms(INTERVAL_MS) 一致，用于非阻塞 DIR 等待 */
+#ifndef STEPPER_UPDATE_PERIOD_MS
+#define STEPPER_UPDATE_PERIOD_MS    2u
+#endif
 #ifndef STEPPER_DEG_MIN
 #define STEPPER_DEG_MIN             (-180.0f)
 #endif
@@ -30,7 +34,7 @@
 
 /*================ 上电测试 ================*/
 #ifndef STEPPER_TEST_ENABLE
-#define STEPPER_TEST_ENABLE         1
+#define STEPPER_TEST_ENABLE         0
 #endif
 
 #if STEPPER_TEST_ENABLE
@@ -69,7 +73,13 @@ float Stepper_GetSpeedRPM(void);
 void Stepper_Stop(void);
 int32_t Stepper_GetPosSteps(void);
 
-/* 增量转角 [STEPPER_DEG_MIN, STEPPER_DEG_MAX]，负=反向；转速见 STEPPER_MOVE_RPM */
+/* 下行目标：增量角 °，非 0 时由 Stepper_Update 非阻塞执行 */
+void Stepper_SetTargetDeltaDeg(float deg);
+void Stepper_Update(void);
+uint8_t Stepper_IsBusy(void);
+int16_t Stepper_GetLogicalDeg(void);
+
+/* 阻塞式一次转完（测试用）；正常运行请用 SetTargetDeltaDeg + Update */
 void Stepper_MoveDegrees(float deg);
 
 #if STEPPER_TEST_ENABLE

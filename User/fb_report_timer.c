@@ -3,41 +3,49 @@
 #include "MotorControl/motor_can.h"
 #include "../Hardware/Serial.h"
 #include "../Hardware/Servo.h"
+#include "../Hardware/Stepper.h"
+#include "../Hardware/Conveyor.h"
+#include "serial_frame.h"
 #include "stm32f10x.h"
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_tim.h"
 
 #if MOTOR_DEBUG_LOG_ENABLE || MIT_HEX_MODE
 /*
- * 上行二进制帧：0xAA 0x55 + 4×8字节原始CAN + wrist_us(BE) + gripper_us(BE) + XOR = 39字节
+ * 上行 v3：42 字节，布局见 pi2stm.md / serial_frame.h
  */
 static void FB_Report_SendBinaryUplink(const Motor_Status_t snap[MOTOR_NUM])
 {
-    uint8_t frame[39];
+    uint8_t frame[RPI_BIN_FRAME_LEN];
     int i, b;
-    uint8_t x;
     uint16_t wrist_us, gripper_us;
+    int16_t stepper_deg;
 
-    frame[0] = 0xAA;
+    frame[RPI_OFF_HEADER0] = 0xAA;
     frame[1] = 0x55;
     for (i = 0; i < 4; i++) {
-        uint8_t *dst = &frame[2 + i * 8];
+        uint8_t *dst = &frame[RPI_OFF_MOTOR0 + i * 8];
         for (b = 0; b < 8; b++) {
             dst[b] = (b < (int)snap[i].raw_dlc) ? snap[i].raw_frame[b] : 0x00;
         }
     }
     wrist_us   = Servo_GetCurrentWristUs();
     gripper_us = Servo_GetCurrentGripperUs();
-    frame[34] = (uint8_t)(wrist_us >> 8);
-    frame[35] = (uint8_t)(wrist_us & 0xFFu);
-    frame[36] = (uint8_t)(gripper_us >> 8);
-    frame[37] = (uint8_t)(gripper_us & 0xFFu);
-    x = 0;
-    for (i = 0; i < 38; i++) {
-        x ^= frame[i];
+    frame[RPI_OFF_WRIST_US]     = (uint8_t)(wrist_us >> 8);
+    frame[RPI_OFF_WRIST_US + 1] = (uint8_t)(wrist_us & 0xFFu);
+    frame[RPI_OFF_GRIPPER_US]     = (uint8_t)(gripper_us >> 8);
+    frame[RPI_OFF_GRIPPER_US + 1] = (uint8_t)(gripper_us & 0xFFu);
+
+    stepper_deg = Stepper_GetLogicalDeg();
+    frame[RPI_OFF_STEPPER_DEG]     = (uint8_t)((uint16_t)stepper_deg >> 8);
+    frame[RPI_OFF_STEPPER_DEG + 1] = (uint8_t)((uint16_t)stepper_deg & 0xFFu);
+    frame[RPI_OFF_CONVEYOR_RUN] = Conveyor_GetRun() ? 1u : 0u;
+
+    frame[RPI_OFF_XOR] = 0u;
+    for (i = 0; i < (int)RPI_OFF_XOR; i++) {
+        frame[RPI_OFF_XOR] ^= frame[i];
     }
-    frame[38] = x;
-    Serial_SendArray(frame, 39);
+    Serial_SendArray(frame, RPI_BIN_FRAME_LEN);
 }
 #endif
 

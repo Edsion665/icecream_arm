@@ -28,6 +28,21 @@ static uint32_t s_step_hz;
 static uint8_t  s_dir_forward = 1u;
 static uint8_t  s_tim_inited;
 static int32_t  s_pos_steps;
+static float    s_target_delta_deg;
+static uint8_t  s_delta_pending;
+
+typedef enum {
+    STEPPER_ST_IDLE = 0,
+    STEPPER_ST_DIR_WAIT,
+    STEPPER_ST_RUNNING,
+} StepperMoveState_t;
+
+static StepperMoveState_t s_move_state;
+static uint32_t           s_move_pulses_total;
+static uint32_t           s_move_pulses_done;
+static uint8_t            s_move_forward;
+static uint16_t           s_dir_wait_ms;
+static uint16_t           s_last_cnt;
 
 /*================ 内部工具 ================*/
 static float stepper_fabsf(float x)
@@ -128,27 +143,32 @@ static void stepper_apply_pwm_hz(uint32_t hz)
     TIM_Cmd(STEPPER_PWM_TIM, ENABLE);
 }
 
-static void stepper_wait_pulses(uint32_t pulses, uint8_t forward)
+static void stepper_move_abort(void)
 {
-    uint32_t done = 0u;
-    uint16_t last_cnt;
+    Stepper_Stop();
+    s_move_state = STEPPER_ST_IDLE;
+    s_move_pulses_done = 0u;
+    s_move_pulses_total = 0u;
+}
 
-    TIM_ClearITPendingBit(STEPPER_PWM_TIM, TIM_IT_Update);
-    last_cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
-
-    while (done < pulses) {
-        uint16_t cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
-
-        if (cnt < last_cnt) {
-            done++;
-            if (forward) {
-                s_pos_steps++;
-            } else {
-                s_pos_steps--;
-            }
-        }
-        last_cnt = cnt;
+static void stepper_on_pulse_edge(uint8_t forward)
+{
+    if (forward) {
+        s_pos_steps++;
+    } else {
+        s_pos_steps--;
     }
+}
+
+static void stepper_poll_one_pulse(void)
+{
+    uint16_t cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
+
+    if (cnt < s_last_cnt) {
+        s_move_pulses_done++;
+        stepper_on_pulse_edge(s_move_forward);
+    }
+    s_last_cnt = cnt;
 }
 
 /*================ 初始化 ================*/
@@ -161,7 +181,10 @@ void Stepper_Init(void)
     s_step_hz     = 0u;
     s_dir_forward = 1u;
     s_tim_inited  = 0u;
-    s_pos_steps   = 0;
+    s_pos_steps       = 0;
+    s_target_delta_deg = 0.0f;
+    s_delta_pending   = 0u;
+    s_move_state      = STEPPER_ST_IDLE;
 
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
     RCC_APB1PeriphClockCmd(STEPPER_PWM_TIM_RCC, ENABLE);
@@ -276,16 +299,9 @@ int32_t Stepper_GetPosSteps(void)
     return s_pos_steps;
 }
 
-/*================ 增量转角 ================*/
-void Stepper_MoveDegrees(float deg)
+/*================ 下行目标 / 周期更新 ================*/
+void Stepper_SetTargetDeltaDeg(float deg)
 {
-    uint32_t pulses;
-    uint8_t forward;
-
-    if (!s_tim_inited) {
-        return;
-    }
-
     if (deg > STEPPER_DEG_MAX) {
         deg = STEPPER_DEG_MAX;
     } else if (deg < STEPPER_DEG_MIN) {
@@ -296,22 +312,96 @@ void Stepper_MoveDegrees(float deg)
         return;
     }
 
+    s_target_delta_deg = deg;
+    s_delta_pending = 1u;
+}
+
+uint8_t Stepper_IsBusy(void)
+{
+    return (s_move_state != STEPPER_ST_IDLE) ? 1u : 0u;
+}
+
+void Stepper_Update(void)
+{
+    float deg;
+    uint32_t pulses;
+
+    if (!s_tim_inited) {
+        return;
+    }
+
+    switch (s_move_state) {
+    case STEPPER_ST_RUNNING:
+        stepper_poll_one_pulse();
+        if (s_move_pulses_done >= s_move_pulses_total) {
+            stepper_move_abort();
+        }
+        break;
+
+    case STEPPER_ST_DIR_WAIT:
+        if (s_dir_wait_ms > STEPPER_UPDATE_PERIOD_MS) {
+            s_dir_wait_ms = (uint16_t)(s_dir_wait_ms - STEPPER_UPDATE_PERIOD_MS);
+        } else {
+            s_dir_wait_ms = 0u;
+        }
+        if (s_dir_wait_ms == 0u) {
+            Stepper_SetSpeedRPM(STEPPER_MOVE_RPM);
+            if (s_step_hz == 0u) {
+                stepper_move_abort();
+                break;
+            }
+            TIM_ClearITPendingBit(STEPPER_PWM_TIM, TIM_IT_Update);
+            s_last_cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
+            s_move_state = STEPPER_ST_RUNNING;
+        }
+        break;
+
+    case STEPPER_ST_IDLE:
+    default:
+        break;
+    }
+
+    if (s_move_state != STEPPER_ST_IDLE || !s_delta_pending) {
+        return;
+    }
+
+    s_delta_pending = 0u;
+    deg = s_target_delta_deg;
+    s_target_delta_deg = 0.0f;
+
     pulses = stepper_deg_to_pulses(stepper_fabsf(deg));
     if (pulses == 0u) {
         return;
     }
 
-    forward = (deg > 0.0f) ? 1u : 0u;
-    Stepper_SetDirection(forward);
-    Delay_ms(STEPPER_DIR_SETUP_MS);
+    s_move_forward = (deg > 0.0f) ? 1u : 0u;
+    s_move_pulses_total = pulses;
+    s_move_pulses_done = 0u;
+    Stepper_SetDirection(s_move_forward);
+    s_dir_wait_ms = STEPPER_DIR_SETUP_MS;
+    s_move_state = STEPPER_ST_DIR_WAIT;
+}
 
-    Stepper_SetSpeedRPM(STEPPER_MOVE_RPM);
-    if (s_step_hz == 0u) {
-        return;
+int16_t Stepper_GetLogicalDeg(void)
+{
+    float deg;
+
+    deg = (float)s_pos_steps * 360.0f / (float)STEPPER_PULSES_PER_REV;
+    if (deg > 180.0f) {
+        deg = 180.0f;
+    } else if (deg < -180.0f) {
+        deg = -180.0f;
     }
+    return (int16_t)(deg + (deg >= 0.0f ? 0.5f : -0.5f));
+}
 
-    stepper_wait_pulses(pulses, forward);
-    Stepper_Stop();
+/*================ 阻塞转角（测试） ================*/
+void Stepper_MoveDegrees(float deg)
+{
+    Stepper_SetTargetDeltaDeg(deg);
+    while (Stepper_IsBusy() || s_delta_pending) {
+        Stepper_Update();
+    }
 }
 
 /*================ 上电测试 ================*/

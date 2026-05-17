@@ -19,6 +19,7 @@
 #define CONVEYOR_LEVEL_STOP         Bit_RESET
 
 static uint8_t s_run;
+static uint8_t s_target_run;
 
 static void conveyor_apply_level(uint8_t run)
 {
@@ -34,6 +35,7 @@ void Conveyor_Init(void)
     GPIO_InitTypeDef gpio;
 
     s_run = 0u;
+    s_target_run = 0u;
 
     RCC_APB2PeriphClockCmd(CONVEYOR_GPIO_RCC, ENABLE);
 
@@ -43,6 +45,18 @@ void Conveyor_Init(void)
     GPIO_Init(CONVEYOR_GPIO_PORT, &gpio);
 
     conveyor_apply_level(0u);
+}
+
+void Conveyor_SetTargetRun(uint8_t run)
+{
+    s_target_run = run ? 1u : 0u;
+}
+
+void Conveyor_Update(void)
+{
+    if (s_run != s_target_run) {
+        Conveyor_SetRun(s_target_run);
+    }
 }
 
 void Conveyor_SetRun(uint8_t run)

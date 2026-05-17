@@ -4,6 +4,7 @@
 #include "../Hardware/Serial.h"
 #include "../Hardware/Servo.h"
 #include "../Hardware/Stepper.h"
+#include "../Hardware/Conveyor.h"
 #include "serial_frame.h"
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_rcc.h"
@@ -69,8 +70,9 @@ int main(void)
         }
     }
 
-    /* 舵机：PB0 腕部、PB1 机械爪，50Hz PWM（PWM.c 已移出工程，不再保留 PB01 独立测试分支） */
     Servo_Init();
+    Stepper_Init();
+    Conveyor_Init();
 
     while (1) {
         Serial_ServiceRxDma();
@@ -80,7 +82,8 @@ int main(void)
             if (Serial_GetNextBinFrame(&bin_frame)) {
                 MitCmd_t cmds[4];
                 ServoCmd_t servo;
-                if (SerialFrame_ParseBinMit(&bin_frame, cmds, &servo)) {
+                AuxCmd_t aux;
+                if (SerialFrame_ParseBinMit(&bin_frame, cmds, &servo, &aux)) {
                     int mi;
                     for (mi = 0; mi < 4; mi++) {
                         Motor_MIT_Send_Raw(mi,
@@ -90,6 +93,8 @@ int main(void)
                     }
                     Servo_SetWristUs(servo.wrist_us);
                     Servo_SetGripperUs(servo.gripper_us);
+                    Stepper_SetTargetDeltaDeg((float)aux.stepper_delta_deg);
+                    Conveyor_SetTargetRun(aux.conveyor_run);
                 }
             }
         }
@@ -102,8 +107,9 @@ int main(void)
             continue;
         }
 
-//舵机更新角度，根据MIT回传给出角度控制
         Servo_Update();
+        Conveyor_Update();
+        Stepper_Update();
 
         Delay_ms(INTERVAL_MS);
     }
