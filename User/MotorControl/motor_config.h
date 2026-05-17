@@ -44,17 +44,11 @@ typedef struct {
 #define INTERVAL_MS      2
 
 /*
- * MIT_HEX_MODE=1：STM32 仅作执行器，四轴 MIT 来自树莓派 39 字节二进制帧；
- * TIM4 刚性保持关闭（与 6fee739 一致）。
+ * MIT_HEX_MODE=1：STM32 仅作执行器，四轴 MIT 来自树莓派 39 字节二进制帧。
+ * TIM4 留给步进 STEP（Stepper.c）；无周期刚性保持。
  */
 #ifndef MIT_HEX_MODE
 #define MIT_HEX_MODE  1
-#endif
-
-#define MOTOR_HOLD_TIM4_ENABLE   1
-#if MIT_HEX_MODE
-#undef MOTOR_HOLD_TIM4_ENABLE
-#define MOTOR_HOLD_TIM4_ENABLE   0
 #endif
 
 /*================ 必要新增参数：请与上位机“控制幅值”保持一致 ================*/
@@ -65,11 +59,7 @@ typedef struct {
 #define MIT_T_MIN       (-18.0f)
 #define MIT_T_MAX       ( 18.0f)
 
-/*
- * 读反馈前发的 MIT（Request_Motor_Feedback）与 TIM4 刚性保持（若启用）共用下列刚度。
- * 与 MIT_HEX_MODE 无关；勿仅在 #if !MIT_HEX_MODE 里定义，否则 HEX=1 时 motor_control.c
- * 会使用写死的 lock_kp/kd，motor_config.h 里改 LOCK_KP 不生效。
- */
+/* 读反馈前发的 MIT（Request_Motor_Feedback）使用下列刚度 */
 #define EXTREME_HOLD_KP {\
     0.0f,\
     0.0f,\

@@ -1,9 +1,6 @@
 /**
  * 步进电机：PB7=STEP(TIM4_CH2 PWM)，PA1=DIR(GPIO)
  * 共阴极；4 细分，800 脉冲/转
- *
- * 说明：F103C8 上 PB7 默认可用 TIM4_CH2；TIM6 为基本定时器且无引脚 PWM，
- * 无法在 PB7 输出脉冲，故步进使用 TIM4（MIT_HEX=1 时 MOTOR_HOLD_TIM4 已关闭）。
  */
 #include "Stepper.h"
 #include "Delay.h"
@@ -12,6 +9,7 @@
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_tim.h"
 
+/*================ 硬件引脚 / 定时器 ================*/
 #define STEPPER_STEP_GPIO_PORT      GPIOB
 #define STEPPER_STEP_GPIO_PIN       GPIO_Pin_7
 #define STEPPER_DIR_GPIO_PORT       GPIOA
@@ -21,14 +19,17 @@
 #define STEPPER_PWM_TIM_RCC         RCC_APB1Periph_TIM4
 #define STEPPER_PWM_CHANNEL         TIM_Channel_2
 
+/*================ 脉冲频率限制 ================*/
 #define STEPPER_STEP_HZ_MIN         1u
 #define STEPPER_STEP_HZ_MAX         50000u
 
+/*================ 运行时状态 ================*/
 static uint32_t s_step_hz;
 static uint8_t  s_dir_forward = 1u;
 static uint8_t  s_tim_inited;
 static int32_t  s_pos_steps;
 
+/*================ 内部工具 ================*/
 static float stepper_fabsf(float x)
 {
     return (x < 0.0f) ? -x : x;
@@ -127,16 +128,40 @@ static void stepper_apply_pwm_hz(uint32_t hz)
     TIM_Cmd(STEPPER_PWM_TIM, ENABLE);
 }
 
+static void stepper_wait_pulses(uint32_t pulses, uint8_t forward)
+{
+    uint32_t done = 0u;
+    uint16_t last_cnt;
+
+    TIM_ClearITPendingBit(STEPPER_PWM_TIM, TIM_IT_Update);
+    last_cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
+
+    while (done < pulses) {
+        uint16_t cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
+
+        if (cnt < last_cnt) {
+            done++;
+            if (forward) {
+                s_pos_steps++;
+            } else {
+                s_pos_steps--;
+            }
+        }
+        last_cnt = cnt;
+    }
+}
+
+/*================ 初始化 ================*/
 void Stepper_Init(void)
 {
     GPIO_InitTypeDef gpio;
     TIM_TimeBaseInitTypeDef tb;
     TIM_OCInitTypeDef oc;
 
-    s_step_hz = 0u;
+    s_step_hz     = 0u;
     s_dir_forward = 1u;
-    s_tim_inited = 0u;
-    s_pos_steps = 0;
+    s_tim_inited  = 0u;
+    s_pos_steps   = 0;
 
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
     RCC_APB1PeriphClockCmd(STEPPER_PWM_TIM_RCC, ENABLE);
@@ -181,6 +206,7 @@ void Stepper_Init(void)
     s_tim_inited = 1u;
 }
 
+/*================ 方向 / 速度 ================*/
 void Stepper_SetDirection(uint8_t forward)
 {
     s_dir_forward = forward ? 1u : 0u;
@@ -240,13 +266,7 @@ float Stepper_GetSpeedRPM(void)
     return (float)s_step_hz * 60.0f / (float)STEPPER_PULSES_PER_REV;
 }
 
-void Stepper_TestRunConstant(float rpm, uint8_t forward)
-{
-    Stepper_SetDirection(forward);
-    Stepper_SetSpeedRPM(rpm);
-}
-
-void Stepper_TestStop(void)
+void Stepper_Stop(void)
 {
     Stepper_SetStepFrequencyHz(0u);
 }
@@ -256,24 +276,23 @@ int32_t Stepper_GetPosSteps(void)
     return s_pos_steps;
 }
 
-void Stepper_MoveDegrees(float deg, float rpm)
+/*================ 增量转角 ================*/
+void Stepper_MoveDegrees(float deg)
 {
     uint32_t pulses;
-    uint32_t done;
     uint8_t forward;
-    uint16_t last_cnt;
 
     if (!s_tim_inited) {
         return;
     }
 
-    if (deg > 180.0f) {
-        deg = 180.0f;
-    } else if (deg < -180.0f) {
-        deg = -180.0f;
+    if (deg > STEPPER_DEG_MAX) {
+        deg = STEPPER_DEG_MAX;
+    } else if (deg < STEPPER_DEG_MIN) {
+        deg = STEPPER_DEG_MIN;
     }
 
-    if (deg == 0.0f || rpm <= 0.0f) {
+    if (deg == 0.0f) {
         return;
     }
 
@@ -284,39 +303,18 @@ void Stepper_MoveDegrees(float deg, float rpm)
 
     forward = (deg > 0.0f) ? 1u : 0u;
     Stepper_SetDirection(forward);
-    /* DIR 稳定后再出 STEP（常见驱动器要求） */
-    Delay_ms(2u);
+    Delay_ms(STEPPER_DIR_SETUP_MS);
 
-    Stepper_SetSpeedRPM(rpm);
+    Stepper_SetSpeedRPM(STEPPER_MOVE_RPM);
     if (s_step_hz == 0u) {
         return;
     }
 
-    /*
-     * 不用 UIF 轮询：TIM_TimeBaseInit 会置位 UIF，若只读标志不清或清不掉，
-     * 会在空转里瞬间计满 pulses 并 Stop，表现为电机不转。
-     * 改为检测 CNT 回绕，每个 PWM 周期计 1 步。
-     */
-    TIM_ClearITPendingBit(STEPPER_PWM_TIM, TIM_IT_Update);
-    last_cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
-    done = 0u;
-    while (done < pulses) {
-        uint16_t cnt = (uint16_t)STEPPER_PWM_TIM->CNT;
-
-        if (cnt < last_cnt) {
-            done++;
-            if (forward) {
-                s_pos_steps++;
-            } else {
-                s_pos_steps--;
-            }
-        }
-        last_cnt = cnt;
-    }
-
-    Stepper_SetStepFrequencyHz(0u);
+    stepper_wait_pulses(pulses, forward);
+    Stepper_Stop();
 }
 
+/*================ 上电测试 ================*/
 #if STEPPER_TEST_ENABLE
 void Stepper_TestRunMoveSequence(void)
 {
@@ -327,17 +325,10 @@ void Stepper_TestRunMoveSequence(void)
         STEPPER_TEST_MOVE4_DEG,
         STEPPER_TEST_MOVE5_DEG,
     };
-    static const float move_rpm[STEPPER_TEST_MOVE_COUNT] = {
-        STEPPER_TEST_MOVE1_RPM,
-        STEPPER_TEST_MOVE2_RPM,
-        STEPPER_TEST_MOVE3_RPM,
-        STEPPER_TEST_MOVE4_RPM,
-        STEPPER_TEST_MOVE5_RPM,
-    };
     uint8_t i;
 
     for (i = 0u; i < STEPPER_TEST_MOVE_COUNT; i++) {
-        Stepper_MoveDegrees(move_deg[i], move_rpm[i]);
+        Stepper_MoveDegrees(move_deg[i]);
         if ((i + 1u) < STEPPER_TEST_MOVE_COUNT) {
             Delay_ms(STEPPER_TEST_MOVE_PAUSE_MS);
         }

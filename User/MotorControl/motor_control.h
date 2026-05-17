@@ -14,7 +14,4 @@ void Sync_CurrentTargets_From_Feedback(void);
 /*================ 安全控制 ================*/
 void Safe_Control(int idx, float p, float v, float kp, float kd, float t);
 
-/*================ 刚性保持（TIM4 ISR 用快照） ================*/
-void Apply_Rigid_Hold_OnBuffers_NoPostDelay(const float *pos, const uint8_t *homed);
-
 #endif /* MOTOR_CONTROL_H */

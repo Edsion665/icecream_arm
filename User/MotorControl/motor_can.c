@@ -280,6 +280,72 @@ uint8_t Motor_Is_Fault(int idx)
     return 1;
 }
 
+/*================ CAN RX0 中断（向量名固定，由 NVIC 调用，勿在 main 里手动调用） ================*/
+void USB_LP_CAN1_RX0_IRQHandler(void)
+{
+    CanRxMsg rx;
+    int i;
+
+    if (CAN_GetITStatus(CAN1, CAN_IT_FMP0) != RESET) {
+        CAN_Receive(CAN1, CAN_FIFO0, &rx);
+
+        for (i = 0; i < MOTOR_NUM; i++) {
+            if (rx.StdId == (Motor_Master_IDs[i] & 0x7FF)) {
+
+                /* 寄存器读响应 */
+                if ((rx.DLC == 8) && ((rx.Data[2] == 0x33) || (rx.Data[2] == 0x55))) {
+                    uint16_t canid = (uint16_t)rx.Data[0] | ((uint16_t)rx.Data[1] << 8);
+                    if ((canid & 0x7FF) == (Motor_IDs[i] & 0x7FF)) {
+                        Motor_RegResp[i].op = rx.Data[2];
+                        Motor_RegResp[i].rid = rx.Data[3];
+                        Motor_RegResp[i].data_u32 =
+                            ((uint32_t)rx.Data[7] << 24) |
+                            ((uint32_t)rx.Data[6] << 16) |
+                            ((uint32_t)rx.Data[5] << 8)  |
+                            ((uint32_t)rx.Data[4]);
+                        Motor_RegResp[i].got = 1;
+                        break;
+                    }
+                }
+
+                /* MIT 反馈 */
+                if (rx.DLC >= 6) {
+                    uint8_t id_err = rx.Data[0];
+                    uint8_t err = (uint8_t)(id_err >> 4);
+                    uint16_t p_int = ((uint16_t)rx.Data[1] << 8) | rx.Data[2];
+                    uint16_t v_int = ((uint16_t)rx.Data[3] << 4) | (rx.Data[4] >> 4);
+                    uint16_t t_int = (((uint16_t)rx.Data[4] & 0x0F) << 8) | rx.Data[5];
+                    uint8_t b;
+
+                    Motor_States[i].err = err;
+                    Motor_States[i].pos = uint_to_float(p_int, Runtime_P_Min[i], Runtime_P_Max[i], 16);
+                    Motor_States[i].vel = uint_to_float(v_int, Runtime_V_Min[i], Runtime_V_Max[i], 12);
+                    Motor_States[i].tor = uint_to_float(t_int, Runtime_T_Min[i], Runtime_T_Max[i], 12);
+                    Motor_States[i].tor_raw12 = t_int;
+                    Motor_States[i].raw_dlc = rx.DLC > 8u ? 8u : rx.DLC;
+                    for (b = 0; b < Motor_States[i].raw_dlc; b++) {
+                        Motor_States[i].raw_frame[b] = rx.Data[b];
+                    }
+
+                    if (rx.DLC >= 8) {
+                        Motor_States[i].mos_temp   = rx.Data[6];
+                        Motor_States[i].rotor_temp = rx.Data[7];
+                    }
+
+                    Motor_Feedback_Received[i] = 1;
+
+                    if (Motor_Is_Fault(i)) {
+                        Latch_Fault((uint8_t)i, err);
+                    }
+                    break;
+                }
+            }
+        }
+
+        CAN_ClearITPendingBit(CAN1, CAN_IT_FMP0);
+    }
+}
+
 /*================ 硬件初始化 ================*/
 void Hardware_Init(void)
 {

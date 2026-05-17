@@ -1,5 +1,4 @@
 #include "motor_control.h"
-#include "motor_hold_timer.h"
 
 /*================ 全局变量定义 ================*/
 float Current_Targets[MOTOR_NUM];
@@ -25,8 +24,6 @@ static float Get_Extreme_Hold_Tff(int idx)
     return extreme_hold_tff[idx];
 }
 
-static void Safe_Control_NoPostDelay(int idx, float p, float v, float kp, float kd, float t);
-
 void Safe_Control(int idx, float p, float v, float kp, float kd, float t)
 {
     if (Emergency_Stop) {
@@ -50,53 +47,6 @@ void Safe_Control(int idx, float p, float v, float kp, float kd, float t)
     Motor_MIT_Send_Raw(idx, p, v, kp, kd, t);
 }
 
-static void Safe_Control_NoPostDelay(int idx, float p, float v, float kp, float kd, float t)
-{
-    if (Emergency_Stop) {
-        return;
-    }
-
-    if (t < Runtime_T_Min[idx]) {
-        t = Runtime_T_Min[idx];
-    }
-    if (t > Runtime_T_Max[idx]) {
-        t = Runtime_T_Max[idx];
-    }
-
-    if (kd < 0.15f) {
-        kd = 0.15f;
-    }
-    if (kp < 0.0f) {
-        kp = 0.0f;
-    }
-
-    Motor_MIT_Send_Raw_NoPostDelay(idx, p, v, kp, kd, t);
-}
-
-void Apply_Rigid_Hold_OnBuffers_NoPostDelay(const float *pos, const uint8_t *homed)
-{
-    int i;
-
-    if (pos == 0 || homed == 0) {
-        return;
-    }
-
-    for (i = 0; i < MOTOR_NUM; i++) {
-        if (Emergency_Stop) {
-            return;
-        }
-        if (homed[i]) {
-            Safe_Control_NoPostDelay(i, pos[i], 0.0f,
-                                     extreme_hold_kp[i], extreme_hold_kd[i],
-                                     Get_Extreme_Hold_Tff(i));
-        } else {
-            Safe_Control_NoPostDelay(i, pos[i], 0.0f,
-                                     lock_kp[i], lock_kd[i],
-                                     Get_Hold_Tff(i));
-        }
-    }
-}
-
 void Sync_CurrentTargets_From_Feedback(void)
 {
     int i;
@@ -108,11 +58,10 @@ void Sync_CurrentTargets_From_Feedback(void)
             Current_Targets[i] = Motor_States[i].pos;
         }
     }
-    MotorHoldTimer_PublishSnapshot();
 }
 
 /*
- * 读反馈前向总线发的 MIT：必须与刚性保持一致。
+ * 读反馈前向总线发的 MIT：使用 lock_kp/kd 保持刚度。
  */
 void Request_Motor_Feedback(int idx)
 {
