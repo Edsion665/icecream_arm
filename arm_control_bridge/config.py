@@ -84,8 +84,8 @@ class SimulationConfig:
     # 沿父空间 +Z 平移手臂根 prim（米）；父为 /World 时即世界 +Z 抬高整臂（含 link0）。例：0.1 = 抬高 10 cm。
     arm_world_z_offset_m: float = 0.2
     marker_z_lift_m: float = 0.04
-    arm_usd_relpath: str = "v8/ice_cream_v8_arm.usd"
-    arm_urdf_relpath: str = "v8/ice_cream_v8.SLDASM.urdf"
+    arm_usd_relpath: str = "v12/ice_cream_v12_arm.usd"
+    arm_urdf_relpath: str = "v12/ice_cream_v12.SLDASM.urdf"
     articulation_prim_path: Optional[str] = None
     pd_kp_base: float = 1e4
     pd_kd_base: float = 1e3
