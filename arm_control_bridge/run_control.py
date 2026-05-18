@@ -175,7 +175,7 @@ def run_loop(
                 if cc is None:
                     continue
                 payload = cc.payload
-                state.wrist_rel_deg = float(payload.get("wrist_deg", state.wrist_rel_deg))
+                state.set_wrist_rel_deg(float(payload.get("wrist_deg", state.wrist_rel_deg)))
                 state.grip_state = 1.0 if float(payload.get("grip_state", state.grip_state)) >= 0.5 else 0.0
                 state.servo_deg = np.array([state.wrist_rel_deg, state.grip_state], dtype=float)
                 log(f"[runner] recv claw: wrist={state.wrist_rel_deg:.3f}, grip_state={state.grip_state:.0f}")
@@ -401,7 +401,7 @@ def run_sim_loop(
                 log(f"[sim] recv claw: {c.payload}")
                 tracker.accept("claw")
                 payload = c.payload
-                state.wrist_rel_deg = float(payload.get("wrist_deg", state.wrist_rel_deg))
+                state.set_wrist_rel_deg(float(payload.get("wrist_deg", state.wrist_rel_deg)))
                 state.grip_state = 1.0 if float(payload.get("grip_state", state.grip_state)) >= 0.5 else 0.0
                 state.servo_deg = np.array([state.wrist_rel_deg, state.grip_state], dtype=float)
                 dump_next_udp_frame = True
@@ -445,7 +445,7 @@ def run_sim_loop(
                     for i in range(min(controlled_dof, n_dof, NUM_JOINTS)):
                         q_snap[i] = float(state.q_cmd[i])
                     if n_dof >= 5 and controlled_dof >= 5:
-                        q_snap[4] = float(state.q_cmd[4])
+                        q_snap[4] = state.wrist_joint_rad()
                     try:
                         arm.set_joint_positions(q_snap)
                     except Exception as ex:

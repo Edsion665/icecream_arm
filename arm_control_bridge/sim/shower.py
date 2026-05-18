@@ -67,7 +67,10 @@ class ArticulationViewer:
         q[:n] = np.deg2rad(frame.arm_rel_deg[:n] + self._q_calib_deg[:n])
         omega[:n] = frame.arm_omega_rad_s[:n]
         if self._controlled_dof >= 5:
-            q[4] = np.deg2rad(float(getattr(frame, "wrist_rel_deg", 0.0)) + float(self._q_calib_deg[4]))
+            wrist_deg = float(getattr(frame, "wrist_rel_deg", 0.0))
+            if abs(wrist_deg) < 1e-9:
+                wrist_deg = float(getattr(frame, "joint5_rel_deg", 0.0))
+            q[4] = np.deg2rad(wrist_deg + float(self._q_calib_deg[4]))
         self._q_cmd = q.copy()
         try:
             from isaacsim.core.utils.types import ArticulationAction

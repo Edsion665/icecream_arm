@@ -9,7 +9,7 @@ from typing import Optional
 import numpy as np
 
 from ..config import DEFAULT_INITIAL_JOINT_REL_DEG_4
-from ..kinematics.urdf_kinematics import NUM_JOINTS
+from ..kinematics.urdf_kinematics import JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER, NUM_JOINTS
 
 ARM_AXES = 4
 
@@ -62,6 +62,25 @@ class CalculatorState:
     q4_blend_start_rad: float = 0.0
     q4_blend_t: float = 1.0
 
+    def wrist_joint_rad(self) -> float:
+        """手腕舵机角（弧度，含标定）：与 ``wrist_rel_deg`` / UDP ``p_rel_deg[4]`` 一致。"""
+        return float(
+            np.clip(
+                self.q_calib_rad[4] + np.deg2rad(self.wrist_rel_deg),
+                JOINT_LIMITS_LOWER[4],
+                JOINT_LIMITS_UPPER[4],
+            )
+        )
+
+    def set_wrist_rel_deg(self, deg: float, *, sync_joint5_cmd: bool = True) -> None:
+        """更新手腕相对角；仿真与 resync 需与 ``q_cmd[4]`` 一致时设 ``sync_joint5_cmd``。"""
+        self.wrist_rel_deg = float(deg)
+        self.servo_deg = np.array([self.wrist_rel_deg, self.grip_state], dtype=float)
+        if sync_joint5_cmd:
+            rad = self.wrist_joint_rad()
+            self.q_full[4] = rad
+            self.q_cmd[4] = rad
+
     def reset_command(self) -> None:
         """标定零点不变；前四轴相对标定角由 ``DEFAULT_INITIAL_JOINT_REL_DEG_4`` 初始化。"""
         self.joint_rel_deg_4 = np.asarray(DEFAULT_INITIAL_JOINT_REL_DEG_4, dtype=float).reshape(ARM_AXES).copy()
@@ -85,7 +104,9 @@ class CalculatorState:
         self.q_cmd[:n] = q[:n]
         self.joint_rel_deg_4 = (np.rad2deg(self.q_full[:ARM_AXES]) - self.q_calib_deg[:ARM_AXES]).copy()
         if n >= 5:
+            self.wrist_rel_deg = float(np.rad2deg(q[4]) - self.q_calib_deg[4])
             self.q5_fixed_rad = float(q[4])
+            self.servo_deg = np.array([self.wrist_rel_deg, self.grip_state], dtype=float)
         self.mode = MotionMode.JOINTS
         self.initialized = True
         self.prev_pose_xyz = None

@@ -86,8 +86,9 @@ class CalculatorEngine:
             )
             state.q_full[4] = q5_pose_tgt
         else:
-            state.q_full[4] = float(np.clip(state.q5_fixed_rad, JOINT_LIMITS_LOWER[4], JOINT_LIMITS_UPPER[4]))
-            state.q_cmd[4] = state.q_full[4]
+            wrist_rad = state.wrist_joint_rad()
+            state.q_full[4] = wrist_rad
+            state.q_cmd[4] = wrist_rad
 
         q4_pose_target: float | None = None
         if state.mode == MotionMode.POSE:
@@ -132,7 +133,7 @@ class CalculatorEngine:
             omega_arm[3] = (float(state.q_cmd[3]) - q4_cmd_prev) / max(dt, 1e-6)
 
         p_rel_deg = np.rad2deg(state.q_cmd[:ARM_AXES]) - state.q_calib_deg[:ARM_AXES]
-        j5_rel = float(np.rad2deg(state.q_cmd[4]) - state.q_calib_deg[4])
+        j5_rel = float(state.wrist_rel_deg)
         return JointFrame(
             arm_rel_deg=p_rel_deg.copy(),
             arm_omega_rad_s=omega_arm.copy(),
