@@ -16,7 +16,7 @@ from dataclasses import dataclass
 # 顺序固定为 motor1..motor4。取值 +1 表示正方向一致，-1 表示方向相反。
 # 该符号会被目标映射、反馈反算、关节力矩到电机力矩转换等链路共同复用，
 # 用于保证整条控制链在符号约定上的一致性。
-MOTOR_AXIS_SIGN: tuple[float, float, float, float] = (-1.0, -1.0, 1.0, 1.0)
+MOTOR_AXIS_SIGN: tuple[float, float, float, float] = (-1.0, -1.0, -1.0, 1.0)
 # GRAVITY_AXIS_SCALE 是重力补偿在电机力矩空间下的逐轴缩放系数，顺序为 motor1..motor4。
 # 它会在 Pinocchio 输出并投影到电机空间之后生效，主要用于实机逐轴精细调参。
 GRAVITY_AXIS_SCALE: tuple[float, float, float, float] = (1.0, 1.3, 1.2, 1.2)
@@ -112,19 +112,18 @@ class ServerConfig:
     )
 
 
-@dataclass(frozen=True)
 class ControlConfig:
     tau_hz: float = max(1.0, min(500.0, _env_float("ARM_CONTROL_TAU_HZ", 25.0)))
     tau_gain: float = _env_float("ARM_CONTROL_TAU_GAIN", 1.0)
     calibration_rad: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_CAL_R0", -2.62911),
-        _env_float("ARM_CONTROL_CAL_R1", 0.3075),
-        _env_float("ARM_CONTROL_CAL_R2", 2.45080),
-        _env_float("ARM_CONTROL_CAL_R3", 0.490005),
+        _env_float("ARM_CONTROL_CAL_R0", 2.06016),
+        _env_float("ARM_CONTROL_CAL_R1", 3.6532),
+        _env_float("ARM_CONTROL_CAL_R2", -4.1500),
+        _env_float("ARM_CONTROL_CAL_R3", -2.7514),
     )
     
     hold_kp: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KP_1", 10.0),
+        _env_float("ARM_CONTROL_HOLD_KP_1", 25.0),
         _env_float("ARM_CONTROL_HOLD_KP_2", 60.0),
         _env_float("ARM_CONTROL_HOLD_KP_3", 50.0),
         _env_float("ARM_CONTROL_HOLD_KP_4", 25.0),
