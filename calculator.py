@@ -54,7 +54,7 @@ _LINK5_ANALYTIC_JOINTS: tuple[dict[str, np.ndarray], ...] = (
     },
     {
         "xyz": np.array([0.09985, 0.0, -0.028], dtype=float),
-        "rpy": np.array([-1.5707963267948966, 0.0, -1.5707963267948966], dtype=float),
+        "rpy": np.array([1.5707963267948966, 1.5707963267948966, 1.5707963267948966*2], dtype=float),
         "axis": np.array([0.0, 0.0, 1.0], dtype=float),
     },
 )
