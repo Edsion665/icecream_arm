@@ -17,9 +17,6 @@ from dataclasses import dataclass
 # 该符号会被目标映射、反馈反算、关节力矩到电机力矩转换等链路共同复用，
 # 用于保证整条控制链在符号约定上的一致性。
 MOTOR_AXIS_SIGN: tuple[float, float, float, float] = (-1.0, -1.0, -1.0, 1.0)
-# GRAVITY_AXIS_SCALE 是重力补偿在电机力矩空间下的逐轴缩放系数，顺序为 motor1..motor4。
-# 它会在 Pinocchio 输出并投影到电机空间之后生效，主要用于实机逐轴精细调参。
-GRAVITY_AXIS_SCALE: tuple[float, float, float, float] = (1.0, 1.3, 1.2, 1.2)
 
 # 以下常量定义 bridge2pi 的 UDP 二进制帧格式。当前协议为（与 ``docs/bridge2pi.md`` v3 一致）：
 # seq(uint32) + ts(float64) + p_rel_deg[8](float64) + omega_rad_s[8](float64)。
@@ -88,6 +85,43 @@ def _env_init_feedback_wait_sec() -> float:
     return v
 
 
+# ---- 重力前馈实机修正（Pinocchio → 电机符号映射之后、写入 MIT ``t`` 之前）----
+#
+# joint1 / motor1：URDF 转轴与重力平行，computeGeneralizedGravity 对第 1 关节恒为 0；
+# 实机仍有单向重力相关负载（摩擦、安装误差等），用固定偏置补偿，与姿态无关。
+#   export ARM_CONTROL_GRAVITY_BIAS_M1=0.15   # 单位 Nm，电机空间，与 MIT 下发 ``t`` 同向
+#
+# motor2..motor4：对 Pinocchio 电机空间力矩逐轴缩放（无 motor1 倍数项）。
+#   export ARM_CONTROL_GRAVITY_SCALE_M2=1.3
+#   export ARM_CONTROL_GRAVITY_SCALE_M3=1.2
+#   export ARM_CONTROL_GRAVITY_SCALE_M4=1.2
+
+GRAVITY_TAU_BIAS_M1: float = _env_float("ARM_CONTROL_GRAVITY_BIAS_M1", 0.0)
+GRAVITY_AXIS_SCALE_M234: tuple[float, float, float] = (
+    _env_float("ARM_CONTROL_GRAVITY_SCALE_M2", 1.3),
+    _env_float("ARM_CONTROL_GRAVITY_SCALE_M3", 1.2),
+    _env_float("ARM_CONTROL_GRAVITY_SCALE_M4", 1.2),
+)
+
+
+def apply_gravity_motor_output(
+    tau_motor_nm: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """重力前馈电机空间输出修正：M1 加偏置，M2–M4 乘缩放。
+
+    输入 ``tau_motor_nm`` 为 ``joint_tau_to_motor_tau`` 之后、尚未修正的四轴力矩 (Nm)，
+    顺序 motor1..motor4，与 ``controller`` 写入 MIT 的 ``t`` 一致。
+    """
+    t1, t2, t3, t4 = tau_motor_nm
+    s2, s3, s4 = GRAVITY_AXIS_SCALE_M234
+    return (
+        float(t1) + GRAVITY_TAU_BIAS_M1,
+        float(t2) * s2,
+        float(t3) * s3,
+        float(t4) * s4,
+    )
+
+
 @dataclass(frozen=True)
 class SerialConfig:
     port: str = os.environ.get("ARM_CONTROL_SERIAL_PORT", "/dev/ttyAMA2")
@@ -116,14 +150,14 @@ class ControlConfig:
     tau_hz: float = max(1.0, min(500.0, _env_float("ARM_CONTROL_TAU_HZ", 25.0)))
     tau_gain: float = _env_float("ARM_CONTROL_TAU_GAIN", 1.0)
     calibration_rad: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_CAL_R0", 2.06016),
+        _env_float("ARM_CONTROL_CAL_R0", 2.055016),
         _env_float("ARM_CONTROL_CAL_R1", 3.6532),
         _env_float("ARM_CONTROL_CAL_R2", -4.1500),
         _env_float("ARM_CONTROL_CAL_R3", -2.7514),
     )
     
     hold_kp: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KP_1", 25.0),
+        _env_float("ARM_CONTROL_HOLD_KP_1", 30.0),
         _env_float("ARM_CONTROL_HOLD_KP_2", 60.0),
         _env_float("ARM_CONTROL_HOLD_KP_3", 50.0),
         _env_float("ARM_CONTROL_HOLD_KP_4", 25.0),
@@ -137,7 +171,7 @@ class ControlConfig:
     # )
     
     hold_kd: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KD_1", 1.0),
+        _env_float("ARM_CONTROL_HOLD_KD_1", 2.3),
         _env_float("ARM_CONTROL_HOLD_KD_2", 13.0),
         _env_float("ARM_CONTROL_HOLD_KD_3", 10),
         _env_float("ARM_CONTROL_HOLD_KD_4", 2.0),

@@ -9,7 +9,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from .config import GRAVITY_AXIS_SCALE, MOTOR_AXIS_SIGN
+from .config import MOTOR_AXIS_SIGN, apply_gravity_motor_output
 from .domain.mapping import (
     joint_tau_to_motor_tau,
     motor_delta_rad_to_joint_deg_x100,
@@ -380,12 +380,7 @@ def compute_gravity_tau_nm(
         raise ValueError("gravity solver returned less than 4 dof")
 
     tau_pin = joint_tau_to_motor_tau(tau_joint, gain)
-    return (
-        float(tau_pin[0]) * GRAVITY_AXIS_SCALE[0],
-        float(tau_pin[1]) * GRAVITY_AXIS_SCALE[1],
-        float(tau_pin[2]) * GRAVITY_AXIS_SCALE[2],
-        float(tau_pin[3]) * GRAVITY_AXIS_SCALE[3],
-    )
+    return apply_gravity_motor_output(tau_pin)
 
 
 def compute_gravity_tau_nm_mlp(
