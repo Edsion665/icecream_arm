@@ -28,7 +28,7 @@ class ControlConfig:
     max_joint_vel_rad_s: float = 0.6
     max_target_rate_rad_s: float = 1.5
     # 关节速度限制，单位：弧度/秒
-    tracking_speed_rad_s: tuple = (1.0, 1.0, 1.0, 1.0)
+    tracking_speed_rad_s: tuple = (1.5, 1.5, 1.5, 1.5)
     # 末端速度限制，单位：米/秒
     pose_vel_max_m_s: float = 0.1
     # 关节位置误差限制，单位：度

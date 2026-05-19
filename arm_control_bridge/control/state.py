@@ -61,6 +61,7 @@ class CalculatorState:
     q4_blend_active: bool = False
     q4_blend_start_rad: float = 0.0
     q4_blend_t: float = 1.0
+    q_pose_target_rad: Optional[np.ndarray] = None
 
     def wrist_joint_rad(self) -> float:
         """手腕舵机角（弧度，含标定）：与 ``wrist_rel_deg`` / UDP ``p_rel_deg[4]`` 一致。"""

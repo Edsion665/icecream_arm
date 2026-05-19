@@ -11,7 +11,6 @@ from ..config import CONFIG, IK_CONFIG, frontend_pose_to_internal_m
 from ..kinematics.urdf_kinematics import (
     JOINT_LIMITS_LOWER,
     JOINT_LIMITS_UPPER,
-    NUM_JOINTS,
     Q4_OFFSET_RAD,
     Q4_Q23_COEFF,
     URDFKinematics,
@@ -37,18 +36,22 @@ class CalculatorEngine:
             state.mode = MotionMode.POSE
             xi, yi, zi = frontend_pose_to_internal_m(float(p["x"]), float(p["y"]), float(p["z"]))
             state.pose_xyz = np.array([xi, yi, zi], dtype=float)
+            state.q_pose_target_rad = None
             # 从当前 FK 起步限速，避免 POSE 模式下重复绝对 pose 时跳过渐变导致关节突变。
             state.prev_pose_xyz = self._kin.forward_kinematics_position_link4(state.q_full).copy()
             if prev_mode != MotionMode.POSE:
                 state.q4_blend_active = True
                 state.q4_blend_start_rad = float(state.q_cmd[3])
                 state.q4_blend_t = 0.0
+            self._ik.set_pose_reach_target(state)
         elif cmd.kind == "pose_delta":
             state.mode = MotionMode.POSE
             state.pose_xyz[0] += float(p["dx"])
             state.pose_xyz[1] += float(p["dy"])
             state.pose_xyz[2] += float(p["dz"])
             state.prev_pose_xyz = None
+            state.q_pose_target_rad = None
+            self._ik.set_pose_reach_target(state)
         elif cmd.kind == "joints":
             state.mode = MotionMode.JOINTS
             arr = p["axes_rel_deg"]
@@ -154,29 +157,19 @@ class CalculatorEngine:
         *,
         fb_arm_rad: Optional[np.ndarray] = None,
         joints_tol_deg: float = CONFIG.reached_joints_tol_deg,
-        pose_tol_m: float = CONFIG.reached_pose_tol_m,
     ) -> Tuple[bool, float]:
-        """到位判定：``(reached, error)``；error 在关节模式为度范数，在 pose 模式为米。"""
-        if state.mode == MotionMode.JOINTS:
-            if fb_arm_rad is not None:
-                q_actual = np.asarray(fb_arm_rad, dtype=float).ravel()[:ARM_AXES]
-            else:
-                q_actual = state.q_cmd[:ARM_AXES].copy()
-            q_target = state.q_calib_rad[:ARM_AXES] + np.deg2rad(state.joint_rel_deg_4)
-            err_rad = q_actual - q_target
-            err_deg = np.rad2deg(np.abs(err_rad))
-            error = float(np.linalg.norm(err_deg))
-            reached = bool(np.all(err_deg < joints_tol_deg))
-            return reached, error
+        """到位判定：``(reached, error)``；error 均为关节角度范数（度）。"""
         if fb_arm_rad is not None:
-            q_fb = np.asarray(fb_arm_rad, dtype=float).ravel()
-            q_full = np.zeros(NUM_JOINTS, dtype=float)
-            n = min(len(q_fb), NUM_JOINTS)
-            q_full[:n] = q_fb[:n]
-            q_full[4] = float(state.q_cmd[4])
+            q_actual = np.asarray(fb_arm_rad, dtype=float).ravel()[:ARM_AXES]
         else:
-            q_full = state.q_cmd.copy()
-        p_actual = self._kin.forward_kinematics_position_link4(q_full)
-        error = float(np.linalg.norm(p_actual - state.pose_xyz))
-        reached = error < pose_tol_m
+            q_actual = state.q_cmd[:ARM_AXES].copy()
+        if state.mode == MotionMode.JOINTS:
+            q_target = state.q_calib_rad[:ARM_AXES] + np.deg2rad(state.joint_rel_deg_4)
+        else:
+            if state.q_pose_target_rad is None:
+                return False, float("inf")
+            q_target = state.q_pose_target_rad[:ARM_AXES]
+        err_deg = np.rad2deg(np.abs(q_actual - q_target))
+        error = float(np.linalg.norm(err_deg))
+        reached = bool(np.all(err_deg < joints_tol_deg))
         return reached, error

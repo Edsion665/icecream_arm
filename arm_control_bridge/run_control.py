@@ -198,7 +198,7 @@ def run_loop(
                     p = kin.forward_kinematics_position_link4(q_for_fk).tolist()
                     result = {"ok": True, "reached": True,
                               "actual_pose": {"x": round(p[0],4), "y": round(p[1],4), "z": round(p[2],4)},
-                              "error_pose_m": round(err, 4)}
+                              "error_joints_deg": round(err, 3)}
                 else:
                     result = {"ok": True, "reached": True, "error_joints_deg": round(err, 3)}
                 tracker.feed(reached, result)
@@ -478,7 +478,7 @@ def run_sim_loop(
                 p = kin.forward_kinematics_position_link4(q_for_fk).tolist()
                 result = {"ok": True, "reached": True,
                           "actual_pose": {"x": round(p[0],4), "y": round(p[1],4), "z": round(p[2],4)},
-                          "error_pose_m": round(err, 4)}
+                          "error_joints_deg": round(err, 3)}
             else:
                 result = {"ok": True, "reached": True, "error_joints_deg": round(err, 3)}
             tracker.feed(reached, result)
