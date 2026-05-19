@@ -42,14 +42,20 @@ class HeadFSM:
             self._emit_claw(wrist_deg, label, closed=closed)
 
     def _joints_obs(self, axes: list[float], label: str) -> None:
-        rep = self.speaker.send_joints(axes, context=label)
+        ack = self.speaker.send_joints(axes, context=label)
+        if not ack.ok:
+            raise RuntimeError(f"{label}: joints POST failed: {ack.error or ack.body}")
+        rep = self.speaker.wait_joints_reached(self._timeout())
         if not self.speaker.joints_in_position(rep):
-            raise RuntimeError(f"{label}: joints failed: {rep.error or rep.body}")
+            raise RuntimeError(f"{label}: joints not reached: {rep.error or rep.body}")
 
     def _pose_to(self, pos: Position, label: str, *, role: Role) -> None:
         """向 bridge 发笛卡尔目标（z 已在相机 ingest 时按 role 抬升）。"""
         log.info("%s: bridge pose role=%s x=%.4f y=%.4f z=%.4f", label, role, pos.x, pos.y, pos.z)
-        rep = self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
+        ack = self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
+        if not ack.ok:
+            raise RuntimeError(f"{label}: pose POST failed: {ack.error or ack.body}")
+        rep = self.speaker.wait_pose_reached(self._timeout())
         if not self.speaker.pose_in_position(rep):
             raise RuntimeError(f"{label}: pose not reached: {rep.error or rep.body}")
 

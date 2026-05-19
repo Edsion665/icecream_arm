@@ -16,18 +16,18 @@ idle_grip_state: 0
 merge_pos_eps_m: 0.005
 merge_yaw_eps_deg: 3.0
 # 相机 position.z 抬升（米）：target +40cm，object +20cm
-target_z_offset_m: 0.33
-object_z_offset_m: 0.2
+target_z_offset_m: 0.43
+object_z_offset_m: 0.3
 
 
-claw_settle_after_pick_s: 2.0
-claw_settle_after_place_s: 2.0
+claw_settle_after_pick_s: 1.0
+claw_settle_after_place_s: 1.0
 # 转盘临位观察位置
 observe1_axes_rel_deg: [0.0, 20.0, -80.0, -90.0]
 # 传送带观察位置
 observe2_axes_rel_deg: [0.0, 20.0, -70.0, -90.0]
 
-state_timeout_s: 60.0
+state_timeout_s: 10.0
 refresh_wait_s: 1.0
 
 # Optional: PLAN must see object with confidence >= this (0 = off)

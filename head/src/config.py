@@ -60,6 +60,8 @@ class Settings:
     claw_settle_after_place_s: float = 1.0
     # obs1/obs2/回 obs1 关节到位后丢弃 _last_frame，wait 必须等到下一帧 ingest（避免沿用上一轮缓存导致立刻去 obs2）
     require_fresh_detection_after_obs: bool = True
+    # 下发 joints/pose 后轮询 bridge GET /api/reached 的间隔（秒）
+    bridge_reached_poll_s: float = 0.04
 
     def __post_init__(self) -> None:
         if self.observe1_axes_rel_deg is None:
@@ -76,6 +78,8 @@ class Settings:
             raise ValueError("idle_bridge_hz must be positive")
         if self.idle_grip_state not in (0, 1):
             raise ValueError("idle_grip_state must be 0 or 1")
+        if self.bridge_reached_poll_s <= 0:
+            raise ValueError("bridge_reached_poll_s must be positive")
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -111,4 +115,5 @@ def load_settings(path: str | Path) -> Settings:
         claw_settle_after_pick_s=float(raw.get("claw_settle_after_pick_s", 1.0)),
         claw_settle_after_place_s=float(raw.get("claw_settle_after_place_s", 1.0)),
         require_fresh_detection_after_obs=bool(raw.get("require_fresh_detection_after_obs", True)),
+        bridge_reached_poll_s=float(raw.get("bridge_reached_poll_s", 0.04)),
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List
 from urllib.error import HTTPError, URLError
@@ -24,7 +25,9 @@ class BridgeClient:
     """HTTP client for head2bridge (joints / pose / claw)."""
 
     def __init__(self, settings: Settings) -> None:
+        self._settings = settings
         self._base = settings.bridge_base_url.rstrip("/")
+        self._reached_poll_s = float(settings.bridge_reached_poll_s)
         # 逻辑层 True=合拢 False=张开；下发 bridge 时 grip_state：0=合拢，1=张开
         self._last_grip_closed: bool = not settings.initial_grip_open
 
@@ -58,6 +61,52 @@ class BridgeClient:
         except URLError as e:
             return BridgeReply(False, 0, {}, error=str(e.reason))
 
+    def _get(self, path: str) -> BridgeReply:
+        url = f"{self._base}{path}"
+        req = Request(url, method="GET")
+        try:
+            with urlopen(req, timeout=10.0) as resp:  # nosec B310
+                raw = resp.read().decode("utf-8")
+                code = resp.getcode() or 200
+                try:
+                    body = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    return BridgeReply(False, code, {}, error="invalid json in bridge response")
+                if not isinstance(body, dict):
+                    return BridgeReply(False, code, {}, error="bridge response not object")
+                ok = bool(body.get("ok", False))
+                return BridgeReply(ok, code, body, error=None if ok else str(body.get("error", "unknown")))
+        except HTTPError as e:
+            try:
+                raw = e.read().decode("utf-8")
+                body = json.loads(raw) if raw else {}
+            except Exception:  # noqa: BLE001
+                body = {}
+            return BridgeReply(False, e.code, body if isinstance(body, dict) else {}, error=str(e))
+        except URLError as e:
+            return BridgeReply(False, 0, {}, error=str(e.reason))
+
+    def poll_reached(self) -> BridgeReply:
+        return self._get("/api/reached")
+
+    def wait_joints_reached(self, timeout_s: float) -> BridgeReply:
+        deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        while time.monotonic() < deadline:
+            rep = self.poll_reached()
+            if self.joints_in_position(rep):
+                return rep
+            time.sleep(self._reached_poll_s)
+        return BridgeReply(False, 408, {"ok": False, "reached": False, "error": "timeout"}, error="timeout")
+
+    def wait_pose_reached(self, timeout_s: float) -> BridgeReply:
+        deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        while time.monotonic() < deadline:
+            rep = self.poll_reached()
+            if self.pose_in_position(rep):
+                return rep
+            time.sleep(self._reached_poll_s)
+        return BridgeReply(False, 408, {"ok": False, "reached": False, "error": "timeout"}, error="timeout")
+
     def send_joints(self, axes_rel_deg: List[float], *, context: str = "") -> BridgeReply:
         if len(axes_rel_deg) != 4:
             return BridgeReply(False, 0, {}, error="axes_rel_deg must have length 4")
@@ -72,7 +121,13 @@ class BridgeClient:
         )
 
     def joints_in_position(self, reply: BridgeReply) -> bool:
-        return reply.ok and reply.status_code == 200
+        if not reply.ok or reply.status_code != 200:
+            return False
+        b = reply.body
+        mode = b.get("mode")
+        if mode is not None and mode != "joints":
+            return False
+        return bool(b.get("reached", False))
 
     def send_pose(self, x: float, y: float, z: float, *, context: str = "") -> BridgeReply:
         log.info(
@@ -88,6 +143,9 @@ class BridgeClient:
         if not reply.ok or reply.status_code != 200:
             return False
         b = reply.body
+        mode = b.get("mode")
+        if mode is not None and mode != "pose":
+            return False
         if not bool(b.get("reached", False)):
             return False
         ap = b.get("actual_pose")

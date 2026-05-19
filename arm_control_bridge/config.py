@@ -15,7 +15,7 @@ from typing import List, Optional
 class ControlConfig:
     """控制周期、限速与到位判定参数。"""
 
-    control_hz: float = 25.0
+    control_hz: float = 50
     default_tcp_port: int = 9888
     default_udp_port: int = 9870
     listen_host: str = "0.0.0.0"
@@ -24,13 +24,13 @@ class ControlConfig:
     web_test_port: int = 8877
     calibration_md_relpath: str = "initial_position.md"
     q5_fixed_deg: float = 0.0
-    approach_gain_scale: float = 0.1  # APPROACH_GAIN = control_hz * scale
+    approach_gain_scale: float = 0.2  # APPROACH_GAIN = control_hz * scale
     max_joint_vel_rad_s: float = 0.6
-    max_target_rate_rad_s: float = 1.5
+    max_target_rate_rad_s: float = 5
     # 关节速度限制，单位：弧度/秒
-    tracking_speed_rad_s: tuple = (1.5, 1.5, 1.5, 1.5)
+    tracking_speed_rad_s: tuple = (5, 5, 5, 5)
     # 末端速度限制，单位：米/秒
-    pose_vel_max_m_s: float = 0.1
+    pose_vel_max_m_s: float = 0.2
     # 关节位置误差限制，单位：度
     reached_joints_tol_deg: float = 5.0
     # 末端位置误差限制，单位：米
@@ -38,7 +38,7 @@ class ControlConfig:
     # 手腕位置误差限制，单位：度
     reached_wrist_tol_deg: float = 5.0
     # 夹爪延迟时间，单位：秒
-    reached_claw_delay_s: float = 2.0
+    reached_claw_delay_s: float = 1.0
     # 到位超时时间，单位：秒
     reached_timeout_s: float = 10.0
     # 稳定帧数
