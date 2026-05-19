@@ -35,6 +35,8 @@ class Settings:
 
     merge_pos_eps_m: float = 0.005
     merge_yaw_eps_deg: float = 3.0
+    # plan_pick / 放置选最近 target 的距离参考点 (robot_base, m)
+    plan_reference_xyz: List[float] | None = None
     # 相机上报 position.z（m）抬升：target +0.4m，object +0.2m；lid 不变
     target_z_offset_m: float = 0.25
     object_z_offset_m: float = 0.2
@@ -70,6 +72,10 @@ class Settings:
             self.observe2_axes_rel_deg = [0.0, 5.0, -30.0, -50.0]
         if len(self.observe1_axes_rel_deg) != 4 or len(self.observe2_axes_rel_deg) != 4:
             raise ValueError("observe*_axes_rel_deg must have length 4")
+        if self.plan_reference_xyz is None:
+            self.plan_reference_xyz = [0.0, 0.0, 0.0]
+        if len(self.plan_reference_xyz) != 3:
+            raise ValueError("plan_reference_xyz must have length 3")
         if self.idle_axes_rel_deg is None:
             self.idle_axes_rel_deg = [0.0, 0.0, 0.0, 0.0]
         if len(self.idle_axes_rel_deg) != 4:
@@ -98,6 +104,7 @@ def load_settings(path: str | Path) -> Settings:
         idle_grip_state=int(raw.get("idle_grip_state", 0)),
         merge_pos_eps_m=float(raw.get("merge_pos_eps_m", 0.005)),
         merge_yaw_eps_deg=float(raw.get("merge_yaw_eps_deg", 3.0)),
+        plan_reference_xyz=list(raw.get("plan_reference_xyz") or [0.0, 0.0, 0.0]),
         target_z_offset_m=float(raw.get("target_z_offset_m", 0.4)),
         object_z_offset_m=float(raw.get("object_z_offset_m", 0.2)),
         observe1_axes_rel_deg=list(raw.get("observe1_axes_rel_deg") or [0.0, 0.0, -45.0, -60.0]),

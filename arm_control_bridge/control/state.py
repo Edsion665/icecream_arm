@@ -47,7 +47,6 @@ class CalculatorState:
     q_calib_rad: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     q5_fixed_rad: float = 0.0
     pose_xyz: np.ndarray = field(default_factory=lambda: np.array([0.35, 0.2, 0.25], dtype=float))
-    prev_pose_xyz: Optional[np.ndarray] = None
     joint_rel_deg_4: np.ndarray = field(default_factory=lambda: np.zeros(ARM_AXES, dtype=float))
     servo_deg: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
     wrist_rel_deg: float = 0.0
@@ -57,10 +56,7 @@ class CalculatorState:
     q_full: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     q_cmd: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     initialized: bool = False
-    sing_hold: bool = False
-    q4_blend_active: bool = False
-    q4_blend_start_rad: float = 0.0
-    q4_blend_t: float = 1.0
+    # pose 命令经 IK 解算后的目标关节角（rad），供 is_reached 判定使用
     q_pose_target_rad: Optional[np.ndarray] = None
 
     def wrist_joint_rad(self) -> float:
@@ -90,10 +86,6 @@ class CalculatorState:
         self.q_cmd[:NUM_JOINTS] = self.q_full[:NUM_JOINTS].copy()
         self.mode = MotionMode.JOINTS
         self.initialized = True
-        self.prev_pose_xyz = None
-        self.q4_blend_active = False
-        self.q4_blend_start_rad = float(self.q_cmd[3])
-        self.q4_blend_t = 1.0
 
     def sync_from_articulation_rad(self, q_joint_rad: np.ndarray, n_dof: int) -> None:
         """用读到的关节弧度覆盖内部状态，使控制与物理一致。"""
@@ -110,7 +102,3 @@ class CalculatorState:
             self.servo_deg = np.array([self.wrist_rel_deg, self.grip_state], dtype=float)
         self.mode = MotionMode.JOINTS
         self.initialized = True
-        self.prev_pose_xyz = None
-        self.q4_blend_active = False
-        self.q4_blend_start_rad = float(self.q_cmd[3])
-        self.q4_blend_t = 1.0

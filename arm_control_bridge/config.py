@@ -13,9 +13,12 @@ from typing import List, Optional
 
 @dataclass(frozen=True)
 class ControlConfig:
-    """控制周期、限速与到位判定参数。"""
+    """控制周期与网络参数。
 
-    control_hz: float = 50
+    速度规划完全由 Pi 侧 ramp 负责，Bridge 侧只计算目标角度并以固定频率发送。
+    """
+
+    control_hz: float = 25.0
     default_tcp_port: int = 9888
     default_udp_port: int = 9870
     listen_host: str = "0.0.0.0"
@@ -23,53 +26,45 @@ class ControlConfig:
     web_test_host: str = "0.0.0.0"
     web_test_port: int = 8877
     calibration_md_relpath: str = "initial_position.md"
+    # 手腕关节5固定角（度），IK 求解时作为约束传入
     q5_fixed_deg: float = 0.0
-    approach_gain_scale: float = 0.2  # APPROACH_GAIN = control_hz * scale
-    max_joint_vel_rad_s: float = 0.6
-    max_target_rate_rad_s: float = 5
-    # 关节速度限制，单位：弧度/秒
-    tracking_speed_rad_s: tuple = (5, 5, 5, 5)
-    # 末端速度限制，单位：米/秒
-    pose_vel_max_m_s: float = 0.2
-    # 关节位置误差限制，单位：度
+    # 到位判定容差（度），用于 ReachTracker 判断命令是否执行完成
     reached_joints_tol_deg: float = 5.0
-    # 末端位置误差限制，单位：米
     reached_pose_tol_m: float = 0.005
-    # 手腕位置误差限制，单位：度
     reached_wrist_tol_deg: float = 5.0
-    # 夹爪延迟时间，单位：秒
-    reached_claw_delay_s: float = 1.0
-    # 到位超时时间，单位：秒
+    reached_claw_delay_s: float = 2.0
     reached_timeout_s: float = 10.0
-    # 稳定帧数
     reached_stable_frames: int = 5
-    # RPi WebSocket 端口
+    # RPi WebSocket 端口（Pi 反馈回传）
     rpi_ws_port: int = 8765
-    # Pi 反馈重连间隔时间，单位：秒
     pi_feedback_reconnect_interval_s: float = 3.0
 
     @property
     def control_dt(self) -> float:
         return 1.0 / self.control_hz
 
-    @property
-    def approach_gain(self) -> float:
-        return self.control_hz * self.approach_gain_scale
-
 
 @dataclass(frozen=True)
 class IKConfig:
-    """几何解耦与数值 IK 参数。"""
+    """几何解耦与数值 IK 参数。
 
+    q4_geometric_offset_deg / q4_geometric_q23_coeff 定义 joint4 的几何约束：
+        q4 = offset + coeff * (q2 + q3)
+    由 urdf_kinematics.py 读取为模块级常量，IK 求解和 engine 的 _pose_to_joints 均依赖。
+    """
+
+    # joint4 几何约束系数
     q4_geometric_offset_deg: float = -180.0
     q4_geometric_q23_coeff: float = -1.0
+    # IK 数值求解参数
     pose_q5_extra_deg: float = 0.0
-    q4_blend_time_s: float = 2.0
     ik_damping: float = 1e-2
     ik_max_iter: int = 80
     ik_pos_tol: float = 1e-5
+    # joint4 安全角度范围（rad）
     q4_safe_min: float = -2.8
     q4_safe_max: float = 2.8
+    # 奇异性检测阈值
     sv_warn: float = 0.025
     sv_crit: float = 0.005
 

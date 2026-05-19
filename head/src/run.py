@@ -13,6 +13,7 @@ from src.listener import IngestionServer
 from src.models import Position, Role, TrackSlot
 from src.pi2head_listener import Pi2HeadServer
 from src.planner import peek_target_track, plan_pick
+from src.shape_match import shape_prefix
 from src.speaker import BridgeClient
 from src.tracker import Tracker
 
@@ -25,6 +26,7 @@ class HeadFSM:
         self.tracker = tracker
         self.speaker = speaker
         self.target_queue = target_queue
+        self._cycle_shape_prefix: str | None = None
 
     def _timeout(self) -> float:
         return self.settings.state_timeout_s
@@ -117,6 +119,7 @@ class HeadFSM:
         # 0: 每轮开始丢弃上一轮残留；target/object 只允许在本轮 obs1/obs2 后的 clear+apply 中建立
         self._discard_slot("target", "cycle_start_discard_target")
         self._discard_slot("object", "cycle_start_discard_object")
+        self._cycle_shape_prefix = None
         self._log_queue("cycle_start (after discard)")
 
         # 1: 先到 obs1 关节位，再腕零 + 夹爪张开
@@ -142,8 +145,8 @@ class HeadFSM:
         self._wait_roles(frozenset({"object"}), "step4_wait_object_frame")
         self._clear_apply("object", "step4_object_slots")
 
-        # 5: PLAN (snapshot after slots filled)
-        self._log_queue("step5_plan (queue优先于槽位里的 target)")
+        # 5: PLAN — 最近 target + 同前缀 object
+        self._log_queue("step5_plan (最近 target + 同形状前缀 object)")
         snap = self.tracker.get_snapshot()
         pr = plan_pick(s, snap, self.target_queue)
         if not pr.ok or pr.object_slot is None or pr.target_slot is None:
@@ -152,13 +155,19 @@ class HeadFSM:
         tgt_plan = pr.target_slot
         if tgt_plan is None:
             raise RuntimeError("PLAN internal: target_slot missing")
+        self._cycle_shape_prefix = shape_prefix(tgt_plan.class_id)
         log.info(
-            "step5 plan ok | object pos=(%.3f,%.3f,%.3f) wrist=%.2f | target class_id=%s label=%s pos=(%.3f,%.3f,%.3f) wrist=%.2f",
+            "step5 plan ok | shape_prefix=%s | object class_id=%s | target class_id=%s",
+            self._cycle_shape_prefix,
+            obj.class_id,
+            tgt_plan.class_id,
+        )
+        log.info(
+            "step5 plan ok | object pos=(%.3f,%.3f,%.3f) wrist=%.2f | target label=%s pos=(%.3f,%.3f,%.3f) wrist=%.2f",
             obj.position.x,
             obj.position.y,
             obj.position.z,
             obj.wrist_yaw_deg,
-            tgt_plan.class_id,
             tgt_plan.label,
             tgt_plan.position.x,
             tgt_plan.position.y,
@@ -196,16 +205,30 @@ class HeadFSM:
         self._invalidate_camera_cache("after_step8_obs1_before_wait_target_place")
 
         # 9: 在 obs1 下等待 target 帧，再 clear+apply（与步 2 相同；放置用 target 不得沿用抓取前的槽）
-        log.info("step9: wait target @ obs1 return, clear+apply slots (步10 peek 时若 target_queue 非空仍优先队列)")
+        log.info(
+            "step9: wait target @ obs1 return (放置须与本轮前缀 %s 一致)",
+            self._cycle_shape_prefix,
+        )
         self._wait_roles(frozenset({"target"}), "step9_wait_target_frame")
         self._clear_apply("target", "step9_target_slots")
-        self._log_queue("step9_after_apply (queue 仍在，peek 时队列优先于槽)")
+        self._log_queue("step9_after_apply")
 
-        # 10: pose to target (peek target / queue; do not require object still visible)
+        # 10: 同前缀 target 槽位中最近者；无匹配再回退 target_queue
         snap2 = self.tracker.get_snapshot()
-        tgt = peek_target_track(snap2, self.target_queue)
+        tgt = peek_target_track(
+            snap2, self.target_queue, shape_prefix_lock=self._cycle_shape_prefix
+        )
         if tgt is None:
-            raise RuntimeError("no target pose after step9 (queue empty and no target slot)")
+            raise RuntimeError(
+                f"no target after step9 for prefix={self._cycle_shape_prefix!r}"
+            )
+        if self._cycle_shape_prefix and not (
+            getattr(tgt, "class_id", None) == "queue"
+            or shape_prefix(tgt.class_id) == self._cycle_shape_prefix
+        ):
+            raise RuntimeError(
+                f"step10 target prefix mismatch: want {self._cycle_shape_prefix}, got {tgt.class_id}"
+            )
         from_queue = getattr(tgt, "class_id", None) == "queue"
         log.info(
             "step10 peek_target: from_queue=%s class_id=%s label=%s pos=(%.3f,%.3f,%.3f) wrist=%.2f",

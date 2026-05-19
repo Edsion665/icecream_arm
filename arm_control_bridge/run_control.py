@@ -12,15 +12,8 @@ import sys
 import time
 from typing import Optional
 
-from .constants import IMMEDIATE_ACK_KINDS
 from .exceptions import UDPTransportError
-from .runtime import (
-    ReachSnapshot,
-    ReachTracker,
-    log_udp_frame_preview,
-    start_reply_worker,
-    stop_reply_worker,
-)
+from .runtime import ReachTracker, log_udp_frame_preview, start_reply_worker, stop_reply_worker
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,30 +45,6 @@ def _default_urdf_path() -> Optional[str]:
 DEFAULT_URDF = _default_urdf_path()
 
 
-def _update_reach_snapshot(
-    engine,
-    state,
-    kin,
-    snapshot: ReachSnapshot,
-    *,
-    fb_arm_rad=None,
-) -> tuple[bool, float]:
-    """每控制周期刷新到位快照；返回本帧原始 ``(reached, error_deg)``。"""
-    reached, err = engine.is_reached(state, fb_arm_rad=fb_arm_rad)
-    actual_pose = None
-    if state.mode.value == "pose":
-        q_for_fk = fb_arm_rad if fb_arm_rad is not None else state.q_cmd
-        p = kin.forward_kinematics_position_link4(q_for_fk).tolist()
-        actual_pose = {"x": round(p[0], 4), "y": round(p[1], 4), "z": round(p[2], 4)}
-    snapshot.update(
-        mode=state.mode.value,
-        reached_now=reached,
-        error_joints_deg=err,
-        actual_pose=actual_pose,
-    )
-    return reached, err
-
-
 def run_loop(
     *,
     listen_host: str,
@@ -105,7 +74,6 @@ def run_loop(
             print(msg, flush=True)
 
     tracker = ReachTracker()
-    reach_snapshot = ReachSnapshot()
 
     def _on_pending(*, tcp_conn=None, http_slot=None) -> None:
         tracker.register_pending(tcp_conn=tcp_conn, http_slot=http_slot)
@@ -145,15 +113,7 @@ def run_loop(
 
     if web_port > 0:
         _web_dir = os.path.join(os.path.dirname(__file__), "web")
-        start_http_server(
-            cmd_q,
-            host=web_host,
-            port=web_port,
-            web_dir=_web_dir,
-            on_log=log,
-            on_pending=_on_pending,
-            reach_snapshot=reach_snapshot,
-        )
+        start_http_server(cmd_q, host=web_host, port=web_port, web_dir=_web_dir, on_log=log, on_pending=_on_pending)
 
     arm_motor: Optional[motor] = None
     adapter: Optional[RpiProtocolAdapter] = None
@@ -203,11 +163,8 @@ def run_loop(
                     dump_next_udp_frame = True
                     continue
                 log(f"[runner] recv {c.kind}: {c.payload}")
+                tracker.accept(c.kind)
                 engine.apply_command(c, state)
-                if c.kind in IMMEDIATE_ACK_KINDS:
-                    reach_snapshot.reset_stable_buffer()
-                else:
-                    tracker.accept(c.kind)
                 dump_next_udp_frame = True
 
             while True:
@@ -233,15 +190,17 @@ def run_loop(
                 if state.stepper_deg_cmd != 0.0:
                     state.stepper_deg_cmd = 0.0
 
-            fb = pi_fb.get_fb_arm_rad() if pi_fb is not None else None
-            reached, err = _update_reach_snapshot(
-                engine, state, kin, reach_snapshot, fb_arm_rad=fb
-            )
             if tracker.waiting:
-                body = reach_snapshot.get()
-                result = {"ok": True, "reached": bool(body.get("reached")), "error_joints_deg": round(err, 3)}
-                if body.get("actual_pose") is not None:
-                    result["actual_pose"] = body["actual_pose"]
+                fb = pi_fb.get_fb_arm_rad() if pi_fb is not None else None
+                reached, err = engine.is_reached(state, fb_arm_rad=fb)
+                if tracker.cmd_kind in ("pose", "pose_delta"):
+                    q_for_fk = fb if fb is not None else state.q_cmd
+                    p = kin.forward_kinematics_position_link4(q_for_fk).tolist()
+                    result = {"ok": True, "reached": True,
+                              "actual_pose": {"x": round(p[0],4), "y": round(p[1],4), "z": round(p[2],4)},
+                              "error_joints_deg": round(err, 3)}
+                else:
+                    result = {"ok": True, "reached": True, "error_joints_deg": round(err, 3)}
                 tracker.feed(reached, result)
 
             next_t += CONFIG.control_dt
@@ -307,7 +266,6 @@ def run_sim_loop(
             print(msg, flush=True)
 
     tracker = ReachTracker()
-    reach_snapshot = ReachSnapshot()
 
     def _on_pending(*, tcp_conn=None, http_slot=None) -> None:
         tracker.register_pending(tcp_conn=tcp_conn, http_slot=http_slot)
@@ -365,7 +323,6 @@ def run_sim_loop(
             web_dir=os.path.join(os.path.dirname(__file__), "web"),
             on_log=log,
             on_pending=_on_pending,
-            reach_snapshot=reach_snapshot,
         )
 
     usd_path = os.path.abspath(os.path.join(_PKG_DIR, "configuration", sim_cfg.arm_usd_relpath))
@@ -462,11 +419,8 @@ def run_sim_loop(
                 dump_next_udp_frame = True
                 continue
             log(f"[sim] recv {c.kind}: {c.payload}")
+            tracker.accept(c.kind)
             engine.apply_command(c, state)
-            if c.kind in IMMEDIATE_ACK_KINDS:
-                reach_snapshot.reset_stable_buffer()
-            else:
-                tracker.accept(c.kind)
             dump_next_udp_frame = True
             if c.kind in ("pose", "pose_delta"):
                 log(
@@ -515,16 +469,18 @@ def run_sim_loop(
                 log(f"[sim] UDP 发送失败，退出: {exc}")
                 raise SystemExit(1) from exc
 
-        q_sim_raw = arm.get_joint_positions()
-        fb_sim = np.asarray(q_sim_raw, dtype=float).ravel()[:4] if q_sim_raw is not None else None
-        reached, err = _update_reach_snapshot(
-            engine, state, kin, reach_snapshot, fb_arm_rad=fb_sim
-        )
         if tracker.waiting:
-            body = reach_snapshot.get()
-            result = {"ok": True, "reached": bool(body.get("reached")), "error_joints_deg": round(err, 3)}
-            if body.get("actual_pose") is not None:
-                result["actual_pose"] = body["actual_pose"]
+            q_sim_raw = arm.get_joint_positions()
+            fb_sim = np.asarray(q_sim_raw, dtype=float).ravel()[:4] if q_sim_raw is not None else None
+            reached, err = engine.is_reached(state, fb_arm_rad=fb_sim)
+            if tracker.cmd_kind in ("pose", "pose_delta"):
+                q_for_fk = fb_sim if fb_sim is not None else state.q_cmd
+                p = kin.forward_kinematics_position_link4(q_for_fk).tolist()
+                result = {"ok": True, "reached": True,
+                          "actual_pose": {"x": round(p[0],4), "y": round(p[1],4), "z": round(p[2],4)},
+                          "error_joints_deg": round(err, 3)}
+            else:
+                result = {"ok": True, "reached": True, "error_joints_deg": round(err, 3)}
             tracker.feed(reached, result)
 
     stop_reply_worker(tracker)
