@@ -35,6 +35,9 @@ class Settings:
 
     merge_pos_eps_m: float = 0.005
     merge_yaw_eps_deg: float = 3.0
+    # 相机上报 position.z（m）抬升：target +0.4m，object +0.2m；lid 不变
+    target_z_offset_m: float = 0.25
+    object_z_offset_m: float = 0.2
 
     observe1_axes_rel_deg: List[float] | None = None
     observe2_axes_rel_deg: List[float] | None = None
@@ -91,6 +94,8 @@ def load_settings(path: str | Path) -> Settings:
         idle_grip_state=int(raw.get("idle_grip_state", 0)),
         merge_pos_eps_m=float(raw.get("merge_pos_eps_m", 0.005)),
         merge_yaw_eps_deg=float(raw.get("merge_yaw_eps_deg", 3.0)),
+        target_z_offset_m=float(raw.get("target_z_offset_m", 0.4)),
+        object_z_offset_m=float(raw.get("object_z_offset_m", 0.2)),
         observe1_axes_rel_deg=list(raw.get("observe1_axes_rel_deg") or [0.0, 0.0, -45.0, -60.0]),
         observe2_axes_rel_deg=list(raw.get("observe2_axes_rel_deg") or [0.0, 5.0, -30.0, -50.0]),
         state_timeout_s=float(raw.get("state_timeout_s", 60.0)),

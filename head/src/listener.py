@@ -7,6 +7,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Tuple
 
+from src.config import Settings
+from src.coordinates import apply_role_z_offset
 from src.models import DetectionFrame, ObjectDet, Position, Role
 from src.tracker import Tracker
 
@@ -14,7 +16,11 @@ _VALID_FRAMES = frozenset({"robot_base", "camera_optical"})
 _VALID_ROLES = frozenset({"object", "target", "lid"})
 
 
-def parse_detection_payload(body: Dict[str, Any], implied_detection: bool) -> Tuple[bool, str | None, DetectionFrame | None]:
+def parse_detection_payload(
+    body: Dict[str, Any],
+    implied_detection: bool,
+    settings: Settings | None = None,
+) -> Tuple[bool, str | None, DetectionFrame | None]:
     cmd = body.get("cmd") or body.get("type")
     if implied_detection:
         if cmd is not None and str(cmd).lower() not in ("detection", "objects", "perception"):
@@ -50,6 +56,8 @@ def parse_detection_payload(body: Dict[str, Any], implied_detection: bool) -> Tu
             return False, "missing_field: objects[i] 缺少必选字段", None
         try:
             p = Position.from_dict(pos)
+            if settings is not None:
+                p = apply_role_z_offset(p, r, settings)
             wy = float(o["wrist_yaw_deg"])
         except (TypeError, ValueError):
             return False, f"invalid_value: objects[{i}] numeric fields", None
@@ -94,7 +102,7 @@ def _json_response(handler: BaseHTTPRequestHandler, code: int, payload: Dict[str
     handler.wfile.write(data)
 
 
-def make_detection_handler_class(tracker: Tracker):
+def make_detection_handler_class(tracker: Tracker, settings: Settings | None = None):
     class DetectionHandler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
             return
@@ -116,7 +124,9 @@ def make_detection_handler_class(tracker: Tracker):
                 _json_response(self, 400, {"ok": False, "error": "invalid json"})
                 return
 
-            ok, err, det = parse_detection_payload(body, implied_detection=implied)
+            ok, err, det = parse_detection_payload(
+                body, implied_detection=implied, settings=settings
+            )
             if not ok or det is None:
                 _json_response(self, 400, {"ok": False, "error": err or "bad request"})
                 return
@@ -127,17 +137,18 @@ def make_detection_handler_class(tracker: Tracker):
 
 
 class IngestionServer:
-    def __init__(self, host: str, port: int, tracker: Tracker) -> None:
+    def __init__(self, host: str, port: int, tracker: Tracker, settings: Settings | None = None) -> None:
         self._host = host
         self._port = port
         self._tracker = tracker
+        self._settings = settings
         self._http: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._tcp_thread: threading.Thread | None = None
         self._tcp_stop = threading.Event()
 
     def start_background(self, tcp_port: int | None = None) -> None:
-        handler_cls = make_detection_handler_class(self._tracker)
+        handler_cls = make_detection_handler_class(self._tracker, self._settings)
         self._http = ThreadingHTTPServer((self._host, self._port), handler_cls)
         self._thread = threading.Thread(target=self._http.serve_forever, name="ingest-http", daemon=True)
         self._thread.start()
@@ -182,7 +193,9 @@ class IngestionServer:
                             continue
                         if not isinstance(body, dict):
                             continue
-                        ok, _, det = parse_detection_payload(body, implied_detection=True)
+                        ok, _, det = parse_detection_payload(
+                            body, implied_detection=True, settings=self._settings
+                        )
                         if ok and det is not None:
                             self._tracker.submit_frame(det)
         try:

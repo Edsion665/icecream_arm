@@ -46,7 +46,9 @@ class HeadFSM:
         if not self.speaker.joints_in_position(rep):
             raise RuntimeError(f"{label}: joints failed: {rep.error or rep.body}")
 
-    def _pose_to(self, pos: Position, label: str) -> None:
+    def _pose_to(self, pos: Position, label: str, *, role: Role) -> None:
+        """向 bridge 发笛卡尔目标（z 已在相机 ingest 时按 role 抬升）。"""
+        log.info("%s: bridge pose role=%s x=%.4f y=%.4f z=%.4f", label, role, pos.x, pos.y, pos.z)
         rep = self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
         if not self.speaker.pose_in_position(rep):
             raise RuntimeError(f"{label}: pose not reached: {rep.error or rep.body}")
@@ -168,7 +170,7 @@ class HeadFSM:
             obj.wrist_yaw_deg,
         )
         self._emit_claw(obj.wrist_yaw_deg, "step6_claw_before_object_pose")
-        self._pose_to(obj.position, "step6_object_pose")
+        self._pose_to(obj.position, "step6_object_pose", role="object")
 
         # 7: pick claw + object wrist
         cr = sp.send_claw(obj.wrist_yaw_deg, s.claw_closed_for_pick, context="step7_claw_pick")
@@ -215,7 +217,7 @@ class HeadFSM:
             tgt.wrist_yaw_deg,
         )
         self._emit_claw(tgt.wrist_yaw_deg, "step10_claw_before_target_pose")
-        self._pose_to(tgt.position, "step10_target_pose")
+        self._pose_to(tgt.position, "step10_target_pose", role="target")
 
         if self.target_queue and getattr(tgt, "class_id", None) == "queue":
             self.target_queue.popleft()
@@ -298,7 +300,7 @@ def main() -> None:
 
     tracker = Tracker(settings)
     tracker.start()
-    ingest = IngestionServer(settings.ingest_host, settings.ingest_port, tracker)
+    ingest = IngestionServer(settings.ingest_host, settings.ingest_port, tracker, settings)
     ingest.start_background(tcp_port=settings.ingest_tcp_port)
 
     speaker = BridgeClient(settings)
