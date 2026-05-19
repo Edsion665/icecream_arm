@@ -9,14 +9,11 @@ import numpy as np
 
 from ..config import CONFIG, IK_CONFIG, frontend_pose_to_internal_m
 from ..kinematics.urdf_kinematics import (
-    JOINT_LIMITS_LOWER,
-    JOINT_LIMITS_UPPER,
     Q4_OFFSET_RAD,
     Q4_Q23_COEFF,
     URDFKinematics,
 )
 from ..io.listener import MotionCommand4Axis
-from .ik_solver import IKCalculator
 from .joint_mover import JointMover
 from .state import ARM_AXES, CalculatorState, JointFrame, MotionMode
 
@@ -26,32 +23,47 @@ class CalculatorEngine:
 
     def __init__(self, kin: URDFKinematics) -> None:
         self._kin = kin
-        self._ik = IKCalculator(kin)
         self._mover = JointMover()
+
+    def _pose_to_joints(self, xyz: np.ndarray, state: CalculatorState) -> bool:
+        """IK 解算 xyz → joint_rel_deg_4，成功返回 True，失败保持原状态返回 False。"""
+        q_sol, ok = self._kin.inverse_kinematics_link4_geometric_decouple(
+            xyz,
+            q3_init=state.q_full[:3],
+            q5_fixed=state.q5_fixed_rad,
+            max_iter=IK_CONFIG.ik_max_iter,
+            pos_tol=IK_CONFIG.ik_pos_tol,
+            damping=IK_CONFIG.ik_damping,
+        )
+        if not ok:
+            return False
+        q4c = float(Q4_OFFSET_RAD + Q4_Q23_COEFF * (q_sol[1] + q_sol[2]))
+        if not (IK_CONFIG.q4_safe_min <= q4c <= IK_CONFIG.q4_safe_max):
+            return False
+        if float(np.hypot(xyz[0], xyz[1])) > 1e-6:
+            q_sol[0] = -np.arctan2(xyz[1], xyz[0])
+        q_tgt = q_sol[:ARM_AXES].copy()
+        q_tgt[3] = float(np.clip(q4c, IK_CONFIG.q4_safe_min, IK_CONFIG.q4_safe_max))
+        state.joint_rel_deg_4 = np.rad2deg(q_tgt) - state.q_calib_deg[:ARM_AXES]
+        state.q_pose_target_rad = q_tgt
+        return True
 
     def apply_command(self, cmd: MotionCommand4Axis, state: CalculatorState) -> None:
         p = cmd.payload
         if cmd.kind == "pose":
-            prev_mode = state.mode
-            state.mode = MotionMode.POSE
             xi, yi, zi = frontend_pose_to_internal_m(float(p["x"]), float(p["y"]), float(p["z"]))
-            state.pose_xyz = np.array([xi, yi, zi], dtype=float)
-            state.q_pose_target_rad = None
-            # 从当前 FK 起步限速，避免 POSE 模式下重复绝对 pose 时跳过渐变导致关节突变。
-            state.prev_pose_xyz = self._kin.forward_kinematics_position_link4(state.q_full).copy()
-            if prev_mode != MotionMode.POSE:
-                state.q4_blend_active = True
-                state.q4_blend_start_rad = float(state.q_cmd[3])
-                state.q4_blend_t = 0.0
-            self._ik.set_pose_reach_target(state)
+            xyz = np.array([xi, yi, zi], dtype=float)
+            self._pose_to_joints(xyz, state)
+            state.pose_xyz = xyz
+            state.mode = MotionMode.JOINTS
         elif cmd.kind == "pose_delta":
-            state.mode = MotionMode.POSE
-            state.pose_xyz[0] += float(p["dx"])
-            state.pose_xyz[1] += float(p["dy"])
-            state.pose_xyz[2] += float(p["dz"])
-            state.prev_pose_xyz = None
-            state.q_pose_target_rad = None
-            self._ik.set_pose_reach_target(state)
+            xyz = state.pose_xyz.copy()
+            xyz[0] += float(p["dx"])
+            xyz[1] += float(p["dy"])
+            xyz[2] += float(p["dz"])
+            if self._pose_to_joints(xyz, state):
+                state.pose_xyz = xyz
+            state.mode = MotionMode.JOINTS
         elif cmd.kind == "joints":
             state.mode = MotionMode.JOINTS
             arr = p["axes_rel_deg"]
@@ -73,69 +85,17 @@ class CalculatorEngine:
         if command is not None:
             self.apply_command(command, state)
 
-        if state.mode == MotionMode.POSE:
-            self._ik.step(state, dt=dt)
-        else:
-            self._mover.step(state, dt=dt)
+        self._mover.step(state, dt=dt)
 
-        q5_pose_tgt: float | None = None
-        if state.mode == MotionMode.POSE:
-            q5_pose_tgt = float(
-                np.clip(
-                    state.q5_fixed_rad + np.deg2rad(IK_CONFIG.pose_q5_extra_deg),
-                    float(JOINT_LIMITS_LOWER[4]),
-                    float(JOINT_LIMITS_UPPER[4]),
-                )
-            )
-            state.q_full[4] = q5_pose_tgt
-        else:
-            wrist_rad = state.wrist_joint_rad()
-            state.q_full[4] = wrist_rad
-            state.q_cmd[4] = wrist_rad
+        wrist_rad = state.wrist_joint_rad()
+        state.q_full[4] = wrist_rad
+        state.q_cmd[4] = wrist_rad
 
-        q4_pose_target: float | None = None
-        if state.mode == MotionMode.POSE:
-            q4_geo_target = float(
-                np.clip(
-                    Q4_OFFSET_RAD + Q4_Q23_COEFF * (state.q_full[1] + state.q_full[2]),
-                    IK_CONFIG.q4_safe_min,
-                    IK_CONFIG.q4_safe_max,
-                )
-            )
-            if state.q4_blend_active:
-                blend_time = max(float(IK_CONFIG.q4_blend_time_s), 1e-6)
-                state.q4_blend_t = min(1.0, state.q4_blend_t + dt / blend_time)
-                s = state.q4_blend_t * state.q4_blend_t * (3.0 - 2.0 * state.q4_blend_t)
-                q4_pose_target = float((1.0 - s) * state.q4_blend_start_rad + s * q4_geo_target)
-                if state.q4_blend_t >= 1.0:
-                    state.q4_blend_active = False
-            else:
-                q4_pose_target = q4_geo_target
-            state.q_full[3] = q4_pose_target
-
-        q4_cmd_prev = float(state.q_cmd[3])
-        q_err = state.q_full[:ARM_AXES] - state.q_cmd[:ARM_AXES]
-        if state.mode == MotionMode.POSE:
-            q_err[3] = 0.0
-        dq_des = q_err * CONFIG.approach_gain
-
-        dq_n = float(np.linalg.norm(dq_des))
-        if dq_n > CONFIG.max_joint_vel_rad_s:
-            dq_des *= CONFIG.max_joint_vel_rad_s / dq_n
-
-        state.q_cmd[:ARM_AXES] += dq_des * dt
-        if state.mode == MotionMode.POSE:
-            if q4_pose_target is not None:
-                state.q_cmd[3] = q4_pose_target
-            if q5_pose_tgt is not None:
-                state.q_cmd[4] = q5_pose_tgt
-
-        omega_arm = np.zeros(ARM_AXES, dtype=float)
-        omega_arm[:ARM_AXES] = dq_des
-        if state.mode == MotionMode.POSE:
-            omega_arm[3] = (float(state.q_cmd[3]) - q4_cmd_prev) / max(dt, 1e-6)
+        # Bridge 侧不做速度限制，直接跟踪目标；速度规划全部交由 Pi 侧 ramp 处理。
+        state.q_cmd[:ARM_AXES] = state.q_full[:ARM_AXES].copy()
 
         p_rel_deg = np.rad2deg(state.q_cmd[:ARM_AXES]) - state.q_calib_deg[:ARM_AXES]
+        omega_arm = np.zeros(ARM_AXES, dtype=float)
         j5_rel = float(state.wrist_rel_deg)
         return JointFrame(
             arm_rel_deg=p_rel_deg.copy(),
@@ -163,12 +123,7 @@ class CalculatorEngine:
             q_actual = np.asarray(fb_arm_rad, dtype=float).ravel()[:ARM_AXES]
         else:
             q_actual = state.q_cmd[:ARM_AXES].copy()
-        if state.mode == MotionMode.JOINTS:
-            q_target = state.q_calib_rad[:ARM_AXES] + np.deg2rad(state.joint_rel_deg_4)
-        else:
-            if state.q_pose_target_rad is None:
-                return False, float("inf")
-            q_target = state.q_pose_target_rad[:ARM_AXES]
+        q_target = state.q_calib_rad[:ARM_AXES] + np.deg2rad(state.joint_rel_deg_4)
         err_deg = np.rad2deg(np.abs(q_actual - q_target))
         error = float(np.linalg.norm(err_deg))
         reached = bool(np.all(err_deg < joints_tol_deg))
