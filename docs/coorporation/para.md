@@ -157,7 +157,6 @@ export ARM_CONTROL_CAL_R3=-2.7514
 |----------|--------|------|------|
 | `ARM_CONTROL_TAU_FF_INPUT` | `mit` | 字符串 | 重力补偿与限速 ramp 使用的关节角反馈源：`mit` = 串口 MIT 上行角；`fb` = 文本 `FB` 行反馈角。 |
 | `ARM_CONTROL_GRAVITY_FF` | `1`（开） | 布尔 | 是否启用 Pinocchio 重力前馈；`0` 时 MIT 帧 `t` 恒为 0。 |
-| `ARM_CONTROL_GRAVITY_BIAS_M1` | `0.0` | 浮点（Nm） | **motor1** 重力前馈固定偏置（Pinocchio 对 J1 理论为 0，实机单向负载用此项补偿）。在 `apply_gravity_motor_output` 中与 `tau_pin[0]` **相加**。 |
 | `ARM_CONTROL_GRAVITY_SCALE_M2` | `1.3` | 浮点 | **motor2** Pinocchio 电机空间力矩缩放。 |
 | `ARM_CONTROL_GRAVITY_SCALE_M3` | `1.2` | 浮点 | **motor3** 同上。 |
 | `ARM_CONTROL_GRAVITY_SCALE_M4` | `1.2` | 浮点 | **motor4** 同上。 |
@@ -172,7 +171,6 @@ export ARM_CONTROL_CAL_R3=-2.7514
 
 ```bash
 export ARM_CONTROL_GRAVITY_FF=1
-export ARM_CONTROL_GRAVITY_BIAS_M1=0.0
 export ARM_CONTROL_GRAVITY_SCALE_M2=1.3
 export ARM_CONTROL_GRAVITY_SCALE_M3=1.2
 export ARM_CONTROL_GRAVITY_SCALE_M4=1.2
@@ -216,7 +214,7 @@ export ARM_CONTROL_CAMERA_UDP_HZ=20
 | 名称 | 位置 | 说明 |
 |------|------|------|
 | `MOTOR_AXIS_SIGN` | `config.py` | 四轴电机/关节符号 `(−1,−1,−1,+1)` |
-| `GRAVITY_TAU_BIAS_M1` / `GRAVITY_AXIS_SCALE_M234` | `config.py` | 可由上表 `ARM_CONTROL_GRAVITY_*` 覆盖；经 `apply_gravity_motor_output()` 写入 MIT `t` |
+| `GRAVITY_AXIS_SCALE_M234` | `config.py` | 可由 `ARM_CONTROL_GRAVITY_SCALE_M2..M4` 覆盖；经 `apply_gravity_motor_output()` 写入 MIT `t`（M1 直通） |
 | `SwitchGateConfig` | `config.py` | ttyAMA4 开关闭合 → pi2head（端口/主机等） |
 | 腕/夹爪/步进/传送带 UDP 语义常量 | `config.py` | 如 `GRIP_*`、`WRIST_*_DEG` |
 
@@ -277,7 +275,6 @@ python3 -m icecream_arm.calibration.tra_collect
 | `ARM_CONTROL_CAMERA_UDP_PORT` | 9982 | int |
 | `ARM_CONTROL_CAMERA_UDP_SO_BROADCAST` | 1 | bool |
 | `ARM_CONTROL_COLD_HOLD_SEC` | 0 | s（未接线） |
-| `ARM_CONTROL_GRAVITY_BIAS_M1` | 0.0 | Nm |
 | `ARM_CONTROL_GRAVITY_FF` | 1 | bool |
 | `ARM_CONTROL_GRAVITY_SCALE_M2` | 1.3 | float |
 | `ARM_CONTROL_GRAVITY_SCALE_M3` | 1.2 | float |

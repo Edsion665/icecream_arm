@@ -87,16 +87,11 @@ def _env_init_feedback_wait_sec() -> float:
 
 # ---- 重力前馈实机修正（Pinocchio → 电机符号映射之后、写入 MIT ``t`` 之前）----
 #
-# joint1 / motor1：URDF 转轴与重力平行，computeGeneralizedGravity 对第 1 关节恒为 0；
-# 实机仍有单向重力相关负载（摩擦、安装误差等），用固定偏置补偿，与姿态无关。
-#   export ARM_CONTROL_GRAVITY_BIAS_M1=0.15   # 单位 Nm，电机空间，与 MIT 下发 ``t`` 同向
-#
-# motor2..motor4：对 Pinocchio 电机空间力矩逐轴缩放（无 motor1 倍数项）。
+# motor1：URDF 转轴与重力平行，Pinocchio 对第 1 关节理论 τ≈0，不做缩放或偏置。
+# motor2..motor4：对 Pinocchio 电机空间力矩逐轴缩放。
 #   export ARM_CONTROL_GRAVITY_SCALE_M2=1.3
 #   export ARM_CONTROL_GRAVITY_SCALE_M3=1.2
 #   export ARM_CONTROL_GRAVITY_SCALE_M4=1.2
-
-GRAVITY_TAU_BIAS_M1: float = _env_float("ARM_CONTROL_GRAVITY_BIAS_M1", 0.0)
 GRAVITY_AXIS_SCALE_M234: tuple[float, float, float] = (
     _env_float("ARM_CONTROL_GRAVITY_SCALE_M2", 1.3),
     _env_float("ARM_CONTROL_GRAVITY_SCALE_M3", 1.2),
@@ -107,7 +102,7 @@ GRAVITY_AXIS_SCALE_M234: tuple[float, float, float] = (
 def apply_gravity_motor_output(
     tau_motor_nm: tuple[float, float, float, float],
 ) -> tuple[float, float, float, float]:
-    """重力前馈电机空间输出修正：M1 加偏置，M2–M4 乘缩放。
+    """重力前馈电机空间输出修正：M1 直通，M2–M4 乘缩放。
 
     输入 ``tau_motor_nm`` 为 ``joint_tau_to_motor_tau`` 之后、尚未修正的四轴力矩 (Nm)，
     顺序 motor1..motor4，与 ``controller`` 写入 MIT 的 ``t`` 一致。
@@ -115,7 +110,7 @@ def apply_gravity_motor_output(
     t1, t2, t3, t4 = tau_motor_nm
     s2, s3, s4 = GRAVITY_AXIS_SCALE_M234
     return (
-        float(t1) + GRAVITY_TAU_BIAS_M1,
+        float(t1),
         float(t2) * s2,
         float(t3) * s3,
         float(t4) * s4,
