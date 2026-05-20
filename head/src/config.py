@@ -36,7 +36,11 @@ class Settings:
 
     merge_pos_eps_m: float = 0.005
     merge_yaw_eps_deg: float = 3.0
-    # plan_pick / 放置选最近 target 的距离参考点 (robot_base, m)
+    # 观测阶段：同一目标/物体连续 N 帧位置、腕角相近后才写入槽位
+    observe_stable_frames: int = 3
+    observe_stable_pos_eps_m: float | None = None
+    observe_stable_yaw_eps_deg: float | None = None
+    # 目标队列排序与 object 评分参考点 (robot_base, m)；距此点越近优先级越高
     plan_reference_xyz: List[float] | None = None
     # 相机上报 position.z（m）抬升：target +0.4m，object +0.2m；lid 不变
     target_z_offset_m: float = 0.25
@@ -87,6 +91,8 @@ class Settings:
             raise ValueError("idle_bridge_hz must be positive")
         if self.bridge_reached_poll_s <= 0:
             raise ValueError("bridge_reached_poll_s must be positive")
+        if self.observe_stable_frames < 1:
+            raise ValueError("observe_stable_frames must be >= 1")
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -109,6 +115,17 @@ def load_settings(path: str | Path) -> Settings:
         ),
         merge_pos_eps_m=float(raw.get("merge_pos_eps_m", 0.005)),
         merge_yaw_eps_deg=float(raw.get("merge_yaw_eps_deg", 3.0)),
+        observe_stable_frames=int(raw.get("observe_stable_frames", 3)),
+        observe_stable_pos_eps_m=(
+            float(raw["observe_stable_pos_eps_m"])
+            if raw.get("observe_stable_pos_eps_m") is not None
+            else None
+        ),
+        observe_stable_yaw_eps_deg=(
+            float(raw["observe_stable_yaw_eps_deg"])
+            if raw.get("observe_stable_yaw_eps_deg") is not None
+            else None
+        ),
         plan_reference_xyz=list(raw.get("plan_reference_xyz") or [0.0, 0.0, 0.0]),
         target_z_offset_m=float(raw.get("target_z_offset_m", 0.4)),
         object_z_offset_m=float(raw.get("object_z_offset_m", 0.2)),

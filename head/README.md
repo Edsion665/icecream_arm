@@ -22,14 +22,14 @@
 |---|------|
 | （首） | 每轮开始清空 `target` / `object` 槽（不沿用上一轮） |
 | 1 | `joints` obs1 → `claw`（腕零 + **夹爪张开**） |
-| 2 | 在 **obs1** 后等待帧内出现 `target` → `clear` + `apply` target 槽 |
+| 2 | 在 **obs1** 后稳定观测 `target`（默认连续 **3** 帧位置/腕角相近）→ 写入槽位 → 按 `plan_reference_xyz` **由近到远**建 `target_queue` |
 | 3 | `claw`（obs2 入口腕角）→ `joints` obs2 |
-| 4 | 在 **obs2** 后等待帧内出现 `object` → `clear` + `apply` object 槽 |
-| 5 | `plan`（需同时有 target + object） |
+| 4 | 在 **obs2** 后稳定观测 `object`（同上 **3** 帧规则）→ 写入 object 槽 |
+| 5 | `plan`：按队列优先级在传送带找同前缀 `object`；目标位来自 obs1 队列，不要求 obs2 再看到 target |
 | 6–7 | `claw`（物体腕）→ `pose` 物体 → 到位后 `claw` 抓取；抓取后 **丢弃 object 槽** |
 | 8 | 物体抓取后：`joints` **先回 obs1** → 到位后再 `claw` 腕零（回程保持抓取腕角） |
-| 9 | 在 **obs1** 下再等待 `target` 帧 → `clear` + `apply`（放置用 target 须重新在 obs1 获得） |
-| 10–11 | `claw`（目标腕）→ `pose` 目标 → `claw` 释放；队列目标在到位后出队 |
+| 9 | 在 **obs1** 下再次稳定观测 `target`（放置用，须重新观测） |
+| 10–11 | `claw`（目标腕）→ `pose` 目标 → `claw` 释放；**仅**选与手中物体同前缀的 target（多个时按 step5 规划位消歧）；成功后队首出队 |
 | 11b | `joints` **先回 obs1** → 到位后再 `claw` 腕零（回程保持放置腕角与张开） |
 | 11 末 | **丢弃** target/object 槽 |
 | 12 | 循环回（首） |

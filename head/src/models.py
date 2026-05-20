@@ -66,8 +66,20 @@ class SceneSnapshot:
 
 
 @dataclass
+class QueuedTarget:
+    """obs1 目标优先级队列项：按距参考点由近到远排序，队首优先级最高。"""
+
+    class_id: Any
+    shape_prefix: str
+    position: Position
+    wrist_yaw_deg: float
+    label: str
+
+
+@dataclass
 class PlanResult:
     ok: bool
     reason: str = ""
     object_slot: TrackSlot | None = None
     target_slot: TrackSlot | None = None
+    queued_target: QueuedTarget | None = None

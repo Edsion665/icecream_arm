@@ -17,7 +17,6 @@ from .exceptions import UDPTransportError
 from .runtime import (
     ReachSnapshot,
     ReachTracker,
-    log_udp_frame_preview,
     start_reply_worker,
     stop_reply_worker,
 )
@@ -223,15 +222,12 @@ def run_loop(
                     state.stepper_deg_cmd = float(
                         max(-180.0, min(180.0, float(c.payload["stepper_deg"])))
                     )
-                    log(f"[runner] recv stepper: stepper_deg={state.stepper_deg_cmd:.3f}")
                     dump_next_udp_frame = True
                     continue
                 if c.kind == "conveyor":
                     state.conveyor_run_cmd = float(c.payload["conveyor_run"])
-                    log(f"[runner] recv conveyor: run={state.conveyor_run_cmd:.0f}")
                     dump_next_udp_frame = True
                     continue
-                log(f"[runner] recv {c.kind}: {c.payload}")
                 engine.apply_command(c, state)
                 if c.kind in IMMEDIATE_ACK_KINDS:
                     reach_snapshot.reset_stable_buffer()
@@ -251,12 +247,10 @@ def run_loop(
                 state.set_wrist_rel_deg(float(payload.get("wrist_deg", state.wrist_rel_deg)))
                 state.grip_state = 1.0 if float(payload.get("grip_state", state.grip_state)) >= 0.5 else 0.0
                 state.servo_deg = np.array([state.wrist_rel_deg, state.grip_state], dtype=float)
-                log(f"[runner] recv claw: wrist={state.wrist_rel_deg:.3f}, grip_state={state.grip_state:.0f}")
                 dump_next_udp_frame = True
 
             frame = engine.step(None, state, dt=CONFIG.control_dt)
             if dump_next_udp_frame:
-                log_udp_frame_preview(frame, log, tag="[runner][UDP]")
                 dump_next_udp_frame = False
             if arm_motor is not None:
                 arm_motor.send(frame)
@@ -474,7 +468,6 @@ def run_sim_loop(
             if c is None:
                 continue
             if isinstance(c, ClawCommand):
-                log(f"[sim] recv claw: {c.payload}")
                 tracker.accept("claw")
                 payload = c.payload
                 state.set_wrist_rel_deg(float(payload.get("wrist_deg", state.wrist_rel_deg)))
@@ -486,15 +479,12 @@ def run_sim_loop(
                 state.stepper_deg_cmd = float(
                     max(-180.0, min(180.0, float(c.payload["stepper_deg"])))
                 )
-                log(f"[sim] recv stepper: stepper_deg={state.stepper_deg_cmd:.3f}")
                 dump_next_udp_frame = True
                 continue
             if c.kind == "conveyor":
                 state.conveyor_run_cmd = float(c.payload["conveyor_run"])
-                log(f"[sim] recv conveyor: run={state.conveyor_run_cmd:.0f}")
                 dump_next_udp_frame = True
                 continue
-            log(f"[sim] recv {c.kind}: {c.payload}")
             engine.apply_command(c, state)
             if c.kind in IMMEDIATE_ACK_KINDS:
                 reach_snapshot.reset_stable_buffer()
@@ -536,7 +526,6 @@ def run_sim_loop(
             frame.arm_omega_rad_s = np.full(4, 0.05, dtype=float)
             _init_frame_sent = True
         if dump_next_udp_frame:
-            log_udp_frame_preview(frame, log, tag="[sim][UDP]")
             dump_next_udp_frame = False
         frame_rx.accept(frame)
         viewer.apply(frame_rx.latest())

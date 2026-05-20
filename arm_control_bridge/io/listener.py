@@ -450,7 +450,6 @@ def start_http_server(
             except ValueError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
                 return
-            on_log(f"[HTTP] recv {kind}: {obj}")
             if slot is not None:
                 slot.event.wait(timeout=CONFIG.reached_timeout_s + 0.5)
                 result = slot.result

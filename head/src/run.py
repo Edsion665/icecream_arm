@@ -10,9 +10,9 @@ from typing import Deque, FrozenSet
 
 from src.config import Settings, load_settings
 from src.listener import IngestionServer
-from src.models import Position, Role, TrackSlot
+from src.models import Position, QueuedTarget, Role, TrackSlot
 from src.pi2head_listener import Pi2HeadServer
-from src.planner import peek_target_track, plan_pick
+from src.planner import build_target_queue, peek_target_track, plan_pick
 from src.shape_match import shape_prefix
 from src.speaker import BridgeClient
 from src.tracker import Tracker
@@ -21,12 +21,16 @@ log = logging.getLogger("src.run")
 
 
 class HeadFSM:
-    def __init__(self, settings: Settings, tracker: Tracker, speaker: BridgeClient, target_queue: Deque[Position]) -> None:
+    def __init__(
+        self, settings: Settings, tracker: Tracker, speaker: BridgeClient, target_queue: Deque[QueuedTarget]
+    ) -> None:
         self.settings = settings
         self.tracker = tracker
         self.speaker = speaker
         self.target_queue = target_queue
         self._cycle_shape_prefix: str | None = None
+        self._cycle_planned_target: TrackSlot | None = None
+        self._cycle_queued_target: QueuedTarget | None = None
 
     def _timeout(self) -> float:
         return self.settings.state_timeout_s
@@ -53,7 +57,6 @@ class HeadFSM:
 
     def _pose_to(self, pos: Position, label: str, *, role: Role) -> None:
         """向 bridge 发笛卡尔目标（z 已在相机 ingest 时按 role 抬升）。"""
-        log.info("%s: bridge pose role=%s x=%.4f y=%.4f z=%.4f", label, role, pos.x, pos.y, pos.z)
         ack = self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
         if not ack.ok:
             raise RuntimeError(f"{label}: pose POST failed: {ack.error or ack.body}")
@@ -61,24 +64,18 @@ class HeadFSM:
         if not self.speaker.pose_in_position(rep):
             raise RuntimeError(f"{label}: pose not reached: {rep.error or rep.body}")
 
-    def _wait_roles(self, roles: FrozenSet[Role], label: str) -> None:
+    def _observe_stable(self, role: Role, label: str) -> None:
+        """等待连续 N 帧位置/腕角稳定后再写入槽位。"""
         tw = self._cam_wait()
-        ok = self.tracker.wait_for_roles(roles, tw)
+        n = self.settings.observe_stable_frames
+        ok = self.tracker.observe_role_stable(role, tw)
         if not ok:
             if tw is None or tw <= 0.0:
-                raise RuntimeError(f"{label}: 等待相机帧时被中断（tracker 已停止）")
+                raise RuntimeError(f"{label}: 观测被中断（tracker 已停止）")
             raise RuntimeError(
-                f"{label}: {tw}s 内未在帧内看到 {set(roles)}；"
-                f"外层会整轮重跑 FSM，机械臂会在 obs1/obs2 间反复运动。"
-                f"联调请设 camera_wait_timeout_s: null（一直等）或增大秒数。"
+                f"{label}: {tw}s 内未见 {role} 连续 {n} 帧稳定；"
+                f"可增大 camera_wait_timeout_s 或放宽 observe_stable_*"
             )
-
-    def _clear_apply(self, role: Role, label: str) -> None:
-        if not self.tracker.clear_role(role, timeout=self._timeout()):
-            raise RuntimeError(f"{label}: tracker clear_role({role}) timeout")
-        rset: FrozenSet[Role] = frozenset({role})
-        if not self.tracker.apply_roles_from_last_frame(rset, timeout=self._timeout()):
-            raise RuntimeError(f"{label}: tracker apply_roles timeout")
 
     def _discard_slot(self, role: Role, label: str) -> None:
         """清空槽位（用完即弃，不从 last_frame 回填）。"""
@@ -88,20 +85,64 @@ class HeadFSM:
     def _invalidate_camera_cache(self, label: str) -> None:
         if not self.settings.require_fresh_detection_after_obs:
             return
-        log.info("invalidate_last_frame (%s): 下一 wait 须等新 ingest，避免沿用旧 _last_frame", label)
         if not self.tracker.invalidate_last_frame(timeout=self._timeout()):
             raise RuntimeError(f"{label}: invalidate_last_frame timeout")
 
-    def _log_queue(self, where: str) -> None:
-        n = len(self.target_queue)
-        if n == 0:
-            log.info("%s | target_queue: empty", where)
+    def _plan_ref(self) -> Position:
+        o = self.settings.plan_reference_xyz
+        return Position(float(o[0]), float(o[1]), float(o[2]))
+
+    def _fmt_slot_pos(self, s: TrackSlot) -> str:
+        return (
+            f"{s.class_id} ({s.position.x:.3f},{s.position.y:.3f},{s.position.z:.3f})"
+            f" wrist={s.wrist_yaw_deg:.1f}"
+        )
+
+    def _log_all_targets(self, title: str) -> None:
+        snap = self.tracker.get_snapshot()
+        slots = list(snap.slots_by_role.get("target") or [])
+        if not slots:
+            log.info("%s: (无)", title)
             return
-        heads = []
-        for i, p in enumerate(list(self.target_queue)[:3]):
-            heads.append(f"#{i}({p.x:.3f},{p.y:.3f},{p.z:.3f})")
-        more = f" (+{n - 3} more)" if n > 3 else ""
-        log.info("%s | target_queue len=%d heads: %s%s", where, n, " ".join(heads), more)
+        log.info("%s: %s", title, " | ".join(self._fmt_slot_pos(s) for s in slots))
+
+    def _log_all_objects(self, title: str) -> None:
+        snap = self.tracker.get_snapshot()
+        slots = list(snap.slots_by_role.get("object") or [])
+        if not slots:
+            log.info("%s: (无)", title)
+            return
+        log.info("%s: %s", title, " | ".join(self._fmt_slot_pos(s) for s in slots))
+
+    def _log_pick(self, obj: TrackSlot, tgt_plan: TrackSlot) -> None:
+        log.info(
+            "抓取 %s -> 配对目标(规划) %s",
+            self._fmt_slot_pos(obj),
+            self._fmt_slot_pos(tgt_plan),
+        )
+
+    def _log_place(self, tgt: TrackSlot) -> None:
+        log.info("放置 %s", self._fmt_slot_pos(tgt))
+
+    def _rebuild_target_queue_from_snapshot(self) -> None:
+        snap = self.tracker.get_snapshot()
+        targets = list(snap.slots_by_role.get("target") or [])
+        self.target_queue.clear()
+        self.target_queue.extend(build_target_queue(targets, self._plan_ref()))
+
+    def _pop_queue_after_place(self, tgt: TrackSlot) -> None:
+        if not self.target_queue:
+            return
+        planned = self._cycle_queued_target
+        if planned is not None:
+            for i, q in enumerate(self.target_queue):
+                if q.shape_prefix == planned.shape_prefix and q.class_id == planned.class_id:
+                    if q.position.dist(planned.position) < 0.02:
+                        del self.target_queue[i]
+                        return
+        head = self.target_queue[0]
+        if head.shape_prefix == shape_prefix(tgt.class_id):
+            self.target_queue.popleft()
 
     def run_one_cycle(self) -> None:
         s = self.settings
@@ -109,44 +150,36 @@ class HeadFSM:
         tw = s.claw_after_joints_wrist_deg
         obs2_wrist = s.obs2_entry_wrist_deg
 
-        log.info(
-            "=== cycle start === observe1=%s observe2=%s",
-            list(s.observe1_axes_rel_deg),
-            list(s.observe2_axes_rel_deg),
-        )
-        self._log_queue("cycle_start (before discard)")
-
         # 0: 每轮开始丢弃上一轮残留；target/object 只允许在本轮 obs1/obs2 后的 clear+apply 中建立
         self._discard_slot("target", "cycle_start_discard_target")
         self._discard_slot("object", "cycle_start_discard_object")
+        self.target_queue.clear()
         self._cycle_shape_prefix = None
-        self._log_queue("cycle_start (after discard)")
+        self._cycle_planned_target = None
+        self._cycle_queued_target = None
 
         # 1: 先到 obs1 关节位，再腕零 + 夹爪张开
-        log.info("step1: joints obs1 first, then claw wrist=%.3f + grip open", tw)
         self._joints_obs(list(s.observe1_axes_rel_deg), "step1_obs1_joints")
         self._emit_claw(tw, "step1_claw_wrist0_open", closed=False)
         self._maybe_emit_claw(tw, "step1_emit_dup", closed=False)
         self._invalidate_camera_cache("after_step1_obs1_before_wait_target")
 
-        # 2: wait camera target; clear + apply target from last frame
-        log.info("step2: wait target in frame @ obs1, then clear+apply target slots")
-        self._wait_roles(frozenset({"target"}), "step2_wait_target_frame")
-        self._clear_apply("target", "step2_target_slots")
+        # 2: obs1 稳定观测 target（连续 N 帧）后建队
+        self._observe_stable("target", "step2_observe_target")
+        self._rebuild_target_queue_from_snapshot()
+        self._log_all_targets("obs1 第1次 target")
 
         # 3: obs2 + claw at obs2 entry wrist
-        log.info("step3: move to obs2 (observe2_axes_rel_deg); 正常顺序是 obs1→步2→步3 才到 obs2")
         self._emit_claw(obs2_wrist, "step3_claw_before_obs2")
         self._maybe_emit_claw(obs2_wrist, "step3_emit_dup")
         self._joints_obs(list(s.observe2_axes_rel_deg), "step3_obs2_joints")
         self._invalidate_camera_cache("after_step3_obs2_before_wait_object")
 
-        # 4: wait object in frame; clear + apply object
-        self._wait_roles(frozenset({"object"}), "step4_wait_object_frame")
-        self._clear_apply("object", "step4_object_slots")
+        # 4: obs2 稳定观测 object
+        self._observe_stable("object", "step4_observe_object")
+        self._log_all_objects("obs2 全部 object")
 
-        # 5: PLAN — 最近 target + 同前缀 object
-        self._log_queue("step5_plan (最近 target + 同形状前缀 object)")
+        # 5: PLAN — obs1 队列优先级（近→远）；传送带按同前缀 object 抓取
         snap = self.tracker.get_snapshot()
         pr = plan_pick(s, snap, self.target_queue)
         if not pr.ok or pr.object_slot is None or pr.target_slot is None:
@@ -155,35 +188,15 @@ class HeadFSM:
         tgt_plan = pr.target_slot
         if tgt_plan is None:
             raise RuntimeError("PLAN internal: target_slot missing")
+        self._cycle_queued_target = pr.queued_target
+        self._cycle_planned_target = tgt_plan
         self._cycle_shape_prefix = shape_prefix(tgt_plan.class_id)
-        log.info(
-            "step5 plan ok | shape_prefix=%s | object class_id=%s | target class_id=%s",
-            self._cycle_shape_prefix,
-            obj.class_id,
-            tgt_plan.class_id,
-        )
-        log.info(
-            "step5 plan ok | object pos=(%.3f,%.3f,%.3f) wrist=%.2f | target label=%s pos=(%.3f,%.3f,%.3f) wrist=%.2f",
-            obj.position.x,
-            obj.position.y,
-            obj.position.z,
-            obj.wrist_yaw_deg,
-            tgt_plan.label,
-            tgt_plan.position.x,
-            tgt_plan.position.y,
-            tgt_plan.position.z,
-            tgt_plan.wrist_yaw_deg,
-        )
+        self._log_pick(obj, tgt_plan)
 
         if s.emit_claw_on_every_transition:
             self._emit_claw(obj.wrist_yaw_deg, "step5_claw_after_plan")
 
         # 6: pose to object (wrist aligned in claw before move)
-        log.info(
-            "step6: last claw before object pose wrist=%.2f; head does NOT resend claw during /api/pose "
-            "(wrist going to 0 during move → bridge likely not coupling wrist with Cartesian)",
-            obj.wrist_yaw_deg,
-        )
         self._emit_claw(obj.wrist_yaw_deg, "step6_claw_before_object_pose")
         self._pose_to(obj.position, "step6_object_pose", role="object")
 
@@ -191,67 +204,43 @@ class HeadFSM:
         cr = sp.send_claw(obj.wrist_yaw_deg, s.claw_closed_for_pick, context="step7_claw_pick")
         sp.require_claw(cr, "step7_claw_pick")
         if s.claw_settle_after_pick_s > 0:
-            log.info("step7: wait %.2fs after pick (grip close settle)", s.claw_settle_after_pick_s)
             time.sleep(s.claw_settle_after_pick_s)
 
         # 规划用 object 已消费，丢弃槽位；下次 object 必须再在 obs2 后等待帧并 clear+apply
         self._discard_slot("object", "step7_discard_object_after_pick")
 
         # 8: 物体抓取后先关节回 obs1，到位后再腕零（回程中保持步7腕角直至观测位）
-        log.info("step8: obs1 joints first after pick, then wrist=%.3f (grip stays closed)", tw)
         self._joints_obs(list(s.observe1_axes_rel_deg), "step8_obs1_return_joints")
         self._emit_claw(tw, "step8_claw_wrist0")
         self._maybe_emit_claw(tw, "step8_emit_dup")
         self._invalidate_camera_cache("after_step8_obs1_before_wait_target_place")
 
-        # 9: 在 obs1 下等待 target 帧，再 clear+apply（与步 2 相同；放置用 target 不得沿用抓取前的槽）
-        log.info(
-            "step9: wait target @ obs1 return (放置须与本轮前缀 %s 一致)",
-            self._cycle_shape_prefix,
-        )
-        self._wait_roles(frozenset({"target"}), "step9_wait_target_frame")
-        self._clear_apply("target", "step9_target_slots")
-        self._log_queue("step9_after_apply")
+        # 9: obs1 第二次稳定观测 target（放置用，不得沿用抓取前槽位）
+        self._observe_stable("target", "step9_observe_target")
+        self._log_all_targets("obs1 第2次 target")
 
-        # 10: 同前缀 target 槽位中最近者；无匹配再回退 target_queue
+        # 10: 仅选与手中物体同前缀的 target；多个时按 step5 规划位消歧
         snap2 = self.tracker.get_snapshot()
         tgt = peek_target_track(
-            snap2, self.target_queue, shape_prefix_lock=self._cycle_shape_prefix
+            snap2,
+            self.target_queue,
+            shape_prefix_lock=self._cycle_shape_prefix,
+            preferred=self._cycle_planned_target,
         )
         if tgt is None:
             raise RuntimeError(
-                f"no target after step9 for prefix={self._cycle_shape_prefix!r}"
+                f"手中前缀 {self._cycle_shape_prefix!r}，obs1 无同形状 target，无法放置"
             )
-        if self._cycle_shape_prefix and not (
-            getattr(tgt, "class_id", None) == "queue"
-            or shape_prefix(tgt.class_id) == self._cycle_shape_prefix
-        ):
+        if self._cycle_shape_prefix and shape_prefix(tgt.class_id) != self._cycle_shape_prefix:
             raise RuntimeError(
-                f"step10 target prefix mismatch: want {self._cycle_shape_prefix}, got {tgt.class_id}"
+                f"target 前缀不一致: want {self._cycle_shape_prefix}, got {tgt.class_id}"
             )
-        from_queue = getattr(tgt, "class_id", None) == "queue"
-        log.info(
-            "step10 peek_target: from_queue=%s class_id=%s label=%s pos=(%.3f,%.3f,%.3f) wrist=%.2f",
-            from_queue,
-            tgt.class_id,
-            tgt.label,
-            tgt.position.x,
-            tgt.position.y,
-            tgt.position.z,
-            tgt.wrist_yaw_deg,
-        )
+        self._log_place(tgt)
 
-        log.info(
-            "step10: last claw before target pose wrist=%.2f; same as step6 — no claw during pose TCP wait",
-            tgt.wrist_yaw_deg,
-        )
         self._emit_claw(tgt.wrist_yaw_deg, "step10_claw_before_target_pose")
         self._pose_to(tgt.position, "step10_target_pose", role="target")
 
-        if self.target_queue and getattr(tgt, "class_id", None) == "queue":
-            self.target_queue.popleft()
-            log.info("step10: popped one position from target_queue after target pose")
-            self._log_queue("step10_after_queue_pop")
+        self._pop_queue_after_place(tgt)
 
         # 11: place claw + target wrist
         cr2 = sp.send_claw(
@@ -259,11 +248,9 @@ class HeadFSM:
         )
         sp.require_claw(cr2, "step11_claw_place")
         if s.claw_settle_after_place_s > 0:
-            log.info("step11: wait %.2fs after place (grip open settle)", s.claw_settle_after_place_s)
             time.sleep(s.claw_settle_after_place_s)
 
         # 目标位放置后先回 obs1，再腕零（回程保持步11张开+目标腕角直至观测位）
-        log.info("step11b: obs1 joints after place, then wrist=%.3f (grip stays open)", tw)
         self._joints_obs(list(s.observe1_axes_rel_deg), "step11b_obs1_after_place")
         self._emit_claw(tw, "step11b_claw_wrist0_after_return")
         self._maybe_emit_claw(tw, "step11b_emit_dup")
@@ -279,11 +266,8 @@ class HeadFSM:
         while True:
             try:
                 self.run_one_cycle()
-                log.info("cycle complete (下一轮将 cycle_start discard → step1 obs1 → …)")
-                self._log_queue("cycle_complete")
             except Exception as e:  # noqa: BLE001
                 log.exception("cycle error: %s", e)
-                self._log_queue("cycle_error_before_retry (整轮将重跑；若刚失败在步10 附近，易误判为「直接去 obs2」)")
                 time.sleep(1.0)
             if single:
                 break
@@ -335,7 +319,7 @@ def main() -> None:
     ingest.start_background(tcp_port=settings.ingest_tcp_port)
 
     speaker = BridgeClient(settings)
-    target_queue: Deque[Position] = deque()
+    target_queue: Deque[QueuedTarget] = deque()
 
     log.info("ingestion http://%s:%s/ (tcp=%s)", settings.ingest_host, settings.ingest_port, settings.ingest_tcp_port)
     log.info("bridge %s", settings.bridge_base_url)

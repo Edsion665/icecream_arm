@@ -3,121 +3,165 @@ from __future__ import annotations
 from typing import Deque, List, Optional
 
 from src.config import Settings
-from src.models import PlanResult, Position, SceneSnapshot, TrackSlot
+from src.models import PlanResult, Position, QueuedTarget, SceneSnapshot, TrackSlot
 from src.shape_match import (
     filter_slots_by_prefix,
     select_nearest_slot,
+    select_slot_nearest_to,
     shape_prefix,
     slot_distance,
 )
 
 
 def _plan_reference(s: Settings) -> Position:
-    """最近 target/object 的距离参考点（robot_base 原点）。"""
+    """队列排序与 object 评分的距离参考点（robot_base, m）。"""
     o = s.plan_reference_xyz
     return Position(float(o[0]), float(o[1]), float(o[2]))
 
 
-def plan_pick(
-    settings: Settings,
-    snap: SceneSnapshot,
-    target_queue: Deque[Position],
-) -> PlanResult:
-    """选最近 target，再在同形状前缀的 object 里选抓取目标。"""
-
-    ref = _plan_reference(settings)
-    targets: List[TrackSlot] = list(snap.slots_by_role.get("target") or [])
-    if not targets and not target_queue:
-        return PlanResult(ok=False, reason="no_target")
-
-    if targets:
-        nearest_tgt = select_nearest_slot(targets, ref)
-    else:
-        nearest_tgt = None
-
-    if nearest_tgt is None and target_queue:
-        p = target_queue[0]
-        nearest_tgt = TrackSlot(
-            role="target",
-            class_id="queue",
-            label="queued_target",
-            position=p,
-            wrist_yaw_deg=0.0,
-            track_id=None,
-            confidence=None,
-            last_frame_id=None,
-            last_ts=None,
-            frame="robot_base",
+def build_target_queue(targets: List[TrackSlot], ref: Position) -> List[QueuedTarget]:
+    """obs1 建队：距 ref 越近优先级越高（队首最先服务）。队列仅表示优先级。"""
+    sorted_slots = sorted(targets, key=lambda s: slot_distance(s, ref))
+    out: List[QueuedTarget] = []
+    for s in sorted_slots:
+        prefix = shape_prefix(s.class_id)
+        if not prefix:
+            continue
+        out.append(
+            QueuedTarget(
+                class_id=s.class_id,
+                shape_prefix=prefix,
+                position=s.position,
+                wrist_yaw_deg=s.wrist_yaw_deg,
+                label=s.label,
+            )
         )
+    return out
 
-    if nearest_tgt is None:
-        return PlanResult(ok=False, reason="no_target")
 
-    prefix = shape_prefix(nearest_tgt.class_id)
-    if not prefix:
-        return PlanResult(ok=False, reason="bad_target_class_id")
+def _queued_to_track_slot(q: QueuedTarget) -> TrackSlot:
+    return TrackSlot(
+        role="target",
+        class_id=q.class_id,
+        label=q.label,
+        position=q.position,
+        wrist_yaw_deg=q.wrist_yaw_deg,
+        track_id=None,
+        confidence=None,
+        last_frame_id=None,
+        last_ts=None,
+        frame="robot_base",
+    )
 
-    objs_all: List[TrackSlot] = list(snap.slots_by_role.get("object") or [])
-    objs = filter_slots_by_prefix(objs_all, prefix)
+
+def _best_object_for_prefix(
+    objs: List[TrackSlot], ref: Position, min_confidence: float
+) -> TrackSlot | None:
     if not objs:
-        return PlanResult(
-            ok=False,
-            reason=f"no_object_for_prefix:{prefix}",
-        )
+        return None
 
     def score(s: TrackSlot) -> tuple[float, float]:
         conf = s.confidence if s.confidence is not None else 0.0
         return (conf, -slot_distance(s, ref))
 
-    objs.sort(key=score, reverse=True)
-    best_obj = objs[0]
-    if settings.min_object_confidence > 0 and (best_obj.confidence or 0.0) < settings.min_object_confidence:
-        return PlanResult(ok=False, reason="low_confidence")
+    objs = sorted(objs, key=score, reverse=True)
+    best = objs[0]
+    if min_confidence > 0 and (best.confidence or 0.0) < min_confidence:
+        return None
+    return best
 
-    return PlanResult(ok=True, reason="", object_slot=best_obj, target_slot=nearest_tgt)
+
+def plan_pick(
+    settings: Settings,
+    snap: SceneSnapshot,
+    target_queue: Deque[QueuedTarget],
+) -> PlanResult:
+    """按 obs1 队列优先级选本轮形状；传送带 object 按同前缀匹配。
+
+    - 队列只决定优先级（近者优先）。
+    - 放置目标位始终来自 obs1 队列项，不要求 obs2 再看到 target。
+    - 传送带未见队首形状时，依次尝试队列中下一项；只要在 obs1 队列里
+      且传送带上有同前缀 object，即可抓取。
+    """
+
+    ref = _plan_reference(settings)
+    objs_all: List[TrackSlot] = list(snap.slots_by_role.get("object") or [])
+
+    queue: List[QueuedTarget] = list(target_queue)
+    if not queue:
+        targets: List[TrackSlot] = list(snap.slots_by_role.get("target") or [])
+        if targets:
+            queue = build_target_queue(targets, ref)
+
+    if not queue:
+        return PlanResult(ok=False, reason="no_target")
+
+    min_conf = settings.min_object_confidence
+
+    for q_item in queue:
+        prefix = q_item.shape_prefix
+        if not prefix:
+            continue
+        objs = filter_slots_by_prefix(objs_all, prefix)
+        best_obj = _best_object_for_prefix(objs, ref, min_conf)
+        if best_obj is None:
+            continue
+        planned_tgt = _queued_to_track_slot(q_item)
+        return PlanResult(
+            ok=True,
+            reason="",
+            object_slot=best_obj,
+            target_slot=planned_tgt,
+            queued_target=q_item,
+        )
+
+    prefixes = [q.shape_prefix for q in queue]
+    return PlanResult(
+        ok=False,
+        reason=f"no_object_on_belt_for_obs1_queue:{prefixes}",
+    )
 
 
 def peek_target_pose(
     snap: SceneSnapshot,
-    target_queue: Deque[Position],
+    target_queue: Deque[QueuedTarget],
     *,
     shape_prefix_lock: str | None = None,
+    preferred: TrackSlot | None = None,
 ) -> Position | None:
-    t = peek_target_track(snap, target_queue, shape_prefix_lock=shape_prefix_lock)
+    t = peek_target_track(
+        snap,
+        target_queue,
+        shape_prefix_lock=shape_prefix_lock,
+        preferred=preferred,
+    )
     return None if t is None else t.position
 
 
 def peek_target_track(
     snap: SceneSnapshot,
-    target_queue: Deque[Position],
+    target_queue: Deque[QueuedTarget],
     *,
     shape_prefix_lock: str | None = None,
+    preferred: TrackSlot | None = None,
 ) -> TrackSlot | None:
-    """放置阶段：优先同前缀槽位里最近的 target；无匹配再回退 FIFO 队列。"""
+    """放置阶段：仅选与手中物体同前缀的 target；无匹配返回 None（禁止全局最近回退）。"""
 
-    ref = Position(0.0, 0.0, 0.0)
-    targets: List[TrackSlot] = list(snap.slots_by_role.get("target") or [])
-
-    if shape_prefix_lock:
-        matched = filter_slots_by_prefix(targets, shape_prefix_lock)
-        if matched:
-            return select_nearest_slot(matched, ref)
-
-    if target_queue:
-        p = target_queue[0]
-        return TrackSlot(
-            role="target",
-            class_id="queue",
-            label="queued_target",
-            position=p,
-            wrist_yaw_deg=0.0,
-            track_id=None,
-            confidence=None,
-            last_frame_id=None,
-            last_ts=None,
-            frame="robot_base",
-        )
-
-    if not targets:
+    if not shape_prefix_lock:
         return None
-    return select_nearest_slot(targets, ref)
+
+    targets: List[TrackSlot] = list(snap.slots_by_role.get("target") or [])
+    matched = filter_slots_by_prefix(targets, shape_prefix_lock)
+    if matched:
+        if preferred is not None:
+            picked = select_slot_nearest_to(matched, preferred.position)
+            if picked is not None:
+                return picked
+        ref = Position(0.0, 0.0, 0.0)
+        return select_nearest_slot(matched, ref)
+
+    for q in target_queue:
+        if q.shape_prefix == shape_prefix_lock:
+            return _queued_to_track_slot(q)
+
+    return None

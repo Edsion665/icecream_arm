@@ -16,6 +16,13 @@ idle_grip_state: 0
 
 merge_pos_eps_m: 0.005
 merge_yaw_eps_deg: 3.0
+# 观测：连续 N 帧位置/腕角相近后才写入 target/object 槽（默认 3）
+observe_stable_frames: 3
+# 可选：观测稳定性阈值；省略则沿用 merge_pos_eps_m / merge_yaw_eps_deg
+# observe_stable_pos_eps_m: 0.008
+# observe_stable_yaw_eps_deg: 5.0
+# 目标队列排序参考点 (robot_base, m)；距此点越近，step2 队首优先级越高
+plan_reference_xyz: [0.0, 0.0, 0.0]
 target_z_offset_m: 0.4
 object_z_offset_m: 0.2
 

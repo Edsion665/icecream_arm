@@ -160,7 +160,7 @@ class BridgeClient:
     def send_joints(self, axes_rel_deg: List[float], *, context: str = "") -> BridgeReply:
         if len(axes_rel_deg) != 4:
             return BridgeReply(False, 0, {}, error="axes_rel_deg must have length 4")
-        log.info(
+        log.debug(
             "bridge POST /api/joints %s axes_rel_deg=%s",
             f"({context})" if context else "",
             list(axes_rel_deg),
@@ -188,8 +188,8 @@ class BridgeClient:
         return self._reached_with_feedback(reply)
 
     def send_pose(self, x: float, y: float, z: float, *, context: str = "") -> BridgeReply:
-        log.info(
-            "bridge POST /api/pose %s x=%.4f y=%.4f z=%.4f (pose 不含 wrist；腕角仅由 claw 单独下发)",
+        log.debug(
+            "bridge POST /api/pose %s x=%.4f y=%.4f z=%.4f",
             f"({context})" if context else "",
             x,
             y,
@@ -217,22 +217,15 @@ class BridgeClient:
             "wrist_deg": float(wrist_deg),
             "grip_state": grip_state,
         }
-        log.info(
-            "bridge POST /api/claw %s wrist_deg=%.3f grip_state=%s (0=关 1=开) closed(logical)=%s last_grip_closed(before)=%s",
+        log.debug(
+            "bridge POST /api/claw %s wrist_deg=%.3f grip_state=%s",
             f"({context})" if context else "",
             float(wrist_deg),
             grip_state,
-            closed,
-            self._last_grip_closed,
         )
         rep = self._post("/api/claw", payload)
         if rep.ok:
             self._last_grip_closed = closed
-            log.info(
-                "bridge claw ok status=%s body_ok=%s",
-                rep.status_code,
-                rep.body.get("ok"),
-            )
         else:
             log.warning("bridge claw failed status=%s error=%s body=%s", rep.status_code, rep.error, rep.body)
         return rep
@@ -265,12 +258,6 @@ class BridgeClient:
             "wrist_deg": float(wrist_deg),
             "grip_state": grip_state,
         }
-        log.info(
-            "bridge POST /api/claw (%s) wrist_deg=%.3f grip_state=%s (0=关 1=开)",
-            context,
-            float(wrist_deg),
-            grip_state,
-        )
         cr = self._post("/api/claw", payload)
         if cr.ok:
             self._last_grip_closed = grip_closed

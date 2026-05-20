@@ -30,6 +30,13 @@ def select_nearest_slot(slots: List[TrackSlot], ref: Position) -> Optional[Track
     return min(slots, key=lambda s: slot_distance(s, ref))
 
 
+def select_slot_nearest_to(slots: List[TrackSlot], ref: Position) -> Optional[TrackSlot]:
+    """在 slots 中选 position 距 ref 最近者（用于同前缀放置位消歧）。"""
+    if not slots:
+        return None
+    return min(slots, key=lambda s: s.position.dist(ref))
+
+
 def filter_slots_by_prefix(slots: List[TrackSlot], prefix: str) -> List[TrackSlot]:
     if not prefix:
         return list(slots)
