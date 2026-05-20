@@ -47,7 +47,7 @@ class HeadFSM:
         ack = self.speaker.send_joints(axes, context=label)
         if not ack.ok:
             raise RuntimeError(f"{label}: joints POST failed: {ack.error or ack.body}")
-        rep = self.speaker.wait_joints_reached(self._timeout())
+        rep = self.speaker.wait_joints_reached(self._timeout(), context=label)
         if not self.speaker.joints_in_position(rep):
             raise RuntimeError(f"{label}: joints not reached: {rep.error or rep.body}")
 
@@ -57,7 +57,7 @@ class HeadFSM:
         ack = self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
         if not ack.ok:
             raise RuntimeError(f"{label}: pose POST failed: {ack.error or ack.body}")
-        rep = self.speaker.wait_pose_reached(self._timeout())
+        rep = self.speaker.wait_pose_reached(self._timeout(), context=label)
         if not self.speaker.pose_in_position(rep):
             raise RuntimeError(f"{label}: pose not reached: {rep.error or rep.body}")
 
@@ -254,7 +254,9 @@ class HeadFSM:
             self._log_queue("step10_after_queue_pop")
 
         # 11: place claw + target wrist
-        cr2 = sp.send_claw(tgt.wrist_yaw_deg, s.claw_open_for_place, context="step11_claw_place")
+        cr2 = sp.send_claw(
+            tgt.wrist_yaw_deg, closed=not s.claw_open_for_place, context="step11_claw_place"
+        )
         sp.require_claw(cr2, "step11_claw_place")
         if s.claw_settle_after_place_s > 0:
             log.info("step11: wait %.2fs after place (grip open settle)", s.claw_settle_after_place_s)
@@ -298,13 +300,13 @@ def _hold_idle_until_pi_start(settings: Settings, speaker: BridgeClient, pi_serv
         settings.idle_bridge_hz,
         axes,
         settings.idle_claw_wrist_deg,
-        settings.idle_grip_state,
+        settings.idle_grip_closed,
     )
     while not pi_server.is_started():
         speaker.send_idle_zeros(
             axes,
             wrist_deg=settings.idle_claw_wrist_deg,
-            grip_state=settings.idle_grip_state,
+            grip_closed=settings.idle_grip_closed,
             context="idle_hold",
         )
         if pi_server.wait_started(timeout=period):

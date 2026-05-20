@@ -30,12 +30,21 @@ class ControlConfig:
     q5_fixed_deg: float = 0.0
     # 到位判定容差（度），用于 ReachTracker 判断命令是否执行完成
     reached_joints_tol_deg: float = 5.0
+    # Pi udp.p_rel_deg 与 bridge 指令相差超过此值(deg)时，到位判定只用 bridge 指令角
+    reached_udp_sync_tol_deg: float = 1.0
     reached_pose_tol_m: float = 0.005
     reached_wrist_tol_deg: float = 5.0
     reached_claw_delay_s: float = 2.0
     reached_timeout_s: float = 10.0
     reached_stable_frames: int = 5
-    # RPi WebSocket 端口（Pi 反馈回传）
+    # 无 Pi 反馈时禁止判到位（避免用 q_cmd 自比导致 head 提前关爪）
+    require_pi_feedback_for_reached: bool = True
+    # pi2camera v2：Pi→PC camera_state UDP 监听（motor_rad）
+    camera_udp_listen_host: str = "0.0.0.0"
+    camera_udp_listen_port: int = 9982
+    # 距上次收到 camera_state 超过此毫秒则不判到位（None=不检查）
+    max_camera_packet_age_ms_for_reached: Optional[float] = 500.0
+    # 旧 WebSocket 回传（已弃用到位判定，仅 teleop 等可能仍用）
     rpi_ws_port: int = 8765
     pi_feedback_reconnect_interval_s: float = 3.0
 

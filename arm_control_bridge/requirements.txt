@@ -1,0 +1,2 @@
+# arm_control_bridge（nosim）
+numpy>=1.20.0

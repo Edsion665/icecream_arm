@@ -110,7 +110,7 @@ class servoMotor:
 
     def send(self, servo_deg: Sequence[float]) -> None:
         sd = np.asarray(servo_deg, dtype=float).ravel()
-        # servo_deg[1]: 0=open, 1=close（与 bridge2pi grip_state 一致）
+        # servo_deg[1]: 0=关闭, 1=张开（与 head grip_state 一致）
         grip = 1.0 if (len(sd) >= 2 and float(sd[1]) >= 0.5) else 0.0
         dummy = JointFrame(
             arm_rel_deg=np.zeros(4, dtype=float),

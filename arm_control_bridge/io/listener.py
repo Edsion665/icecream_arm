@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable, Optional
 
+from ..constants import IMMEDIATE_ACK_KINDS
+
 LogFn = Optional[Callable[[str], None]]
 PendingFn = Optional[Callable[..., None]]
 
@@ -81,13 +83,13 @@ class CommandNormalizer:
 
     @staticmethod
     def _normalize_grip_state(v: Any) -> float:
-        """与 bridge2pi 一致：0=open，1=close。"""
+        """与 head / 现场一致：grip_state 0=关闭，1=张开。"""
         if isinstance(v, str):
             s = v.strip().lower()
-            if s in ("open", "0", "false"):
-                return 0.0
-            if s in ("close", "closed", "1", "true"):
+            if s in ("open", "1", "true"):
                 return 1.0
+            if s in ("close", "closed", "0", "false"):
+                return 0.0
             raise ValueError("invalid_value: grip_state 必须为 0/1 或 open/close")
         try:
             x = float(v)
@@ -299,7 +301,7 @@ class NetworkListener(BaseListener):
                     try:
                         cmd = CommandNormalizer.normalize_line(line.decode("utf-8"))
                         if cmd is not None:
-                            if self._on_pending is not None:
+                            if self._on_pending is not None and cmd.kind not in IMMEDIATE_ACK_KINDS:
                                 self._on_pending(tcp_conn=conn, http_slot=None)
                             self.emit(cmd)
                     except ValueError as e:
@@ -366,6 +368,7 @@ def start_http_server(
     web_dir: str,
     on_log: Callable[[str], None],
     on_pending: PendingFn = None,
+    reach_snapshot: Any = None,
 ) -> threading.Thread:
     """在后台线程启动 ``HTTPServer``，路由见内部 ``Handler``。"""
     from ..config import CONFIG
@@ -393,7 +396,14 @@ def start_http_server(
             self.end_headers()
 
         def do_GET(self) -> None:
-            if self.path.split("?")[0] in ("/", "/index.html"):
+            path = self.path.split("?")[0]
+            if path == "/api/reached":
+                if reach_snapshot is None:
+                    self._send_json(503, {"ok": False, "error": "reach snapshot unavailable"})
+                    return
+                self._send_json(200, reach_snapshot.get())
+                return
+            if path in ("/", "/index.html"):
                 path = os.path.join(web_dir, "index.html")
                 if not os.path.isfile(path):
                     self._send_json(404, {"ok": False, "error": "no index.html"})
@@ -432,7 +442,7 @@ def start_http_server(
                 return
             kind = routes[path]
             slot: Optional[ReplySlot] = None
-            if on_pending is not None:
+            if on_pending is not None and kind not in IMMEDIATE_ACK_KINDS:
                 slot = ReplySlot()
                 on_pending(tcp_conn=None, http_slot=slot)
             try:

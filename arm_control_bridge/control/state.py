@@ -50,7 +50,7 @@ class CalculatorState:
     joint_rel_deg_4: np.ndarray = field(default_factory=lambda: np.zeros(ARM_AXES, dtype=float))
     servo_deg: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
     wrist_rel_deg: float = 0.0
-    grip_state: float = 0.0  # 0=open 1=close；默认 open
+    grip_state: float = 1.0  # 0=关闭 1=张开；默认张开
     stepper_deg_cmd: float = 0.0
     conveyor_run_cmd: float = 0.0
     q_full: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))

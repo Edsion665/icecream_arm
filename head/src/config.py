@@ -31,7 +31,8 @@ class Settings:
     idle_axes_rel_deg: List[float] | None = None
     idle_bridge_hz: float = 2.0
     idle_claw_wrist_deg: float = 0.0
-    idle_grip_state: int = 0  # head2bridge：0=合拢，1=张开
+    # 待命阶段夹爪：True=合拢（下发 grip_state=0）
+    idle_grip_closed: bool = True
 
     merge_pos_eps_m: float = 0.005
     merge_yaw_eps_deg: float = 3.0
@@ -51,12 +52,14 @@ class Settings:
     # v3 FSM / claw / camera wait：None = 在 obs1/obs2 一直等帧内 target/object，不超时
     camera_wait_timeout_s: float | None = None
     claw_closed_for_pick: bool = True
-    claw_open_for_place: bool = False
+    # True：放置时张开（下发 grip_state=1）
+    claw_open_for_place: bool = True
     claw_after_joints_wrist_deg: float = 0.0
     obs2_entry_wrist_deg: float = 0.0
     emit_claw_on_every_transition: bool = False
-    # True：启动为张开 → 下发 grip_state=1；False：合拢 → grip_state=0（与 head2bridge 0=合拢1=张开一致）
     initial_grip_open: bool = True
+    # 轮询 /api/reached 时要求 bridge 已有 pi2camera 关节反馈（feedback_available）
+    require_bridge_feedback: bool = True
     # 步7 夹紧 / 步11 松开成功后，再等待若干秒再进入后续关节运动，避免夹爪未到位就抬臂
     claw_settle_after_pick_s: float = 1.0
     claw_settle_after_place_s: float = 1.0
@@ -82,8 +85,6 @@ class Settings:
             raise ValueError("idle_axes_rel_deg must have length 4")
         if self.idle_bridge_hz <= 0:
             raise ValueError("idle_bridge_hz must be positive")
-        if self.idle_grip_state not in (0, 1):
-            raise ValueError("idle_grip_state must be 0 or 1")
         if self.bridge_reached_poll_s <= 0:
             raise ValueError("bridge_reached_poll_s must be positive")
 
@@ -101,7 +102,11 @@ def load_settings(path: str | Path) -> Settings:
         idle_axes_rel_deg=list(raw.get("idle_axes_rel_deg") or [0.0, 0.0, 0.0, 0.0]),
         idle_bridge_hz=float(raw.get("idle_bridge_hz", 2.0)),
         idle_claw_wrist_deg=float(raw.get("idle_claw_wrist_deg", 0.0)),
-        idle_grip_state=int(raw.get("idle_grip_state", 0)),
+        idle_grip_closed=(
+            bool(raw["idle_grip_closed"])
+            if "idle_grip_closed" in raw
+            else int(raw.get("idle_grip_state", 0)) == 0
+        ),
         merge_pos_eps_m=float(raw.get("merge_pos_eps_m", 0.005)),
         merge_yaw_eps_deg=float(raw.get("merge_yaw_eps_deg", 3.0)),
         plan_reference_xyz=list(raw.get("plan_reference_xyz") or [0.0, 0.0, 0.0]),
@@ -114,7 +119,7 @@ def load_settings(path: str | Path) -> Settings:
         min_object_confidence=float(raw.get("min_object_confidence", 0.0)),
         camera_wait_timeout_s=_parse_optional_camera_wait(raw.get("camera_wait_timeout_s")),
         claw_closed_for_pick=bool(raw.get("claw_closed_for_pick", True)),
-        claw_open_for_place=bool(raw.get("claw_open_for_place", False)),
+        claw_open_for_place=bool(raw.get("claw_open_for_place", True)),
         claw_after_joints_wrist_deg=float(raw.get("claw_after_joints_wrist_deg", 0.0)),
         obs2_entry_wrist_deg=float(raw.get("obs2_entry_wrist_deg", 0.0)),
         emit_claw_on_every_transition=bool(raw.get("emit_claw_on_every_transition", False)),
@@ -123,4 +128,5 @@ def load_settings(path: str | Path) -> Settings:
         claw_settle_after_place_s=float(raw.get("claw_settle_after_place_s", 1.0)),
         require_fresh_detection_after_obs=bool(raw.get("require_fresh_detection_after_obs", True)),
         bridge_reached_poll_s=float(raw.get("bridge_reached_poll_s", 0.04)),
+        require_bridge_feedback=bool(raw.get("require_bridge_feedback", True)),
     )

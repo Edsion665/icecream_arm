@@ -1,96 +1,204 @@
-"""树莓派 WebSocket 回传订阅客户端（pi2camera v1 协议）。
+"""Pi → PC 关节反馈（pi2camera v2 UDP，见 ``head/doc/pi2camera.md``）。
 
-订阅树莓派 WebSocket 状态（端口见 ``CONFIG.rpi_ws_port``），解析 ``type=state``，提取
-``feedback.fb_arm_rad``（优先）或 ``feedback.mit_arm_rad``，
-供 ``is_reached()`` 使用实机关节角。
+监听 Pi 下行 ``camera_state`` JSON（默认 UDP ``9982``），用 ``motor_rad[4]`` 与
+bridge 下发的 ``joint_rel_deg_4``（经 ``bridge2pi`` 电机映射反算为相对角）比较是否到位。
 
-无 Pi 连接时 ``get_fb_arm_rad()`` 返回 ``None``，控制循环回退到 ``state.q_cmd``。
+不使用 WebSocket ``fb_arm_rad``。
 """
 
 from __future__ import annotations
 
 import json
+import socket
 import threading
-from typing import Optional
+import time
+from dataclasses import dataclass
+from typing import Any, Optional
 
 import numpy as np
 
 from ..config import CONFIG
 
+# bridge2pi §4.1：motor_i = calib[i] + sign_i * rad(p_rel_deg[i])
+_MOTOR_SIGN = np.array([-1.0, 1.0, -1.0, -1.0], dtype=float)
+
+
+def motor_rad_to_rel_deg(motor_rad: np.ndarray, q_calib_rad: np.ndarray) -> np.ndarray:
+    """电机绝对角(rad) → 相对标定角(deg)，与 ``p_rel_deg[0:4]`` 同语义。"""
+    m = np.asarray(motor_rad, dtype=float).ravel()[:4]
+    c = np.asarray(q_calib_rad, dtype=float).ravel()[:4]
+    return np.rad2deg(_MOTOR_SIGN * (m - c))
+
+
+@dataclass(frozen=True)
+class PiFeedbackSnapshot:
+    """最近一次 pi2camera v2 ``camera_state`` UDP 包。"""
+
+    udp_listening: bool
+    motor_rad: Optional[np.ndarray]
+    packet_age_ms: Optional[float]
+    pi_seq: Optional[int]
+    updated_monotonic: float
+
 
 class PiFeedbackClient:
-    """后台线程订阅树莓派 WebSocket 状态广播。"""
+    """后台线程：UDP 接收 Pi ``camera_state``，解析 ``motor_rad``。"""
 
-    def __init__(self, rpi_ip: str, port: int = CONFIG.rpi_ws_port) -> None:
-        self._uri = f"ws://{rpi_ip}:{port}"
+    def __init__(
+        self,
+        q_calib_rad: np.ndarray,
+        *,
+        listen_host: str | None = None,
+        listen_port: int | None = None,
+    ) -> None:
+        self._q_calib_rad = np.asarray(q_calib_rad, dtype=float).ravel()[:4].copy()
+        self._listen_host = listen_host or CONFIG.camera_udp_listen_host
+        self._listen_port = int(listen_port or CONFIG.camera_udp_listen_port)
         self._lock = threading.Lock()
-        self._fb_arm_rad: Optional[np.ndarray] = None
+        self._listening = False
+        self._motor_rad: Optional[np.ndarray] = None
+        self._packet_age_ms: Optional[float] = None
+        self._pi_seq: Optional[int] = None
+        self._updated_monotonic: float = 0.0
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(target=self._run, daemon=True, name="PiCameraUdpFeedback")
         self._thread.start()
 
-    def get_fb_arm_rad(self) -> Optional[np.ndarray]:
-        """返回最新实机关节角（弧度，4 轴），无回传时返回 ``None``。"""
+    def get_snapshot(self) -> PiFeedbackSnapshot:
         with self._lock:
-            return self._fb_arm_rad.copy() if self._fb_arm_rad is not None else None
+            age = None
+            if self._updated_monotonic > 0:
+                age = (time.monotonic() - self._updated_monotonic) * 1000.0
+            return PiFeedbackSnapshot(
+                udp_listening=self._listening,
+                motor_rad=self._motor_rad.copy() if self._motor_rad is not None else None,
+                packet_age_ms=age,
+                pi_seq=self._pi_seq,
+                updated_monotonic=self._updated_monotonic,
+            )
+
+    def get_fb_arm_rad(self) -> Optional[np.ndarray]:
+        """供 FK 使用：返回最新 ``motor_rad``（rad，4 轴）。"""
+        with self._lock:
+            return self._motor_rad.copy() if self._motor_rad is not None else None
+
+    def compute_arm_reached(
+        self,
+        bridge_target_rel_deg: np.ndarray,
+        *,
+        tol_deg: float = CONFIG.reached_joints_tol_deg,
+        require_feedback: bool = CONFIG.require_pi_feedback_for_reached,
+        max_packet_age_ms: Optional[float] = CONFIG.max_camera_packet_age_ms_for_reached,
+    ) -> tuple[bool, float, dict[str, Any]]:
+        """反馈 ``motor_rad`` 反算的相对角 vs bridge 设定 ``joint_rel_deg_4``。"""
+        snap = self.get_snapshot()
+        meta: dict[str, Any] = {
+            "feedback_available": False,
+            "reach_source": "pi2camera_udp",
+            "udp_listening": snap.udp_listening,
+        }
+        target_rel = np.asarray(bridge_target_rel_deg, dtype=float).ravel()[:4]
+        meta["target_source"] = "bridge.joint_rel_deg_4"
+        meta["target_rel_deg"] = [round(float(x), 3) for x in target_rel]
+
+        if not snap.udp_listening:
+            meta["reach_reason"] = "udp_not_listening"
+            return False, float("inf"), meta
+
+        if require_feedback and snap.motor_rad is None:
+            meta["reach_reason"] = "no_motor_rad"
+            return False, float("inf"), meta
+
+        if snap.motor_rad is None:
+            meta["reach_reason"] = "no_motor_rad"
+            return False, float("inf"), meta
+
+        if max_packet_age_ms is not None and snap.packet_age_ms is not None:
+            if float(snap.packet_age_ms) > float(max_packet_age_ms):
+                meta["reach_reason"] = "packet_stale"
+                meta["packet_age_ms"] = round(float(snap.packet_age_ms), 1)
+                return False, float("inf"), meta
+
+        motor = snap.motor_rad[:4]
+        actual_rel = motor_rad_to_rel_deg(motor, self._q_calib_rad)
+        err_deg = np.abs(actual_rel - target_rel)
+        error = float(np.linalg.norm(err_deg))
+        reached = bool(np.all(err_deg < tol_deg))
+
+        meta.update(
+            {
+                "feedback_available": True,
+                "motor_rad": [round(float(x), 4) for x in motor],
+                "actual_rel_deg": [round(float(x), 3) for x in actual_rel],
+                "per_axis_err_deg": [round(float(x), 3) for x in err_deg],
+                "reached_tol_deg": float(tol_deg),
+                "packet_age_ms": round(float(snap.packet_age_ms), 1) if snap.packet_age_ms is not None else None,
+                "pi_seq": snap.pi_seq,
+                "reach_reason": "ok" if reached else "over_tol",
+            }
+        )
+        return reached, error, meta
 
     def close(self) -> None:
         self._stop.set()
 
     def _run(self) -> None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            import websocket
-        except ImportError:
-            print("[PiFeedbackClient] websocket-client 未安装，Pi 回传不可用")
-            return
-
-        while not self._stop.is_set():
-            ws = None
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((self._listen_host, self._listen_port))
+            sock.settimeout(0.5)
+            with self._lock:
+                self._listening = True
+            print(
+                f"[PiFeedbackClient] pi2camera v2 UDP 监听 {self._listen_host}:{self._listen_port} "
+                f"（camera_state.motor_rad，不用 WebSocket）"
+            )
+            while not self._stop.is_set():
+                try:
+                    data, _addr = sock.recvfrom(65535)
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    if not self._stop.is_set():
+                        print(f"[PiFeedbackClient] UDP recv 错误: {type(exc).__name__}: {exc}")
+                    continue
+                self._handle_packet(data)
+        except OSError as exc:
+            print(
+                f"[PiFeedbackClient] 无法绑定 UDP {self._listen_host}:{self._listen_port}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        finally:
+            with self._lock:
+                self._listening = False
             try:
-                ws = websocket.create_connection(self._uri, timeout=5)
-                print(f"[PiFeedbackClient] 已连接 {self._uri}")
-                while not self._stop.is_set():
-                    raw = ws.recv()
-                    self._handle(raw)
-            except websocket.WebSocketConnectionClosedException as exc:
-                print(f"[PiFeedbackClient] 连接关闭: {exc}")
-            except (OSError, ConnectionError) as exc:
-                print(f"[PiFeedbackClient] 连接/收发错误 ({type(exc).__name__}): {exc}")
-            except Exception as exc:
-                print(f"[PiFeedbackClient] 未预期错误 ({type(exc).__name__}): {exc}")
-            finally:
-                if ws is not None:
-                    try:
-                        ws.close()
-                    except OSError as exc:
-                        print(f"[PiFeedbackClient] ws.close: {type(exc).__name__}: {exc}")
-            if not self._stop.is_set():
-                print(
-                    f"[PiFeedbackClient] 断开，{CONFIG.pi_feedback_reconnect_interval_s:g}s 后重连"
-                )
-            self._stop.wait(CONFIG.pi_feedback_reconnect_interval_s)
+                sock.close()
+            except OSError:
+                pass
 
-    def _handle(self, raw: str | bytes) -> None:
-        if isinstance(raw, bytes):
-            try:
-                raw = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                return
+    def _handle_packet(self, data: bytes) -> None:
         try:
+            raw = data.decode("utf-8")
             msg = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
             return
-        if msg.get("type") != "state":
+        if msg.get("type") != "camera_state":
             return
-        fb = (msg.get("data") or {}).get("feedback") or {}
-        arm_rad = fb.get("fb_arm_rad") or fb.get("mit_arm_rad")
-        if arm_rad is None:
+        arm = msg.get("motor_rad")
+        if arm is None:
             return
         try:
-            arr = np.array(arm_rad, dtype=float).ravel()[:4]
+            arr = np.array(arm, dtype=float).ravel()[:4]
             if len(arr) < 4:
                 return
-            with self._lock:
-                self._fb_arm_rad = arr
         except (TypeError, ValueError):
             return
+        seq = msg.get("seq")
+        with self._lock:
+            self._motor_rad = arr
+            self._updated_monotonic = time.monotonic()
+            try:
+                self._pi_seq = int(seq) if seq is not None else None
+            except (TypeError, ValueError):
+                self._pi_seq = None

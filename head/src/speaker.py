@@ -28,7 +28,8 @@ class BridgeClient:
         self._settings = settings
         self._base = settings.bridge_base_url.rstrip("/")
         self._reached_poll_s = float(settings.bridge_reached_poll_s)
-        # 逻辑层 True=合拢 False=张开；下发 bridge 时 grip_state：0=合拢，1=张开
+        self._require_bridge_feedback = bool(settings.require_bridge_feedback)
+        # 逻辑层 closed=True/False；下发 grip_state：0=关闭，1=张开
         self._last_grip_closed: bool = not settings.initial_grip_open
 
     @property
@@ -89,23 +90,72 @@ class BridgeClient:
     def poll_reached(self) -> BridgeReply:
         return self._get("/api/reached")
 
-    def wait_joints_reached(self, timeout_s: float) -> BridgeReply:
-        deadline = time.monotonic() + max(float(timeout_s), 0.0)
-        while time.monotonic() < deadline:
-            rep = self.poll_reached()
-            if self.joints_in_position(rep):
-                return rep
-            time.sleep(self._reached_poll_s)
-        return BridgeReply(False, 408, {"ok": False, "reached": False, "error": "timeout"}, error="timeout")
+    @staticmethod
+    def log_reached_timeout(context: str, rep: BridgeReply, *, timeout_s: float) -> None:
+        """超时：打印四轴反馈 vs 设定角（来自 bridge /api/reached 的 pi2camera 字段）。"""
+        b = rep.body if isinstance(rep.body, dict) else {}
+        actual = b.get("actual_rel_deg")
+        target = b.get("target_rel_deg")
+        per_axis = b.get("per_axis_err_deg")
+        lines = [
+            f"到位超时 ({context}) timeout={timeout_s}s | "
+            f"reached={b.get('reached')} feedback_available={b.get('feedback_available')} "
+            f"reach_reason={b.get('reach_reason')!r} udp_listening={b.get('udp_listening')} "
+            f"target_source={b.get('target_source')!r} packet_age_ms={b.get('packet_age_ms')} "
+            f"error_joints_deg={b.get('error_joints_deg')} reached_tol_deg={b.get('reached_tol_deg')} "
+            f"mode={b.get('mode')!r} cmd_kind={b.get('cmd_kind')!r}",
+        ]
+        if b.get("motor_rad") is not None:
+            lines.append(f"  motor_rad(rad): {b.get('motor_rad')}")
+        if b.get("commanded_rel_deg") is not None:
+            lines.append(f"  bridge 指令关节(deg): {b.get('commanded_rel_deg')}")
+        if actual is not None and target is not None:
+            lines.append(f"  四轴 反馈(actual_rel_deg): {actual}")
+            lines.append(f"  四轴 设定(target_rel_deg): {target}")
+            if per_axis is not None:
+                lines.append(f"  四轴 误差|反馈-设定|(deg): {per_axis}")
+        else:
+            lines.append(
+                "  （无 actual_rel_deg：未收到 pi2camera UDP camera_state.motor_rad，"
+                "或 require_bridge_feedback 阻止判到位；确认 bridge 监听 9982）"
+            )
+        if b.get("actual_pose"):
+            lines.append(f"  actual_pose: {b.get('actual_pose')}")
+        log.error("\n".join(lines))
 
-    def wait_pose_reached(self, timeout_s: float) -> BridgeReply:
+    def wait_joints_reached(self, timeout_s: float, *, context: str = "") -> BridgeReply:
         deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        last: BridgeReply | None = None
         while time.monotonic() < deadline:
-            rep = self.poll_reached()
-            if self.pose_in_position(rep):
-                return rep
+            last = self.poll_reached()
+            if self.joints_in_position(last):
+                return last
             time.sleep(self._reached_poll_s)
-        return BridgeReply(False, 408, {"ok": False, "reached": False, "error": "timeout"}, error="timeout")
+        final = last if last is not None else self.poll_reached()
+        body = dict(final.body) if isinstance(final.body, dict) else {}
+        body.setdefault("ok", False)
+        body["reached"] = False
+        body["error"] = "timeout"
+        label = context or "wait_joints_reached"
+        self.log_reached_timeout(label, BridgeReply(final.ok, final.status_code, body, final.error), timeout_s=timeout_s)
+        return BridgeReply(False, 408, body, error="timeout")
+
+    def wait_pose_reached(self, timeout_s: float, *, context: str = "") -> BridgeReply:
+        deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        last: BridgeReply | None = None
+        while time.monotonic() < deadline:
+            last = self.poll_reached()
+            if self.pose_in_position(last):
+                return last
+            time.sleep(self._reached_poll_s)
+        final = last if last is not None else self.poll_reached()
+        body = dict(final.body) if isinstance(final.body, dict) else {}
+        body.setdefault("ok", False)
+        body["reached"] = False
+        body["error"] = "timeout"
+        label = context or "wait_pose_reached"
+        self.log_reached_timeout(label, BridgeReply(final.ok, final.status_code, body, final.error), timeout_s=timeout_s)
+        return BridgeReply(False, 408, body, error="timeout")
 
     def send_joints(self, axes_rel_deg: List[float], *, context: str = "") -> BridgeReply:
         if len(axes_rel_deg) != 4:
@@ -120,6 +170,14 @@ class BridgeClient:
             {"cmd": "joints", "axes_rel_deg": list(axes_rel_deg)},
         )
 
+    def _reached_with_feedback(self, reply: BridgeReply) -> bool:
+        if not reply.ok or reply.status_code != 200:
+            return False
+        b = reply.body
+        if self._require_bridge_feedback and not bool(b.get("feedback_available", False)):
+            return False
+        return bool(b.get("reached", False))
+
     def joints_in_position(self, reply: BridgeReply) -> bool:
         if not reply.ok or reply.status_code != 200:
             return False
@@ -127,7 +185,7 @@ class BridgeClient:
         mode = b.get("mode")
         if mode is not None and mode != "joints":
             return False
-        return bool(b.get("reached", False))
+        return self._reached_with_feedback(reply)
 
     def send_pose(self, x: float, y: float, z: float, *, context: str = "") -> BridgeReply:
         log.info(
@@ -143,10 +201,8 @@ class BridgeClient:
         if not reply.ok or reply.status_code != 200:
             return False
         b = reply.body
-        mode = b.get("mode")
-        if mode is not None and mode != "pose":
-            return False
-        if not bool(b.get("reached", False)):
+        # bridge 将 pose 转为 joints 下发；以 pi2camera 反馈到位 + actual_pose 为准
+        if not self._reached_with_feedback(reply):
             return False
         ap = b.get("actual_pose")
         if not isinstance(ap, dict):
@@ -154,7 +210,7 @@ class BridgeClient:
         return all(k in ap for k in ("x", "y", "z"))
 
     def send_claw(self, wrist_deg: float, closed: bool, *, context: str = "") -> BridgeReply:
-        # head2bridge：grip_state 0=合拢，1=张开
+        # 现场约定：grip_state 0=关闭，1=张开
         grip_state = 0 if closed else 1
         payload = {
             "cmd": "claw",
@@ -162,7 +218,7 @@ class BridgeClient:
             "grip_state": grip_state,
         }
         log.info(
-            "bridge POST /api/claw %s wrist_deg=%.3f grip_state=%s (0=合拢1=张开) closed(logical)=%s last_grip_closed(before)=%s",
+            "bridge POST /api/claw %s wrist_deg=%.3f grip_state=%s (0=关 1=开) closed(logical)=%s last_grip_closed(before)=%s",
             f"({context})" if context else "",
             float(wrist_deg),
             grip_state,
@@ -193,7 +249,7 @@ class BridgeClient:
         axes_rel_deg: List[float],
         *,
         wrist_deg: float = 0.0,
-        grip_state: int = 0,
+        grip_closed: bool = False,
         context: str = "idle_hold",
     ) -> None:
         """启动待命：向 bridge 下发全零关节与 claw（不等待到位，仅尽力 POST）。"""
@@ -203,19 +259,20 @@ class BridgeClient:
         jr = self.send_joints(list(axes_rel_deg), context=context)
         if not jr.ok:
             log.warning("idle joints failed: %s", jr.error or jr.body)
+        grip_state = 0 if grip_closed else 1
         payload = {
             "cmd": "claw",
             "wrist_deg": float(wrist_deg),
-            "grip_state": int(grip_state),
+            "grip_state": grip_state,
         }
         log.info(
-            "bridge POST /api/claw (%s) wrist_deg=%.3f grip_state=%s",
+            "bridge POST /api/claw (%s) wrist_deg=%.3f grip_state=%s (0=关 1=开)",
             context,
             float(wrist_deg),
-            int(grip_state),
+            grip_state,
         )
         cr = self._post("/api/claw", payload)
         if cr.ok:
-            self._last_grip_closed = int(grip_state) == 0
+            self._last_grip_closed = grip_closed
         else:
             log.warning("idle claw failed: %s", cr.error or cr.body)
