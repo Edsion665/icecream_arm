@@ -36,7 +36,8 @@ class ControlConfig:
     reached_wrist_tol_deg: float = 5.0
     reached_claw_delay_s: float = 2.0
     reached_timeout_s: float = 10.0
-    reached_stable_frames: int = 5
+    # 连续 N 帧 Pi 反馈在容差内才置 reached:true（25Hz 下 N=5≈200ms 防抖，但机械 settling 常需数秒才凑满 N 帧）
+    reached_stable_frames: int = 2
     # 无 Pi 反馈时禁止判到位（避免用 q_cmd 自比导致 head 提前关爪）
     require_pi_feedback_for_reached: bool = True
     # pi2camera v2：Pi→PC camera_state UDP 监听（motor_rad）

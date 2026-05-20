@@ -8,6 +8,7 @@ import time
 from collections import deque
 from typing import Deque, FrozenSet
 
+from src.coordinates import wrist_deg_for_object, wrist_deg_for_target, wrist_j1_bias_deg
 from src.config import Settings, load_settings
 from src.listener import IngestionServer
 from src.models import Position, QueuedTarget, Role, TrackSlot
@@ -64,6 +65,36 @@ class HeadFSM:
         if not self.speaker.pose_in_position(rep):
             raise RuntimeError(f"{label}: pose not reached: {rep.error or rep.body}")
 
+    def _pose_delta_to(self, dx: float, dy: float, dz: float, label: str) -> None:
+        """相对 bridge 当前 pose 目标增量移动（用于抓取/放置后上抬）。"""
+        ack = self.speaker.send_pose_delta(dx, dy, dz, context=label)
+        if not ack.ok:
+            raise RuntimeError(f"{label}: pose_delta POST failed: {ack.error or ack.body}")
+        rep = self.speaker.wait_pose_reached(self._timeout(), context=label)
+        if not self.speaker.pose_in_position(rep):
+            raise RuntimeError(f"{label}: pose_delta not reached: {rep.error or rep.body}")
+
+    def _retreat_to_obs(
+        self,
+        *,
+        hold_wrist_deg: float,
+        grip_closed: bool,
+        obs_axes: list[float],
+        obs_wrist_deg: float,
+        tag: str,
+    ) -> None:
+        """夹/松爪后：保持夹爪与腕角 → 相对当前位姿上抬 → 转腕 → 关节回观测位。"""
+        lift_m = float(self.settings.retreat_lift_m)
+        if lift_m > 0.0:
+            self._emit_claw(hold_wrist_deg, f"{tag}_claw_before_lift", closed=grip_closed)
+            log.info("%s: 上抬 dz=+%.3f m（pose_delta，相对 bridge 当前位姿）", tag, lift_m)
+            self._pose_delta_to(0.0, 0.0, lift_m, f"{tag}_lift")
+        if abs(hold_wrist_deg - obs_wrist_deg) > 1e-6:
+            self._emit_claw(obs_wrist_deg, f"{tag}_claw_wrist_before_obs", closed=grip_closed)
+        self._joints_obs(obs_axes, f"{tag}_obs_joints")
+        self._emit_claw(obs_wrist_deg, f"{tag}_claw_at_obs", closed=grip_closed)
+        self._maybe_emit_claw(obs_wrist_deg, f"{tag}_claw_at_obs_dup", closed=grip_closed)
+
     def _observe_stable(self, role: Role, label: str) -> None:
         """等待连续 N 帧位置/腕角稳定后再写入槽位。"""
         tw = self._cam_wait()
@@ -95,8 +126,14 @@ class HeadFSM:
     def _fmt_slot_pos(self, s: TrackSlot) -> str:
         return (
             f"{s.class_id} ({s.position.x:.3f},{s.position.y:.3f},{s.position.z:.3f})"
-            f" wrist={s.wrist_yaw_deg:.1f}"
+            f" wrist_cam={s.wrist_yaw_deg:.1f}"
         )
+
+    def _wrist_pick(self, slot: TrackSlot) -> float:
+        return wrist_deg_for_object(slot.wrist_yaw_deg, slot.position, self.settings)
+
+    def _wrist_place(self, slot: TrackSlot) -> float:
+        return wrist_deg_for_target(slot.wrist_yaw_deg, slot.position, self.settings)
 
     def _log_all_targets(self, title: str) -> None:
         snap = self.tracker.get_snapshot()
@@ -115,14 +152,27 @@ class HeadFSM:
         log.info("%s: %s", title, " | ".join(self._fmt_slot_pos(s) for s in slots))
 
     def _log_pick(self, obj: TrackSlot, tgt_plan: TrackSlot) -> None:
+        s = self.settings
+        j1_obs = float(s.observe2_axes_rel_deg[0])
+        bias = wrist_j1_bias_deg(obj.position.x, obj.position.y, j1_obs)
         log.info(
-            "抓取 %s -> 配对目标(规划) %s",
+            "抓取 %s j1_bias=%.1f wrist_cmd=%.1f -> 配对目标(规划) %s",
             self._fmt_slot_pos(obj),
+            bias,
+            self._wrist_pick(obj),
             self._fmt_slot_pos(tgt_plan),
         )
 
     def _log_place(self, tgt: TrackSlot) -> None:
-        log.info("放置 %s", self._fmt_slot_pos(tgt))
+        s = self.settings
+        j1_obs = float(s.observe1_axes_rel_deg[0])
+        bias = wrist_j1_bias_deg(tgt.position.x, tgt.position.y, j1_obs)
+        log.info(
+            "放置 %s j1_bias=%.1f wrist_cmd=%.1f",
+            self._fmt_slot_pos(tgt),
+            bias,
+            self._wrist_place(tgt),
+        )
 
     def _rebuild_target_queue_from_snapshot(self) -> None:
         snap = self.tracker.get_snapshot()
@@ -193,15 +243,16 @@ class HeadFSM:
         self._cycle_shape_prefix = shape_prefix(tgt_plan.class_id)
         self._log_pick(obj, tgt_plan)
 
+        pick_wrist = self._wrist_pick(obj)
         if s.emit_claw_on_every_transition:
-            self._emit_claw(obj.wrist_yaw_deg, "step5_claw_after_plan")
+            self._emit_claw(pick_wrist, "step5_claw_after_plan")
 
         # 6: pose to object (wrist aligned in claw before move)
-        self._emit_claw(obj.wrist_yaw_deg, "step6_claw_before_object_pose")
+        self._emit_claw(pick_wrist, "step6_claw_before_object_pose")
         self._pose_to(obj.position, "step6_object_pose", role="object")
 
         # 7: pick claw + object wrist
-        cr = sp.send_claw(obj.wrist_yaw_deg, s.claw_closed_for_pick, context="step7_claw_pick")
+        cr = sp.send_claw(pick_wrist, s.claw_closed_for_pick, context="step7_claw_pick")
         sp.require_claw(cr, "step7_claw_pick")
         if s.claw_settle_after_pick_s > 0:
             time.sleep(s.claw_settle_after_pick_s)
@@ -209,10 +260,14 @@ class HeadFSM:
         # 规划用 object 已消费，丢弃槽位；下次 object 必须再在 obs2 后等待帧并 clear+apply
         self._discard_slot("object", "step7_discard_object_after_pick")
 
-        # 8: 物体抓取后先关节回 obs1，到位后再腕零（回程中保持步7腕角直至观测位）
-        self._joints_obs(list(s.observe1_axes_rel_deg), "step8_obs1_return_joints")
-        self._emit_claw(tw, "step8_claw_wrist0")
-        self._maybe_emit_claw(tw, "step8_emit_dup")
+        # 8: 夹紧后上抬 → 转腕 → 回 obs1（夹爪保持闭合）
+        self._retreat_to_obs(
+            hold_wrist_deg=pick_wrist,
+            grip_closed=s.claw_closed_for_pick,
+            obs_axes=list(s.observe1_axes_rel_deg),
+            obs_wrist_deg=tw,
+            tag="step8_after_pick",
+        )
         self._invalidate_camera_cache("after_step8_obs1_before_wait_target_place")
 
         # 9: obs1 第二次稳定观测 target（放置用，不得沿用抓取前槽位）
@@ -237,23 +292,28 @@ class HeadFSM:
             )
         self._log_place(tgt)
 
-        self._emit_claw(tgt.wrist_yaw_deg, "step10_claw_before_target_pose")
+        place_wrist = self._wrist_place(tgt)
+        self._emit_claw(place_wrist, "step10_claw_before_target_pose")
         self._pose_to(tgt.position, "step10_target_pose", role="target")
 
         self._pop_queue_after_place(tgt)
 
         # 11: place claw + target wrist
         cr2 = sp.send_claw(
-            tgt.wrist_yaw_deg, closed=not s.claw_open_for_place, context="step11_claw_place"
+            place_wrist, closed=not s.claw_open_for_place, context="step11_claw_place"
         )
         sp.require_claw(cr2, "step11_claw_place")
         if s.claw_settle_after_place_s > 0:
             time.sleep(s.claw_settle_after_place_s)
 
-        # 目标位放置后先回 obs1，再腕零（回程保持步11张开+目标腕角直至观测位）
-        self._joints_obs(list(s.observe1_axes_rel_deg), "step11b_obs1_after_place")
-        self._emit_claw(tw, "step11b_claw_wrist0_after_return")
-        self._maybe_emit_claw(tw, "step11b_emit_dup")
+        # 11b: 松爪后上抬 → 转腕 → 回 obs1（夹爪保持张开）
+        self._retreat_to_obs(
+            hold_wrist_deg=place_wrist,
+            grip_closed=not s.claw_open_for_place,
+            obs_axes=list(s.observe1_axes_rel_deg),
+            obs_wrist_deg=tw,
+            tag="step11b_after_place",
+        )
 
         # 本轮 target/object 已用完，丢弃；下一轮必须再在 obs1/obs2 后重新获得
         self._discard_slot("target", "step11_discard_target_after_place")

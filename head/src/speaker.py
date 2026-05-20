@@ -123,12 +123,32 @@ class BridgeClient:
             lines.append(f"  actual_pose: {b.get('actual_pose')}")
         log.error("\n".join(lines))
 
+    def _log_reached_wait(self, label: str, t0: float, rep: BridgeReply) -> None:
+        dt = time.monotonic() - t0
+        if dt < 0.8:
+            return
+        b = rep.body if isinstance(rep.body, dict) else {}
+        err = b.get("error_joints_deg")
+        per = b.get("per_axis_err_deg")
+        reason = b.get("reach_reason")
+        log.info(
+            "bridge 到位等待 %.2fs (%s) reached=%s err_deg=%s per_axis=%s reason=%s",
+            dt,
+            label,
+            b.get("reached"),
+            err,
+            per,
+            reason,
+        )
+
     def wait_joints_reached(self, timeout_s: float, *, context: str = "") -> BridgeReply:
         deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        t0 = time.monotonic()
         last: BridgeReply | None = None
         while time.monotonic() < deadline:
             last = self.poll_reached()
             if self.joints_in_position(last):
+                self._log_reached_wait(context or "wait_joints_reached", t0, last)
                 return last
             time.sleep(self._reached_poll_s)
         final = last if last is not None else self.poll_reached()
@@ -142,10 +162,12 @@ class BridgeClient:
 
     def wait_pose_reached(self, timeout_s: float, *, context: str = "") -> BridgeReply:
         deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        t0 = time.monotonic()
         last: BridgeReply | None = None
         while time.monotonic() < deadline:
             last = self.poll_reached()
             if self.pose_in_position(last):
+                self._log_reached_wait(context or "wait_pose_reached", t0, last)
                 return last
             time.sleep(self._reached_poll_s)
         final = last if last is not None else self.poll_reached()
@@ -196,6 +218,21 @@ class BridgeClient:
             z,
         )
         return self._post("/api/pose", {"cmd": "pose", "x": x, "y": y, "z": z})
+
+    def send_pose_delta(
+        self, dx: float, dy: float, dz: float, *, context: str = ""
+    ) -> BridgeReply:
+        log.debug(
+            "bridge POST /api/pose_delta %s dx=%.4f dy=%.4f dz=%.4f",
+            f"({context})" if context else "",
+            float(dx),
+            float(dy),
+            float(dz),
+        )
+        return self._post(
+            "/api/pose_delta",
+            {"cmd": "pose_delta", "dx": float(dx), "dy": float(dy), "dz": float(dz)},
+        )
 
     def pose_in_position(self, reply: BridgeReply) -> bool:
         if not reply.ok or reply.status_code != 200:

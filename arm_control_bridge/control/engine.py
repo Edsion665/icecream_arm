@@ -53,7 +53,8 @@ class CalculatorEngine:
         if cmd.kind == "pose":
             xi, yi, zi = frontend_pose_to_internal_m(float(p["x"]), float(p["y"]), float(p["z"]))
             xyz = np.array([xi, yi, zi], dtype=float)
-            self._pose_to_joints(xyz, state)
+            if not self._pose_to_joints(xyz, state):
+                raise ValueError(f"pose IK failed for ({xi:.4f}, {yi:.4f}, {zi:.4f})")
             state.pose_xyz = xyz
             state.mode = MotionMode.JOINTS
         elif cmd.kind == "pose_delta":
@@ -61,8 +62,11 @@ class CalculatorEngine:
             xyz[0] += float(p["dx"])
             xyz[1] += float(p["dy"])
             xyz[2] += float(p["dz"])
-            if self._pose_to_joints(xyz, state):
-                state.pose_xyz = xyz
+            if not self._pose_to_joints(xyz, state):
+                raise ValueError(
+                    f"pose_delta IK failed for delta ({p['dx']}, {p['dy']}, {p['dz']})"
+                )
+            state.pose_xyz = xyz
             state.mode = MotionMode.JOINTS
         elif cmd.kind == "joints":
             state.mode = MotionMode.JOINTS

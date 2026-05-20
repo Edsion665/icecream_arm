@@ -67,6 +67,8 @@ class Settings:
     # 步7 夹紧 / 步11 松开成功后，再等待若干秒再进入后续关节运动，避免夹爪未到位就抬臂
     claw_settle_after_pick_s: float = 1.0
     claw_settle_after_place_s: float = 1.0
+    # 抓取/放置后撤离：先沿 +z 平移（米），再转腕，再关节回观测位
+    retreat_lift_m: float = 0.1
     # obs1/obs2/回 obs1 关节到位后丢弃 _last_frame，wait 必须等到下一帧 ingest（避免沿用上一轮缓存导致立刻去 obs2）
     require_fresh_detection_after_obs: bool = True
     # 下发 joints/pose 后轮询 bridge GET /api/reached 的间隔（秒）
@@ -93,6 +95,8 @@ class Settings:
             raise ValueError("bridge_reached_poll_s must be positive")
         if self.observe_stable_frames < 1:
             raise ValueError("observe_stable_frames must be >= 1")
+        if self.retreat_lift_m < 0.0:
+            raise ValueError("retreat_lift_m must be >= 0")
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -143,6 +147,7 @@ def load_settings(path: str | Path) -> Settings:
         initial_grip_open=bool(raw.get("initial_grip_open", True)),
         claw_settle_after_pick_s=float(raw.get("claw_settle_after_pick_s", 1.0)),
         claw_settle_after_place_s=float(raw.get("claw_settle_after_place_s", 1.0)),
+        retreat_lift_m=float(raw.get("retreat_lift_m", 0.1)),
         require_fresh_detection_after_obs=bool(raw.get("require_fresh_detection_after_obs", True)),
         bridge_reached_poll_s=float(raw.get("bridge_reached_poll_s", 0.04)),
         require_bridge_feedback=bool(raw.get("require_bridge_feedback", True)),
