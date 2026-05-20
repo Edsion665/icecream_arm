@@ -59,15 +59,15 @@
 | `type` | string | 固定 `camera_state` |
 | `seq` | number | Pi 下行序号 |
 | `ts` | number | Pi 时间戳（秒） |
-| `motor_rad` | `number[4]` | 4 电机反馈角（rad） |
+| `motor_rad` | `number[4]` | 4 轴关节相对标定零位角（rad）：`MOTOR_AXIS_SIGN[i] * (p_motor_i - cal_i)`，再对 **M3/M4（下标 2、3）** 乘 `PI2CAMERA_JOINT_REL_SIGN`（默认 `-1`），与相机解算正方向一致；与 bridge 前四轴 `p_rel_deg` 在 M1/M2 同约定、M3/M4 差一负号 |
 | `wrist_deg` | number | 参与 FK 的手腕角（deg） |
 | `link5_hmat` | `number[4][4] \| null` | `base -> link5` 齐次矩阵 |
 | `grip_state` | number | 夹爪开合状态（0/1） |
 
 ### 4.2 `link5_hmat` 计算语义
 
-- 输入角度来源：
-  - 前 4 轴：电机反馈角（`motor_rad[0..3]`）
+- 输入角度来源（FK 在 Pi 内仍用原始电机反馈 + 标定/符号，与下行 JSON 字段解耦）：
+  - 前 4 轴：串口 MIT 电机反馈经标定与 `MOTOR_AXIS_SIGN` 换算后的关节角（与 `motor_rad` 语义一致）
   - 第 5 轴：`wrist_deg`
 - 不参与项：
   - 第 6 维夹爪状态（`grip_state`）

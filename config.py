@@ -18,6 +18,10 @@ from dataclasses import dataclass
 # 用于保证整条控制链在符号约定上的一致性。
 MOTOR_AXIS_SIGN: tuple[float, float, float, float] = (-1.0, -1.0, -1.0, 1.0)
 
+# pi2camera 下行 ``motor_rad``：在 ``motor_rad_to_joint_rel_rad`` 之后对 M3/M4（下标 2、3）再取反，
+# 与相机解算端关节正方向约定对齐（bridge/控制链仍用 MOTOR_AXIS_SIGN，不改）。
+PI2CAMERA_JOINT_REL_SIGN: tuple[float, float, float, float] = (-1.0, 1.0, -1.0, -1.0)
+
 # 以下常量定义 bridge2pi 的 UDP 二进制帧格式。当前协议为（与 ``docs/bridge2pi.md`` v3 一致）：
 # seq(uint32) + ts(float64) + p_rel_deg[8](float64) + omega_rad_s[8](float64)。
 # UDP_PACKET_FMT/UDP_PACKET_SIZE/UDP_VECTOR_DIM 必须保持一致，修改任一项时需同步检查其余项。
@@ -146,13 +150,13 @@ class ControlConfig:
     tau_gain: float = _env_float("ARM_CONTROL_TAU_GAIN", 1.0)
     calibration_rad: tuple[float, float, float, float] = (
         _env_float("ARM_CONTROL_CAL_R0", 2.055016),
-        _env_float("ARM_CONTROL_CAL_R1", 3.6532),
+        _env_float("ARM_CONTROL_CAL_R1", 3.6232),
         _env_float("ARM_CONTROL_CAL_R2", -4.1500),
-        _env_float("ARM_CONTROL_CAL_R3", -2.7514),
+        _env_float("ARM_CONTROL_CAL_R3", 3.4896),
     )
     
     hold_kp: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KP_1", 30.0),
+        _env_float("ARM_CONTROL_HOLD_KP_1", 20.0),
         _env_float("ARM_CONTROL_HOLD_KP_2", 60.0),
         _env_float("ARM_CONTROL_HOLD_KP_3", 50.0),
         _env_float("ARM_CONTROL_HOLD_KP_4", 25.0),
@@ -166,7 +170,7 @@ class ControlConfig:
     # )
     
     hold_kd: tuple[float, float, float, float] = (
-        _env_float("ARM_CONTROL_HOLD_KD_1", 2.3),
+        _env_float("ARM_CONTROL_HOLD_KD_1", 1.7),
         _env_float("ARM_CONTROL_HOLD_KD_2", 13.0),
         _env_float("ARM_CONTROL_HOLD_KD_3", 10),
         _env_float("ARM_CONTROL_HOLD_KD_4", 2.0),
@@ -190,10 +194,10 @@ class ControlConfig:
     # 1=开启重力前馈；0=关闭（MIT 帧中 t 全为 0，且不调用 Pinocchio）
     gravity_ff_enabled: bool = _env_bool("ARM_CONTROL_GRAVITY_FF", True)
     max_cmd_speed_rad_s: tuple[float, float, float, float] = (
-        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M1", 0.5)),
-        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M2", 0.5)),
-        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M3", 0.5)),
-        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M4", 0.5)),
+        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M1", 0.8)),
+        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M2", 0.6)),
+        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M3", 0.8)),
+        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M4", 0.8)),
     )
     # 启动安全门：在收到首帧 UDP 后，先冻结后续 UDP 输入，按限速从当前位姿追到首帧目标，
     # 到达后再恢复正常 UDP 逐帧跟踪，以避免“晚启动+首帧跳变”带来的突变风险。
@@ -223,10 +227,10 @@ class SwitchGateConfig:
 class PiCameraUdpConfig:
     """Pi → camera JSON on UDP (``docs/pi2camera.md`` §4)."""
 
-    enabled: bool = _env_bool("ARM_CONTROL_CAMERA_UDP_BROADCAST", False)
+    enabled: bool = _env_bool("ARM_CONTROL_CAMERA_UDP_BROADCAST", True)
     host: str = os.environ.get("ARM_CONTROL_CAMERA_UDP_HOST", "255.255.255.255")
     port: int = _env_int("ARM_CONTROL_CAMERA_UDP_PORT", 9982)
-    hz: float = max(1.0, min(60.0, _env_float("ARM_CONTROL_CAMERA_UDP_HZ", 20.0)))
+    hz: float = _env_float("ARM_CONTROL_CAMERA_UDP_HZ", 50.0)
     broadcast: bool = _env_bool("ARM_CONTROL_CAMERA_UDP_SO_BROADCAST", True)
 
 
