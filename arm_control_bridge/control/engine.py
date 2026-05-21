@@ -116,7 +116,7 @@ class CalculatorEngine:
         state.q_cmd[:ARM_AXES] = state.q_full[:ARM_AXES].copy()
 
         p_rel_deg = np.rad2deg(state.q_cmd[:ARM_AXES]) - state.q_calib_deg[:ARM_AXES]
-        omega_arm = np.zeros(ARM_AXES, dtype=float)
+        omega_arm = state.arm_speed_rad_s[:ARM_AXES].copy()
         j5_rel = float(state.wrist_rel_deg)
         return JointFrame(
             arm_rel_deg=p_rel_deg.copy(),

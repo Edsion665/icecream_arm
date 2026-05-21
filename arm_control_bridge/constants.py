@@ -3,4 +3,4 @@
 from __future__ import annotations
 
 # 仅非运动类立即 ack；joints/pose/claw 阻塞至 UDP 判到位（新命令可抢占旧等待）
-IMMEDIATE_ACK_KINDS = frozenset({"stepper", "conveyor"})
+IMMEDIATE_ACK_KINDS = frozenset({"stepper", "conveyor", "speed"})

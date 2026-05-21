@@ -270,6 +270,19 @@ class BridgeClient:
         )
         return self._post("/api/conveyor", {"cmd": "conveyor", "run": run_i})
 
+    def send_speed(self, axes_rad_s: List[float], *, context: str = "") -> BridgeReply:
+        """设置四轴 ramp 速度上限（rad/s），通过 bridge UDP omega_rad_s[0:4] 下发至 Pi。
+        全零时 Pi 侧回退到 config 默认值。
+        """
+        if len(axes_rad_s) != 4:
+            return BridgeReply(False, 0, {}, error="axes_rad_s must have length 4")
+        log.debug(
+            "bridge POST /api/speed %s axes_rad_s=%s",
+            f"({context})" if context else "",
+            list(axes_rad_s),
+        )
+        return self._post("/api/speed", {"cmd": "speed", "axes_rad_s": list(axes_rad_s)})
+
     def send_idle_zeros(
         self,
         axes_rel_deg: List[float],

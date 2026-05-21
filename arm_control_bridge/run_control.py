@@ -356,6 +356,12 @@ def run_loop(
                     state.conveyor_run_cmd = float(c.payload["conveyor_run"])
                     dump_next_udp_frame = True
                     continue
+                if c.kind == "speed":
+                    arr = c.payload["axes_rad_s"]
+                    state.arm_speed_rad_s = np.array([float(arr[i]) for i in range(4)], dtype=float)
+                    log(f"[runner] 速度上限更新: {list(np.round(state.arm_speed_rad_s, 4))}")
+                    dump_next_udp_frame = True
+                    continue
                 engine.apply_command(c, state)
                 if c.kind in IMMEDIATE_ACK_KINDS:
                     reach_snapshot.reset_stable_buffer()
@@ -613,6 +619,12 @@ def run_sim_loop(
                 continue
             if c.kind == "conveyor":
                 state.conveyor_run_cmd = float(c.payload["conveyor_run"])
+                dump_next_udp_frame = True
+                continue
+            if c.kind == "speed":
+                arr = c.payload["axes_rad_s"]
+                state.arm_speed_rad_s = np.array([float(arr[i]) for i in range(4)], dtype=float)
+                log(f"[sim] 速度上限更新: {list(np.round(state.arm_speed_rad_s, 4))}")
                 dump_next_udp_frame = True
                 continue
             engine.apply_command(c, state)

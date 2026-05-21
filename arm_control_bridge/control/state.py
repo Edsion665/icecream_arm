@@ -53,6 +53,7 @@ class CalculatorState:
     grip_state: float = 1.0  # 0=关闭 1=张开；默认张开
     stepper_deg_cmd: float = 0.0
     conveyor_run_cmd: float = 0.0
+    arm_speed_rad_s: np.ndarray = field(default_factory=lambda: np.array([0.8, 0.6, 0.8, 0.8], dtype=float))
     q_full: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     q_cmd: np.ndarray = field(default_factory=lambda: np.zeros(NUM_JOINTS, dtype=float))
     initialized: bool = False

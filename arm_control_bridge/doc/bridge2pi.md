@@ -47,7 +47,7 @@
 
 | 索引 | `p_rel_deg` | `omega_rad_s` |
 |---:|---|---|
-| `0..3` | 四电机关节（J1~J4），单位 **deg** | 对应关节角速度 **rad/s** |
+| `0..3` | 四电机关节（J1~J4），单位 **deg** | **ramp 速度上限** **rad/s**（非零时覆盖 Pi `config.max_cmd_speed_rad_s`；全零时 Pi 沿用自身默认值） |
 | `4` | 手腕舵机关节角 `wrist_deg`（deg） | 固定 **`0.0`**（无速度语义） |
 | `5` | 夹爪状态 `grip_state`（推荐 **`0=open`**, **`1=close`**） | 固定 **`0.0`** |
 | `6` | **步进增量角** `stepper_deg`（deg），语义与 `docs/pi2stm.md` 下行 `stepper_deg` **一致**（`0` = 本周期不追加步进指令） | 固定 **`0.0`** |
@@ -56,7 +56,7 @@
 ### 3.3 字段装载规则（bridge 发送端）
 
 - `p_rel_deg[0:4] <- JointFrame.arm_rel_deg[0:4]`
-- `omega_rad_s[0:4] <- JointFrame.arm_omega_rad_s[0:4]`
+- `omega_rad_s[0:4] <- JointFrame.arm_omega_rad_s[0:4]`（即 `state.arm_speed_rad_s`，由 `speed` 命令设置；默认 `[0.8, 0.6, 0.8, 0.8]`）
 - `p_rel_deg[4] <- wrist_deg`
 - `omega_rad_s[4] <- 0.0`
 - `p_rel_deg[5] <- grip_state`
@@ -80,6 +80,15 @@ Pi 侧将 `[6]`、`[7]` 解码并写入 **同一周期** 的 MIT **42 字节**�
 - motor4 = `calibration[3] + (-1) * rad(p_rel_deg[3])`
 
 速度使用相同符号关系。
+
+### 4.1.1 动态速度上限（`omega_rad_s[0:4]`）
+
+Pi 侧 `controller._tracking_ramp_vmax_rad_s()` 每帧检查 UDP 锁存的 `omega_rad_s[0:4]`：
+
+- **任一轴 > 0**：用 UDP 值（取绝对值后 clamp 到 `>= 1e-4`）作为该帧 ramp 速度上限。
+- **全为 0**（或从未收到 UDP）：沿用 `ControlConfig.max_cmd_speed_rad_s` 默认值。
+
+MIT 帧的 `v` 字段不受影响——仍由 `_apply_tracking_ramp` 计算出的实际步进速度填入。
 
 ### 4.2 手腕与夹爪语义
 

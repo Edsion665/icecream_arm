@@ -196,6 +196,18 @@ class CommandNormalizer:
             payload = dict(obj)
             payload["conveyor_run"] = cls._normalize_conveyor_run(run_val)
             return MotionCommand4Axis(kind="conveyor", payload=payload)
+        if k in ("speed", "set_speed"):
+            if "axes_rad_s" not in obj:
+                raise ValueError("missing_field: speed 需要 axes_rad_s")
+            arr = obj["axes_rad_s"]
+            if not isinstance(arr, (list, tuple)) or len(arr) != 4:
+                raise ValueError("invalid_length: axes_rad_s 必须长度 4")
+            for v in arr:
+                if float(v) < 0:
+                    raise ValueError("invalid_value: axes_rad_s 各轴必须 >= 0")
+            obj2 = dict(obj)
+            obj2["axes_rad_s"] = [float(arr[i]) for i in range(4)]
+            return MotionCommand4Axis(kind="speed", payload=obj2)
         if k in ("stop", "estop", "halt"):
             return MotionCommand4Axis(kind="stop", payload=obj)
         if k in ("ping",):
@@ -446,6 +458,7 @@ def start_http_server(
                 "/api/claw": "claw",
                 "/api/stepper": "stepper",
                 "/api/conveyor": "conveyor",
+                "/api/speed": "speed",
             }
             if path not in routes:
                 self._send_json(404, {"ok": False})

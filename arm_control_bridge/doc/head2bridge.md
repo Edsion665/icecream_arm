@@ -148,7 +148,28 @@
 
 HTTP：`POST /api/stepper`、`POST /api/conveyor`。
 
-### 4.7 其他命令
+### 4.7 速度控制接口：`speed`
+
+别名：`set_speed`
+
+| 字段 | 类型 | 必选 | 单位 | 约束 |
+|---|---|---:|---|---|
+| `axes_rad_s` | array[number] | 是 | rad/s | 长度必须为 4，各轴 >= 0 |
+
+语义：设置 Pi 侧四轴 ramp 速度上限，通过 UDP `omega_rad_s[0:4]` 每帧携带下发。
+
+生效规则（Pi 侧）：
+- `axes_rad_s` 任一轴 **> 0**：Pi 用 UDP 值覆盖 `config.max_cmd_speed_rad_s`，立即生效。
+- `axes_rad_s` 全为 **0**：Pi 回退到自身 `config.max_cmd_speed_rad_s` 默认值。
+- 值持续锁存，直到下一条 `speed` 命令更新。
+
+HTTP：`POST /api/speed`。立即 ack（`{"ok": true}`），不阻塞等待到位。
+
+错误：
+- 长度非法：`invalid_length: axes_rad_s 必须长度 4`。
+- 值非法：`invalid_value: axes_rad_s 各轴必须 >= 0`。
+
+### 4.8 其他命令
 
 - `stop`（别名 `estop/halt`）：当前仅记录，不执行硬停。
 - `ping`：连通性检查。
@@ -237,6 +258,8 @@ HTTP：`POST /api/stepper`、`POST /api/conveyor`。
 {"cmd":"stepper","stepper_deg":15}
 {"cmd":"conveyor","run":1}
 {"cmd":"pose","x":0.35,"y":0.20,"z":0.25}
+{"cmd":"speed","axes_rad_s":[0.5,0.4,0.5,0.5]}
+{"cmd":"speed","axes_rad_s":[0.0,0.0,0.0,0.0]}
 ```
 
 ## 8. 迁移说明（旧版 -> 新版）

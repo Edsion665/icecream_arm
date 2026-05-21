@@ -53,7 +53,7 @@ io/pi_feedback.py (daemon 线程)                                       │
 - **仿真**：由 `SIM_CONFIG.sim_web_port` / `SIM_CONFIG.sim_web_host` 控制。
 - 启动时日志会打印**可在浏览器打开的 URL**（绑定 `0.0.0.0` 时用本机局域网 IP 提示，因浏览器无法直接访问 `http://0.0.0.0:8877/`）。
 - 命令**阻塞直到到位**再返回（超时见 `CONFIG.reached_timeout_s`，超时返回 408）。
-- 路由：`POST /api/pose` · `/api/pose_delta` · `/api/joints` · `/api/joints_delta` · `/api/claw`
+- 路由：`POST /api/pose` · `/api/pose_delta` · `/api/joints` · `/api/joints_delta` · `/api/claw` · `/api/stepper` · `/api/conveyor` · `/api/speed`
 
 ### 3) 下发到 Pi 的 UDP
 
@@ -170,7 +170,7 @@ io/pi_feedback.py (daemon 线程)                                       │
 
 ### 下行（Bridge → Pi）
 
-Bridge 以 `CONFIG.control_hz` 向 Pi 发送 UDP 140B 帧；`--rpi-ip` 或默认 `CONFIG.rpi_ip` 指定 Pi 地址。HTTP 测试页另支持 `POST /api/stepper`、`POST /api/conveyor`。
+Bridge 以 `CONFIG.control_hz` 向 Pi 发送 UDP 140B 帧；`--rpi-ip` 或默认 `CONFIG.rpi_ip` 指定 Pi 地址。HTTP 测试页另支持 `POST /api/stepper`、`POST /api/conveyor`、`POST /api/speed`。
 
 ### 上行（Pi → Bridge，用于到位判定）
 
@@ -226,4 +226,40 @@ s.close()
 | `joints` | `axes_rel_deg`（长度 4） | 关节绝对目标（相对标定零位，度），阻塞到位 |
 | `joints_delta` | `deltas_rel_deg`（长度 4） | 关节增量，阻塞到位 |
 | `claw` | `wrist_deg` + `grip_state`/`open_close` | 手腕角 + 夹爪状态，2s 后回传 |
+| `speed` | `axes_rad_s`（长度 4） | 设置四轴 ramp 速度上限（rad/s），立即 ack，不阻塞 |
+| `stepper` | `stepper_deg` | 步进增量（度），立即 ack |
+| `conveyor` | `run` 或 `conveyor_run` | 传送带启停，立即 ack |
 | `stop` / `ping` | — | 急停记录 / 连通检查 |
+
+### 速度控制（`speed`）
+
+通过 UDP 帧的 `omega_rad_s[0:4]` 动态设置 Pi 侧每轴 ramp 速度上限（rad/s）。
+
+- 四轴值**全部 > 0** 时，Pi 用 UDP 值覆盖 `config.max_cmd_speed_rad_s`，立即生效。
+- 四轴值**全为 0**（或 bridge 从未发送 `speed` 命令）时，Pi 沿用自身 `config.max_cmd_speed_rad_s` 默认值。
+- 值**持续锁存**，直到下一条 `speed` 命令更新。
+- 单位：**rad/s**，电机空间（与 Pi `ControlConfig.max_cmd_speed_rad_s` 单位一致）。
+
+**HTTP 测试：**
+```bash
+# 设置 J1~J4 速度上限为 0.5/0.4/0.5/0.5 rad/s
+curl -X POST http://127.0.0.1:8877/api/speed \
+  -H "Content-Type: application/json" \
+  -d '{"cmd":"speed","axes_rad_s":[0.5,0.4,0.5,0.5]}'
+
+# 恢复 Pi 默认（发全零）
+curl -X POST http://127.0.0.1:8877/api/speed \
+  -H "Content-Type: application/json" \
+  -d '{"cmd":"speed","axes_rad_s":[0.0,0.0,0.0,0.0]}'
+```
+
+**TCP：**
+```json
+{"cmd":"speed","axes_rad_s":[0.5,0.4,0.5,0.5]}
+```
+
+**Head Python（`BridgeClient`）：**
+```python
+speaker.send_speed([0.5, 0.4, 0.5, 0.5], context="before_pick")
+speaker.send_speed([0.0, 0.0, 0.0, 0.0], context="reset_to_default")
+```

@@ -53,7 +53,7 @@ io/pi_feedback.py (daemon thread)                                    │
 - **Sim**: same idea via `SIM_CONFIG.sim_web_port` / `SIM_CONFIG.sim_web_host`.
 - On startup, the bridge logs a **browser-friendly URL** (LAN IP when bind is `0.0.0.0`, since `http://0.0.0.0:8877/` is not usable in browsers).
 - All commands **block until reached** before returning (timeout from `CONFIG.reached_timeout_s` → 408).
-- Routes: `POST /api/pose` · `/api/pose_delta` · `/api/joints` · `/api/joints_delta` · `/api/claw`
+- Routes: `POST /api/pose` · `/api/pose_delta` · `/api/joints` · `/api/joints_delta` · `/api/claw` · `/api/stepper` · `/api/conveyor` · `/api/speed`
 
 ### 3) UDP to Pi
 
@@ -168,7 +168,7 @@ Run these from the repository root (the directory that contains the `arm_control
 
 ### Downlink (Bridge → Pi)
 
-Bridge sends UDP 140B frames at `CONFIG.control_hz`. Set `--rpi-ip` (or default `CONFIG.rpi_ip`) to the Pi address. The HTTP test page also exposes `POST /api/stepper` and `POST /api/conveyor`.
+Bridge sends UDP 140B frames at `CONFIG.control_hz`. Set `--rpi-ip` (or default `CONFIG.rpi_ip`) to the Pi address. The HTTP test page also exposes `POST /api/stepper`, `POST /api/conveyor`, and `POST /api/speed`.
 
 ### Uplink (Pi → Bridge, for reached detection)
 
@@ -224,4 +224,40 @@ s.close()
 | `joints` | `axes_rel_deg` (length 4) | Absolute joint target relative to calibration zero (deg); blocks until reached |
 | `joints_delta` | `deltas_rel_deg` (length 4) | Joint increment; blocks until reached |
 | `claw` | `wrist_deg` + `grip_state`/`open_close` | Wrist angle + gripper state; replies after 2s |
+| `speed` | `axes_rad_s` (length 4) | Set per-axis ramp speed limit (rad/s); immediate ack, no blocking |
+| `stepper` | `stepper_deg` | Stepper increment (deg); immediate ack |
+| `conveyor` | `run` or `conveyor_run` | Conveyor on/off; immediate ack |
 | `stop` / `ping` | — | E-stop log / connectivity check |
+
+### Speed Control (`speed`)
+
+Dynamically sets the per-axis maximum ramp speed (rad/s) on the Pi side via `omega_rad_s[0:4]` in the UDP frame.
+
+- When **all four values are > 0**, Pi uses them as the tracking ramp speed limit (overriding `config.max_cmd_speed_rad_s`).
+- When **all four values are 0** (or bridge never sends a `speed` command), Pi falls back to its own `config.max_cmd_speed_rad_s` defaults.
+- Values are **persistent** (latched) until the next `speed` command changes them.
+- Unit: **rad/s** in motor space (same unit as Pi `ControlConfig.max_cmd_speed_rad_s`).
+
+**HTTP:**
+```bash
+# Set speed to 0.5/0.4/0.5/0.5 rad/s for J1~J4
+curl -X POST http://127.0.0.1:8877/api/speed \
+  -H "Content-Type: application/json" \
+  -d '{"cmd":"speed","axes_rad_s":[0.5,0.4,0.5,0.5]}'
+
+# Reset to Pi defaults (send all zeros)
+curl -X POST http://127.0.0.1:8877/api/speed \
+  -H "Content-Type: application/json" \
+  -d '{"cmd":"speed","axes_rad_s":[0.0,0.0,0.0,0.0]}'
+```
+
+**TCP:**
+```json
+{"cmd":"speed","axes_rad_s":[0.5,0.4,0.5,0.5]}
+```
+
+**Head Python (`BridgeClient`):**
+```python
+speaker.send_speed([0.5, 0.4, 0.5, 0.5], context="before_pick")
+speaker.send_speed([0.0, 0.0, 0.0, 0.0], context="reset_to_default")
+```
