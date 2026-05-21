@@ -28,6 +28,9 @@ object_z_offset_m: 0.2
 
 observe1_axes_rel_deg: [0.0, 0.0, -45.0, -60.0]
 observe2_axes_rel_deg: [0.0, 5.0, -30.0, -50.0]
+# obs2 传送带：探视野秒数；物体中心水平距 robot_base (0,0) 超过该值（米）则开带直至进入区
+conveyor_obs2_probe_s: 5.0
+conveyor_object_max_xy_m: 0.6
 
 state_timeout_s: 60.0
 refresh_wait_s: 2.0

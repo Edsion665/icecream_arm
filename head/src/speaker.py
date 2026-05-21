@@ -274,6 +274,16 @@ class BridgeClient:
     def toggle_grip(self, wrist_deg: float) -> BridgeReply:
         return self.send_claw(wrist_deg, not self._last_grip_closed)
 
+    def send_conveyor(self, run: int, *, context: str = "") -> BridgeReply:
+        """传送带启停：run 0=停，1=转（锁存至 bridge UDP p_rel_deg[7]）。"""
+        run_i = 1 if int(run) != 0 else 0
+        log.debug(
+            "bridge POST /api/conveyor %s run=%s",
+            f"({context})" if context else "",
+            run_i,
+        )
+        return self._post("/api/conveyor", {"cmd": "conveyor", "run": run_i})
+
     def send_idle_zeros(
         self,
         axes_rel_deg: List[float],

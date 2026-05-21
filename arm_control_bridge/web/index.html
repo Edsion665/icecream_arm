@@ -60,10 +60,10 @@
   </section>
   <section class="card">
     <h2>④ 辅机（步进 + 传送带）</h2>
-    <p class="hint">步进：本周期增量角（deg），下一 UDP 帧发出后自动清零。传送带：0=停，1=转（锁存）。</p>
+    <p class="hint">步进：本周期增量角（deg），下一 UDP 帧发出后自动清零。传送带：每次 POST 自动在 1↔0 间切换（首次发 1，再次发 0，以此类推）。</p>
     <div class="row2">
       <div><label>stepper_deg</label><input type="number" id="stepperDeg" step="1" value="0" /></div>
-      <div><label>conveyor run（0/1）</label><input type="number" id="conveyorRun" step="1" min="0" max="1" value="0" /></div>
+      <div><label>下次 conveyor run</label><input type="text" id="conveyorNext" readonly value="1" style="opacity:0.85;cursor:default;" /></div>
     </div>
     <button type="button" id="btnStepper" class="secondary">POST /api/stepper</button>
     <button type="button" id="btnConveyor" class="secondary">POST /api/conveyor</button>
@@ -100,9 +100,20 @@
       const stepper_deg = +stepperDeg.value;
       try { await post("/api/stepper", { stepper_deg }); log("stepper ok " + JSON.stringify({ stepper_deg })); } catch (e) { log(String(e), true); }
     };
+    let conveyorNextRun = 1;
+    const conveyorNextEl = document.getElementById("conveyorNext");
+    function updateConveyorNextLabel() {
+      conveyorNextEl.value = String(conveyorNextRun);
+    }
+    updateConveyorNextLabel();
     document.getElementById("btnConveyor").onclick = async () => {
-      const run = +conveyorRun.value;
-      try { await post("/api/conveyor", { run }); log("conveyor ok " + JSON.stringify({ run })); } catch (e) { log(String(e), true); }
+      const run = conveyorNextRun;
+      try {
+        await post("/api/conveyor", { run });
+        log("conveyor ok " + JSON.stringify({ run }));
+        conveyorNextRun = run === 1 ? 0 : 1;
+        updateConveyorNextLabel();
+      } catch (e) { log(String(e), true); }
     };
   </script>
 </body>

@@ -8,6 +8,7 @@ import time
 from collections import deque
 from typing import Deque, FrozenSet
 
+from src.conveyor_obs import object_in_pick_zone
 from src.coordinates import wrist_deg_for_object, wrist_deg_for_target, wrist_j1_bias_deg
 from src.config import Settings, load_settings
 from src.listener import IngestionServer
@@ -94,6 +95,59 @@ class HeadFSM:
         self._joints_obs(obs_axes, f"{tag}_obs_joints")
         self._emit_claw(obs_wrist_deg, f"{tag}_claw_at_obs", closed=grip_closed)
         self._maybe_emit_claw(obs_wrist_deg, f"{tag}_claw_at_obs_dup", closed=grip_closed)
+
+    def _set_conveyor(self, run: int, label: str) -> None:
+        rep = self.speaker.send_conveyor(run, context=label)
+        if not rep.ok:
+            raise RuntimeError(f"{label}: conveyor POST failed: {rep.error or rep.body}")
+
+    def _obs2_last_frame(self):
+        return self.tracker.get_snapshot().last_frame
+
+    def _obs2_probe_object_ready(self, probe_s: float, max_xy_m: float) -> bool:
+        """obs2 探视野：若 probe_s 内已有 object 且水平距基点 <= max_xy_m 则 True。"""
+        deadline = time.monotonic() + float(probe_s)
+        poll_s = max(self.settings.bridge_reached_poll_s, 0.05)
+        while time.monotonic() < deadline:
+            if object_in_pick_zone(self._obs2_last_frame(), max_xy_m):
+                return True
+            time.sleep(poll_s)
+        return False
+
+    def _conveyor_until_object_ready(self, max_xy_m: float) -> None:
+        """开传送带，直到最近 object 水平距基点 <= max_xy_m，再停带。"""
+        self._set_conveyor(1, "obs2_conveyor_start")
+        poll_s = max(self.settings.bridge_reached_poll_s, 0.05)
+        try:
+            while True:
+                frame = self._obs2_last_frame()
+                if object_in_pick_zone(frame, max_xy_m):
+                    log.info(
+                        "obs2 传送带：物体已进入抓取区（水平距基点 <= %.2f m）",
+                        max_xy_m,
+                    )
+                    return
+                time.sleep(poll_s)
+        finally:
+            self._set_conveyor(0, "obs2_conveyor_stop")
+
+    def _ensure_obs2_object_in_zone(self) -> None:
+        s = self.settings
+        probe_s = float(s.conveyor_obs2_probe_s)
+        max_xy = float(s.conveyor_object_max_xy_m)
+        if self._obs2_probe_object_ready(probe_s, max_xy):
+            log.info(
+                "obs2: %.1fs 内已有合格 object（水平距基点 <= %.2f m），无需传送带",
+                probe_s,
+                max_xy,
+            )
+            return
+        log.info(
+            "obs2: %.1fs 内无合格 object（无物体或水平距基点 > %.2f m），启动传送带",
+            probe_s,
+            max_xy,
+        )
+        self._conveyor_until_object_ready(max_xy)
 
     def _observe_stable(self, role: Role, label: str) -> None:
         """等待连续 N 帧位置/腕角稳定后再写入槽位。"""
@@ -225,7 +279,8 @@ class HeadFSM:
         self._joints_obs(list(s.observe2_axes_rel_deg), "step3_obs2_joints")
         self._invalidate_camera_cache("after_step3_obs2_before_wait_object")
 
-        # 4: obs2 稳定观测 object
+        # 4: obs2 探视野 / 必要时传送带送料，再稳定观测 object
+        self._ensure_obs2_object_in_zone()
         self._observe_stable("object", "step4_observe_object")
         self._log_all_objects("obs2 全部 object")
 
