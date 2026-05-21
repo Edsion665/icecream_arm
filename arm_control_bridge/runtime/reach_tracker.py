@@ -35,6 +35,7 @@ class ReachTracker:
         self.reply_q: queue.Queue[Optional[ReplyQueueItem]] = queue.Queue()
         self._pending_tcp: Optional[Any] = None
         self._pending_slot: Optional[ReplySlot] = None
+        self._last_feed_result: dict[str, Any] = {}
 
     def register_pending(self, *, tcp_conn: Any = None, http_slot: Optional[ReplySlot] = None) -> None:
         """登记回传槽；若上一条仍在等待或尚未 ``accept``，先以 ``superseded`` 唤醒。"""
@@ -63,8 +64,13 @@ class ReachTracker:
         with self._lock:
             if not self.waiting:
                 return
+            self._last_feed_result = dict(result)
             if time.monotonic() > self._deadline:
-                self._finish_locked({"ok": False, "reached": False, "error": "timeout"})
+                out = dict(self._last_feed_result)
+                out["ok"] = False
+                out["reached"] = False
+                out["error"] = "timeout"
+                self._finish_locked(out)
                 return
             self._buf.append(reached)
             if len(self._buf) == CONFIG.reached_stable_frames and all(self._buf):

@@ -12,6 +12,7 @@ import sys
 import time
 from typing import Optional
 
+from .config import CONFIG
 from .constants import IMMEDIATE_ACK_KINDS
 from .io.listener import wants_reached_wait
 from .exceptions import UDPTransportError
@@ -52,6 +53,35 @@ def _default_urdf_path() -> Optional[str]:
 DEFAULT_URDF = _default_urdf_path()
 
 
+_fb_fallback_logged = False
+
+
+def _pi_feedback_unavailable(meta: dict) -> bool:
+    if bool(meta.get("feedback_available")):
+        return False
+    return str(meta.get("reach_reason", "")) in (
+        "udp_not_listening",
+        "no_motor_rad",
+        "no_claw_feedback",
+        "packet_stale",
+        "no_pi_feedback",
+    )
+
+
+def _maybe_log_cmd_fallback(meta: dict) -> None:
+    global _fb_fallback_logged
+    if _fb_fallback_logged:
+        return
+    _fb_fallback_logged = True
+    print(
+        "[runner] 警告: 未收到 pi2camera UDP camera_state.motor_rad，"
+        f"到位判定退化为指令角自洽 (fallback_cmd_reached_without_pi=True)。"
+        f" 请确认 Pi 向 {CONFIG.camera_udp_listen_host}:{CONFIG.camera_udp_listen_port} 发 JSON；"
+        " 真机运行且已有 UDP 反馈时可在 arm_control_bridge/config.py 设 fallback_cmd_reached_without_pi=False",
+        flush=True,
+    )
+
+
 def _update_reach_snapshot(
     engine,
     state,
@@ -64,12 +94,19 @@ def _update_reach_snapshot(
     """每周期刷新到位快照（pi2camera 反馈角 vs 设定角，见 ``PiFeedbackClient``）。"""
     import numpy as np
 
-    from .config import CONFIG
-
     reach_meta: dict = {}
     if pi_fb is not None:
         reached, err, reach_meta = pi_fb.compute_arm_reached(state.joint_rel_deg_4)
         fb_for_fk = pi_fb.get_fb_arm_rad()
+        if CONFIG.fallback_cmd_reached_without_pi and _pi_feedback_unavailable(reach_meta):
+            _maybe_log_cmd_fallback(reach_meta)
+            reached, err = engine.is_reached(state, fb_arm_rad=None)
+            reach_meta = {
+                **reach_meta,
+                "reach_source": "cmd_fallback",
+                "reach_reason": f"{reach_meta.get('reach_reason', 'no_fb')}_fallback",
+                "feedback_available": False,
+            }
     elif fb_arm_rad is not None:
         reached, err = engine.is_reached(state, fb_arm_rad=fb_arm_rad)
         fb_for_fk = fb_arm_rad
@@ -77,14 +114,18 @@ def _update_reach_snapshot(
     else:
         reached, err = engine.is_reached(state, fb_arm_rad=None)
         fb_for_fk = None
-        if CONFIG.require_pi_feedback_for_reached:
-            reached = False
-            err = float("inf")
         reach_meta = {
             "feedback_available": False,
             "reach_source": "bridge_cmd_only",
             "reach_reason": "no_pi_feedback",
         }
+        if CONFIG.require_pi_feedback_for_reached and not CONFIG.fallback_cmd_reached_without_pi:
+            reached = False
+            err = float("inf")
+        elif CONFIG.fallback_cmd_reached_without_pi:
+            _maybe_log_cmd_fallback(reach_meta)
+            reach_meta["reach_source"] = "cmd_fallback"
+            reach_meta["reach_reason"] = "no_pi_feedback_fallback"
 
     actual_pose = None
     if snapshot.last_cmd_is_pose():
@@ -122,10 +163,22 @@ def _reached_for_waiting(
             reached, err, meta = pi_fb.compute_claw_reached(
                 state.wrist_rel_deg, state.grip_state
             )
+            meta["mode"] = "claw"
+            if CONFIG.fallback_cmd_reached_without_pi and _pi_feedback_unavailable(meta):
+                _maybe_log_cmd_fallback(meta)
+                return (
+                    True,
+                    0.0,
+                    {
+                        **meta,
+                        "reach_source": "cmd_fallback",
+                        "reach_reason": f"{meta.get('reach_reason', 'no_fb')}_fallback",
+                        "feedback_available": False,
+                        "mode": "claw",
+                    },
+                )
             return reached, err, meta
-        from .config import CONFIG
-
-        if CONFIG.require_pi_feedback_for_reached:
+        if CONFIG.require_pi_feedback_for_reached and not CONFIG.fallback_cmd_reached_without_pi:
             return (
                 False,
                 float("inf"),
@@ -139,7 +192,7 @@ def _reached_for_waiting(
         return (
             True,
             0.0,
-            {"feedback_available": False, "reach_source": "no_fb", "mode": "claw", "reach_reason": "ok"},
+            {"feedback_available": False, "reach_source": "cmd_fallback", "mode": "claw", "reach_reason": "ok"},
         )
     err_f = _update_reach_snapshot(
         engine, state, kin, snapshot, pi_fb=pi_fb, fb_arm_rad=fb_arm_rad
@@ -257,12 +310,16 @@ def run_loop(
 
     arm_motor: Optional[motor] = None
     adapter: Optional[RpiProtocolAdapter] = None
-    pi_fb: Optional[PiFeedbackClient] = None
+    pi_fb = PiFeedbackClient(q_calib_rad)
+    log(
+        f"[runner] pi2camera UDP 反馈监听 {CONFIG.camera_udp_listen_host}:{CONFIG.camera_udp_listen_port}"
+    )
     if rpi_ip:
         streamer = RPiUDPStreamer(rpi_ip, rpi_port, strict_udp=strict)
         adapter = RpiProtocolAdapter(streamer)
         arm_motor = motor(adapter)
-        pi_fb = PiFeedbackClient(q_calib_rad)
+    else:
+        log("[runner] 未指定 --rpi-ip：仅监听 Pi→PC 反馈，不向 Pi 下发运动 UDP")
 
     log(
         f"[runner] 控制频率 {CONFIG.control_hz} Hz | URDF: {getattr(kin, '_source', '?')} | "

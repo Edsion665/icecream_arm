@@ -25,8 +25,8 @@ observe_stable_yaw_eps_deg: 5.0
 
 claw_settle_after_pick_s: 1
 claw_settle_after_place_s: 1
-# 抓取/放置前悬停高度（米，相对目标 z 上移）
-approach_hover_m: 0.1
+# 放置重观测：真实目标正上方高度（米），与 target_z_offset_m 无关
+place_reobserve_hover_m: 0.65
 retreat_lift_m: 0.1
 # 转盘临位观察位置
 observe1_axes_rel_deg: [-90.0, 20.0, -100.0, -90.0]
@@ -38,6 +38,8 @@ conveyor_object_max_xy_m: 0.5
 
 state_timeout_s: 10.0
 refresh_wait_s: 1.0
+# 无 Pi UDP 反馈时：false 且 bridge fallback_cmd_reached_without_pi=true 可继续联调
+# require_bridge_feedback: true
 
 # Optional: PLAN must see object with confidence >= this (0 = off)
 min_object_confidence: 0.0

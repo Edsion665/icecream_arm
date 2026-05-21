@@ -20,6 +20,7 @@ def parse_detection_payload(
     body: Dict[str, Any],
     implied_detection: bool,
     settings: Settings | None = None,
+    tracker: Tracker | None = None,
 ) -> Tuple[bool, str | None, DetectionFrame | None]:
     cmd = body.get("cmd") or body.get("type")
     if implied_detection:
@@ -56,7 +57,9 @@ def parse_detection_payload(
             return False, "missing_field: objects[i] 缺少必选字段", None
         try:
             p = Position.from_dict(pos)
-            if settings is not None:
+            if settings is not None and (
+                tracker is None or not tracker.is_role_z_offset_suppressed(r)
+            ):
                 p = apply_role_z_offset(p, r, settings)
             wy = float(o["wrist_yaw_deg"])
         except (TypeError, ValueError):
@@ -125,7 +128,7 @@ def make_detection_handler_class(tracker: Tracker, settings: Settings | None = N
                 return
 
             ok, err, det = parse_detection_payload(
-                body, implied_detection=implied, settings=settings
+                body, implied_detection=implied, settings=settings, tracker=tracker
             )
             if not ok or det is None:
                 _json_response(self, 400, {"ok": False, "error": err or "bad request"})
@@ -194,7 +197,10 @@ class IngestionServer:
                         if not isinstance(body, dict):
                             continue
                         ok, _, det = parse_detection_payload(
-                            body, implied_detection=True, settings=self._settings
+                            body,
+                            implied_detection=True,
+                            settings=self._settings,
+                            tracker=self._tracker,
                         )
                         if ok and det is not None:
                             self._tracker.submit_frame(det)

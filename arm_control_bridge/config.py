@@ -39,8 +39,10 @@ class ControlConfig:
     reached_timeout_s: float = 10.0
     # 连续 N 帧 Pi 反馈在容差内才置 reached:true（25Hz 下 N=5≈200ms 防抖，但机械 settling 常需数秒才凑满 N 帧）
     reached_stable_frames: int = 2
-    # 无 Pi 反馈时禁止判到位（避免用 q_cmd 自比导致 head 提前关爪）
+    # True：无 Pi UDP 反馈时不判到位；False 时允许（仅限真机有反馈）
     require_pi_feedback_for_reached: bool = True
+    # Pi 无 camera_state 时退化为 bridge 指令角自洽判到位（联调/无 9982 回传时用，真机有反馈建议保持 True）
+    fallback_cmd_reached_without_pi: bool = True
     # pi2camera v2：Pi→PC camera_state UDP 监听（motor_rad）
     camera_udp_listen_host: str = "0.0.0.0"
     camera_udp_listen_port: int = 9982

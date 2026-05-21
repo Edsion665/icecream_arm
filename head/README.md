@@ -22,14 +22,14 @@
 |---|------|
 | （首） | 每轮开始清空 `target` / `object` 槽（不沿用上一轮） |
 | 1 | `joints` obs1 → `claw`（腕零 + **夹爪张开**） |
-| 2 | 在 **obs1** 后稳定观测 `target`（默认连续 **3** 帧位置/腕角相近）→ 写入槽位 → 按 `plan_reference_xyz` **由近到远**建 `target_queue` |
+| 2 | 在 **obs1** 后稳定观测 `target`（**任一**目标连续 N 帧稳定即写入，不要求画面内全部）→ 建 `target_queue` |
 | 3 | `claw`（obs2 入口腕角）→ `joints` obs2 |
-| 4 | 在 **obs2** 后稳定观测 `object`（同上 **3** 帧规则）→ 写入 object 槽 |
+| 4 | 在 **obs2** 后稳定观测 `object`（任一 object 连续 N 帧稳定即写入）→ 写入 object 槽 |
 | 5 | `plan`：按队列优先级在传送带找同前缀 `object`；目标位来自 obs1 队列，不要求 obs2 再看到 target |
-| 6–7 | `claw`（物体腕）→ `pose` 物体**上方悬停**（默认 +10cm）→ **垂直下降**到位 → `claw` 抓取；抓取后 **丢弃 object 槽** |
+| 6–7 | `claw`（物体腕）→ `pose` 物体 → `claw` 抓取；抓取后 **丢弃 object 槽** |
 | 8 | 抓取夹紧后：`pose` **上抬**（默认 +10cm）→ `claw` 转腕 → `joints` 回 obs1 |
 | 9 | 在 **obs1** 下再次稳定观测 `target`（放置用，须重新观测） |
-| 10–11 | `claw`（目标腕）→ `pose` 目标**上方悬停** → **垂直下降** → `claw` 释放；**仅**选与手中物体同前缀的 target（多个时按 step5 规划位消歧）；成功后队首出队 |
+| 10–11 | obs1 粗选 → 真实目标**上方 60cm** 重观测（无 z/j1 偏置）→ 垂直到 **真实目标 + target_z_offset_m** → `claw` 释放 |
 | 11b | 放置松爪后：`pose` **上抬** → `claw` 转腕 → `joints` 回 obs1（夹爪保持张开） |
 | 11 末 | **丢弃** target/object 槽 |
 | 12 | 循环回（首） |

@@ -9,7 +9,13 @@ from collections import deque
 from typing import Deque, FrozenSet
 
 from src.conveyor_obs import object_in_pick_zone
-from src.coordinates import wrist_deg_for_object, wrist_deg_for_target, wrist_j1_bias_deg
+from src.coordinates import (
+    strip_role_z_offset,
+    work_pose_for_role,
+    wrist_deg_for_object,
+    wrist_deg_for_target,
+    wrist_j1_bias_deg,
+)
 from src.config import Settings, load_settings
 from src.listener import IngestionServer
 from src.models import Position, QueuedTarget, Role, TrackSlot
@@ -53,30 +59,64 @@ class HeadFSM:
         self.speaker.send_joints(axes, context=label)
 
     def _pose_to(self, pos: Position, label: str, *, role: Role) -> None:
-        """向 bridge 发笛卡尔目标（z 已在相机 ingest 时按 role 抬升）。"""
+        """向 bridge 发笛卡尔目标（pos 为最终笛卡尔目标，已含工作高度偏置时用 work_pose）。"""
         self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
 
-    def _pose_approach_then_target(self, pos: Position, label: str, *, role: Role) -> None:
-        """先移到目标正上方 approach_hover_m，再保持 xy 垂直到目标 z。"""
-        hover_m = float(self.settings.approach_hover_m)
-        if hover_m <= 0.0:
-            self._pose_to(pos, label, role=role)
-            return
-        above = Position(pos.x, pos.y, pos.z + hover_m)
+    def _work_pose(self, slot: TrackSlot, role: Role) -> Position:
+        """抓取/放置到位高度：真实目标 + role_z_offset_m。"""
+        return work_pose_for_role(slot.position, role, self.settings)
+
+    def _place_reobserve_at_hover(self, rough_tgt: TrackSlot, label: str) -> TrackSlot:
+        """真实目标上方 place_reobserve_hover_m 重观测；ingest 关闭 z 偏置与 j1 腕角补偿。"""
+        hover_m = float(self.settings.place_reobserve_hover_m)
+        raw_pos = strip_role_z_offset(rough_tgt.position, "target", self.settings)
+        hover_pos = Position(raw_pos.x, raw_pos.y, raw_pos.z + hover_m)
+        work_pos = self._work_pose(rough_tgt, "target")
+        wrist = float(rough_tgt.wrist_yaw_deg)
         log.info(
-            "%s: 接近 %s 先悬停 z+%.3f m -> (%.3f, %.3f, %.3f) 再垂直到 (%.3f, %.3f, %.3f)",
+            "%s: 悬停重观测 真实目标上方+%.3f m | slot=%.3f,%.3f,%.3f raw=%.3f,%.3f,%.3f "
+            "hover=%.3f,%.3f,%.3f 放置工作高=%.3f,%.3f,%.3f wrist_cam=%.1f",
             label,
-            role,
             hover_m,
-            above.x,
-            above.y,
-            above.z,
-            pos.x,
-            pos.y,
-            pos.z,
+            rough_tgt.position.x,
+            rough_tgt.position.y,
+            rough_tgt.position.z,
+            raw_pos.x,
+            raw_pos.y,
+            raw_pos.z,
+            hover_pos.x,
+            hover_pos.y,
+            hover_pos.z,
+            work_pos.x,
+            work_pos.y,
+            work_pos.z,
+            wrist,
         )
-        self._pose_to(above, f"{label}_hover", role=role)
-        self._pose_to(pos, f"{label}_descend", role=role)
+        self._emit_claw(wrist, f"{label}_claw_before_hover")
+        self._pose_to(hover_pos, f"{label}_goto_hover", role="target")
+        self._invalidate_camera_cache(f"{label}_after_hover_before_observe")
+        self.tracker.set_role_z_offset_suppressed("target", True)
+        try:
+            self._observe_stable("target", f"{label}_observe_at_hover")
+        finally:
+            self.tracker.set_role_z_offset_suppressed("target", False)
+        snap = self.tracker.get_snapshot()
+        refined = peek_target_track(
+            snap,
+            self.target_queue,
+            shape_prefix_lock=self._cycle_shape_prefix,
+            preferred=self._cycle_planned_target,
+        )
+        if refined is None:
+            raise RuntimeError(
+                f"{label}: 悬停重观测后无匹配 target（前缀 {self._cycle_shape_prefix!r}）"
+            )
+        if self._cycle_shape_prefix and shape_prefix(refined.class_id) != self._cycle_shape_prefix:
+            raise RuntimeError(
+                f"target 前缀不一致: want {self._cycle_shape_prefix}, got {refined.class_id}"
+            )
+        self._log_all_targets(f"{label} 重观测后 target")
+        return refined
 
     def _pose_delta_to(self, dx: float, dy: float, dz: float, label: str) -> None:
         """相对 bridge 当前 pose 目标增量移动（用于抓取/放置后上抬）。"""
@@ -157,7 +197,7 @@ class HeadFSM:
         self._conveyor_until_object_ready(max_xy)
 
     def _observe_stable(self, role: Role, label: str) -> None:
-        """等待连续 N 帧位置/腕角稳定后再写入槽位。"""
+        """至少一个 {role} 连续 N 帧稳定后写入槽位（仅写入已达 N 帧的目标）。"""
         tw = self._cam_wait()
         n = self.settings.observe_stable_frames
         ok = self.tracker.observe_role_stable(role, tw)
@@ -165,7 +205,7 @@ class HeadFSM:
             if tw is None or tw <= 0.0:
                 raise RuntimeError(f"{label}: 观测被中断（tracker 已停止）")
             raise RuntimeError(
-                f"{label}: {tw}s 内未见 {role} 连续 {n} 帧稳定；"
+                f"{label}: {tw}s 内未见任一 {role} 连续 {n} 帧稳定；"
                 f"可增大 camera_wait_timeout_s 或放宽 observe_stable_*"
             )
 
@@ -309,9 +349,9 @@ class HeadFSM:
         if s.emit_claw_on_every_transition:
             self._emit_claw(pick_wrist, "step5_claw_after_plan")
 
-        # 6: 物体上方悬停 → 垂直下降到位（腕角在移动前已对齐）
+        # 6: 真实物体 + object_z_offset_m（腕角在移动前已对齐）
         self._emit_claw(pick_wrist, "step6_claw_before_object_pose")
-        self._pose_approach_then_target(obj.position, "step6_object", role="object")
+        self._pose_to(self._work_pose(obj, "object"), "step6_object_pose", role="object")
 
         # 7: pick claw + object wrist
         sp.send_claw(pick_wrist, s.claw_closed_for_pick, context="step7_claw_pick")
@@ -335,27 +375,30 @@ class HeadFSM:
         self._observe_stable("target", "step9_observe_target")
         self._log_all_targets("obs1 第2次 target")
 
-        # 10: 仅选与手中物体同前缀的 target；多个时按 step5 规划位消歧
+        # 10: obs1 粗选 target → 移到目标上方 40cm 重观测 → 垂直接近放置位
         snap2 = self.tracker.get_snapshot()
-        tgt = peek_target_track(
+        rough_tgt = peek_target_track(
             snap2,
             self.target_queue,
             shape_prefix_lock=self._cycle_shape_prefix,
             preferred=self._cycle_planned_target,
         )
-        if tgt is None:
+        if rough_tgt is None:
             raise RuntimeError(
                 f"手中前缀 {self._cycle_shape_prefix!r}，obs1 无同形状 target，无法放置"
             )
-        if self._cycle_shape_prefix and shape_prefix(tgt.class_id) != self._cycle_shape_prefix:
+        if self._cycle_shape_prefix and shape_prefix(rough_tgt.class_id) != self._cycle_shape_prefix:
             raise RuntimeError(
-                f"target 前缀不一致: want {self._cycle_shape_prefix}, got {tgt.class_id}"
+                f"target 前缀不一致: want {self._cycle_shape_prefix}, got {rough_tgt.class_id}"
             )
+        self._log_place(rough_tgt)
+
+        tgt = self._place_reobserve_at_hover(rough_tgt, "step10")
         self._log_place(tgt)
 
         place_wrist = self._wrist_place(tgt)
-        self._emit_claw(place_wrist, "step10_claw_before_target_pose")
-        self._pose_approach_then_target(tgt.position, "step10_target", role="target")
+        self._emit_claw(place_wrist, "step10_claw_before_place_descend")
+        self._pose_to(self._work_pose(tgt, "target"), "step10_target_pose", role="target")
 
         self._pop_queue_after_place(tgt)
 

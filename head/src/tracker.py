@@ -64,6 +64,19 @@ class Tracker:
         self._obs_done_ev: threading.Event | None = None
         self._obs_result: list[bool] | None = None
         self._obs_deadline: float | None = None
+        self._z_offset_suppressed_roles: set[str] = set()
+
+    def set_role_z_offset_suppressed(self, role: Role, suppressed: bool) -> None:
+        """为 True 时 ingestion 不再对应该 role 做 target/object z 抬升。"""
+        with self._lock:
+            if suppressed:
+                self._z_offset_suppressed_roles.add(role)
+            else:
+                self._z_offset_suppressed_roles.discard(role)
+
+    def is_role_z_offset_suppressed(self, role: Role) -> bool:
+        with self._lock:
+            return role in self._z_offset_suppressed_roles
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -100,7 +113,7 @@ class Tracker:
         return ev.wait(timeout=wait)
 
     def observe_role_stable(self, role: Role, timeout: float | None = None) -> bool:
-        """清空 role 槽后，等待连续 N 帧位置/腕角相近，再写入槽位。"""
+        """清空 role 槽后，任一目标连续 N 帧稳定即写入槽位（仅写入已达 N 帧者，不要求画面内全部）。"""
         ev = threading.Event()
         result: list[bool] = [False]
         self._q.put(("observe_begin", (role, timeout, ev, result)))
@@ -320,8 +333,10 @@ class Tracker:
             else:
                 next_tracks.append(_ObsTrack(det=det, streak=tr.streak + 1))
         self._obs_tracks = next_tracks
-        if all(t.streak >= required for t in self._obs_tracks):
-            self._apply_dets(role, dets, frame)
+        stable = [t for t in self._obs_tracks if t.streak >= required]
+        if stable:
+            stable_dets = [t.det for t in stable]
+            self._apply_dets(role, stable_dets, frame)
             self._finish_observe(True)
 
     def _apply_dets(self, role: Role, dets: List[ObjectDet], frame: DetectionFrame) -> None:

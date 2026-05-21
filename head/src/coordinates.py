@@ -23,6 +23,19 @@ def apply_role_z_offset(pos: Position, role: Role, settings: Settings) -> Positi
     return Position(pos.x, pos.y, pos.z + dz)
 
 
+def strip_role_z_offset(pos: Position, role: Role, settings: Settings) -> Position:
+    """去掉 ingest 时加的 role z 抬升，得到相机估计的真实目标位置。"""
+    dz = role_z_offset_m(settings, role)
+    if abs(dz) < 1e-12:
+        return pos
+    return Position(pos.x, pos.y, pos.z - dz)
+
+
+def work_pose_for_role(pos: Position, role: Role, settings: Settings) -> Position:
+    """抓取/放置到位：真实目标 xy,z + role_z_offset_m（仅一层工作高度偏置）。"""
+    return apply_role_z_offset(strip_role_z_offset(pos, role, settings), role, settings)
+
+
 def j1_deg_from_xy(x: float, y: float) -> float:
     """与 bridge IK 一致：joint1 相对角 q1 = -atan2(y, x)（度）。"""
     if math.hypot(x, y) <= 1e-6:
