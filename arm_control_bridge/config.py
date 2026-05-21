@@ -71,9 +71,9 @@ class IKConfig:
     ik_damping: float = 1e-2
     ik_max_iter: int = 80
     ik_pos_tol: float = 1e-5
-    # joint4 安全角度范围（rad）
-    q4_safe_min: float = -2.8
-    q4_safe_max: float = 2.8
+    # joint4 安全角度范围（rad），与硬限位一致
+    q4_safe_min: float = -3.14
+    q4_safe_max: float = 3.14
     # 奇异性检测阈值
     sv_warn: float = 0.025
     sv_crit: float = 0.005

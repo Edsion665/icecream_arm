@@ -25,23 +25,40 @@ class CalculatorEngine:
         self._kin = kin
         self._mover = JointMover()
 
+    # 上肘构型固定种子：主 + 备用，q1 由解析式单独赋值，这里只存 [q1_placeholder, q2, q3]
+    _UPPER_ELBOW_SEEDS_Q23 = [
+        (0.0,  -1.679),   # 主：覆盖中间臂展
+        # (-2.0,  1.5),   # 备用1：覆盖大臂展
+        # (-1.0,  0.5),   # 备用2：覆盖小臂展
+    ]
+
     def _pose_to_joints(self, xyz: np.ndarray, state: CalculatorState) -> bool:
-        """IK 解算 xyz → joint_rel_deg_4，成功返回 True，失败保持原状态返回 False。"""
-        q_sol, ok = self._kin.inverse_kinematics_link4_geometric_decouple(
-            xyz,
-            q3_init=state.q_full[:3],
-            q5_fixed=state.q5_fixed_rad,
-            max_iter=IK_CONFIG.ik_max_iter,
-            pos_tol=IK_CONFIG.ik_pos_tol,
-            damping=IK_CONFIG.ik_damping,
-        )
+        """IK 解算 xyz → joint_rel_deg_4，成功返回 True，失败保持原状态返回 False。
+
+        q1 由解析式直接给出，q2/q3 从固定上肘种子出发迭代，保证收敛到上肘构型。
+        """
+        q1 = -np.arctan2(xyz[1], xyz[0]) if float(np.hypot(xyz[0], xyz[1])) > 1e-6 else state.q_full[0]
+
+        q_sol, ok = None, False
+        for seed_q2, seed_q3 in self._UPPER_ELBOW_SEEDS_Q23:
+            q_init = np.array([q1, seed_q2, seed_q3], dtype=float)
+            q_sol, ok = self._kin.inverse_kinematics_link4_geometric_decouple(
+                xyz,
+                q3_init=q_init,
+                q5_fixed=state.q5_fixed_rad,
+                max_iter=IK_CONFIG.ik_max_iter,
+                pos_tol=IK_CONFIG.ik_pos_tol,
+                damping=IK_CONFIG.ik_damping,
+            )
+            if ok:
+                break
+
         if not ok:
             return False
         q4c = float(Q4_OFFSET_RAD + Q4_Q23_COEFF * (q_sol[1] + q_sol[2]))
         if not (IK_CONFIG.q4_safe_min <= q4c <= IK_CONFIG.q4_safe_max):
             return False
-        if float(np.hypot(xyz[0], xyz[1])) > 1e-6:
-            q_sol[0] = -np.arctan2(xyz[1], xyz[0])
+        q_sol[0] = q1
         q_tgt = q_sol[:ARM_AXES].copy()
         q_tgt[3] = float(np.clip(q4c, IK_CONFIG.q4_safe_min, IK_CONFIG.q4_safe_max))
         state.joint_rel_deg_4 = np.rad2deg(q_tgt) - state.q_calib_deg[:ARM_AXES]
