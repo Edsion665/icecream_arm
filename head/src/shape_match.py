@@ -15,6 +15,14 @@ def shape_prefix(class_id: Any) -> str:
     return s.split("_", 1)[0]
 
 
+def slot_shape_prefix(slot: TrackSlot) -> str:
+    """槽位形状前缀：优先 ``class_id``，否则用 ``label``（object 常为数字 id + 文本 label）。"""
+    p = shape_prefix(slot.class_id)
+    if p and not p.isdigit():
+        return p
+    return shape_prefix(slot.label) or p
+
+
 def same_shape_prefix(a: Any, b: Any) -> bool:
     pa, pb = shape_prefix(a), shape_prefix(b)
     return bool(pa) and pa == pb
@@ -40,4 +48,4 @@ def select_slot_nearest_to(slots: List[TrackSlot], ref: Position) -> Optional[Tr
 def filter_slots_by_prefix(slots: List[TrackSlot], prefix: str) -> List[TrackSlot]:
     if not prefix:
         return list(slots)
-    return [s for s in slots if shape_prefix(s.class_id) == prefix]
+    return [s for s in slots if slot_shape_prefix(s) == prefix]

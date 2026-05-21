@@ -71,9 +71,11 @@ class Settings:
     place_reobserve_hover_m: float = 0.6
     # step3：对粗观测队列前 N 项做正上方精观测并写回队列
     max_refine_targets: int = 3
+    # step3 正上方观测：该秒数内无稳定 target 则从队列删除该项
+    hover_refine_observe_timeout_s: float = 10.0
     # 本轮队列全部放置后：转盘步进增量角（deg，bridge stepper 语义）
     turntable_stepper_deg: float = 90.0
-    stepper_settle_s: float = 10.0
+    stepper_settle_s: float = 0.0
     # 抓取/放置后撤离：先沿 +z 平移（米），再转腕，再关节回观测位
     retreat_lift_m: float = 0.1
     # obs2：先探视野若干秒；无 object 或水平距基点过远则开传送带，直至物体进入抓取区
@@ -83,22 +85,14 @@ class Settings:
     require_fresh_detection_after_obs: bool = True
     # 下发 joints/pose 后轮询 bridge GET /api/reached 的间隔（秒）
     bridge_reached_poll_s: float = 0.04
-    # 抓取/放置：工作位上方预接近高度（米），再竖直下降到位
+    # 抓取/放置：工作位上方预接近高度（米），再 pose_seq 竖直下降到位
     approach_hover_m: float = 0.1
-    # 下降 POST 返回后，再轮询 /api/reached 连续 N 帧为真才允许夹爪/松爪
-    approach_reached_stable_frames: int = 3
-    # 二次确认：关节误差范数须 < 该值（度）；单轴见 per_axis_err_deg
-    approach_reached_max_err_deg: float = 0.8
-    # 二次确认：actual_pose 与目标 xyz 各轴偏差须 < 该值（米）
-    approach_reached_pose_tol_m: float = 0.015
-    # 连续到位确认后的额外等待（秒），给机械 settling
+    # bridge POST 判到位后的额外等待（秒），给机械 settling 再夹爪/松爪
     approach_settle_after_descend_s: float = 0.0
     # 预接近后的竖直下降段 ramp 上限（rad/s）；抓取 step5 与放置 step7 共用
     arm_speed_approach_rad_s: List[float] | None = None
-    # step6 之后、放置下降前：四轴 ramp 上限（rad/s）；其余阶段发全零用 Pi 默认
+    # step6 之后、放置下降前：四轴 ramp 上限（rad/s）；pose_seq 帧数由此估算
     arm_speed_place_rad_s: List[float] | None = None
-    # step5/7 竖直下降与抓取/放置后上抬：bridge pose_lin @25Hz IK（m/s）
-    vertical_move_speed_m_s: float = 0.03
 
     def __post_init__(self) -> None:
         if self.observe1_axes_rel_deg is None:
@@ -123,18 +117,12 @@ class Settings:
             raise ValueError("observe_stable_frames must be >= 1")
         if self.place_reobserve_hover_m < 0.0:
             raise ValueError("place_reobserve_hover_m must be >= 0")
+        if self.hover_refine_observe_timeout_s <= 0.0:
+            raise ValueError("hover_refine_observe_timeout_s must be > 0")
         if self.approach_hover_m < 0.0:
             raise ValueError("approach_hover_m must be >= 0")
-        if self.approach_reached_stable_frames < 1:
-            raise ValueError("approach_reached_stable_frames must be >= 1")
-        if self.approach_reached_max_err_deg <= 0.0:
-            raise ValueError("approach_reached_max_err_deg must be > 0")
-        if self.approach_reached_pose_tol_m <= 0.0:
-            raise ValueError("approach_reached_pose_tol_m must be > 0")
         if self.approach_settle_after_descend_s < 0.0:
             raise ValueError("approach_settle_after_descend_s must be >= 0")
-        if self.vertical_move_speed_m_s <= 0.0:
-            raise ValueError("vertical_move_speed_m_s must be > 0")
         if self.retreat_lift_m < 0.0:
             raise ValueError("retreat_lift_m must be >= 0")
         if self.conveyor_obs2_probe_s <= 0.0:
@@ -215,12 +203,10 @@ def load_settings(path: str | Path) -> Settings:
         bridge_reached_poll_s=float(raw.get("bridge_reached_poll_s", 0.04)),
         require_bridge_feedback=bool(raw.get("require_bridge_feedback", True)),
         max_refine_targets=int(raw.get("max_refine_targets", 3)),
+        hover_refine_observe_timeout_s=float(raw.get("hover_refine_observe_timeout_s", 10.0)),
         turntable_stepper_deg=float(raw.get("turntable_stepper_deg", 90.0)),
-        stepper_settle_s=float(raw.get("stepper_settle_s", 10.0)),
+        stepper_settle_s=float(raw.get("stepper_settle_s", 0.0)),
         approach_hover_m=float(raw.get("approach_hover_m", 0.1)),
-        approach_reached_stable_frames=int(raw.get("approach_reached_stable_frames", 3)),
-        approach_reached_max_err_deg=float(raw.get("approach_reached_max_err_deg", 0.8)),
-        approach_reached_pose_tol_m=float(raw.get("approach_reached_pose_tol_m", 0.015)),
         approach_settle_after_descend_s=float(raw.get("approach_settle_after_descend_s", 0.0)),
         arm_speed_place_rad_s=(
             list(raw["arm_speed_place_rad_s"])
@@ -232,5 +218,4 @@ def load_settings(path: str | Path) -> Settings:
             if raw.get("arm_speed_approach_rad_s") is not None
             else None
         ),
-        vertical_move_speed_m_s=float(raw.get("vertical_move_speed_m_s", 0.03)),
     )

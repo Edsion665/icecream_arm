@@ -10,6 +10,7 @@ from src.shape_match import (
     select_slot_nearest_to,
     shape_prefix,
     slot_distance,
+    slot_shape_prefix,
 )
 
 
@@ -117,10 +118,11 @@ def plan_pick(
             queued_target=q_item,
         )
 
-    prefixes = [q.shape_prefix for q in queue]
+    pending = [q.shape_prefix for q in queue if not q.placed]
+    seen = sorted({slot_shape_prefix(o) for o in objs_all if slot_shape_prefix(o)})
     return PlanResult(
         ok=False,
-        reason=f"no_object_on_belt_for_obs1_queue:{prefixes}",
+        reason=f"no_object_on_belt_for_obs1_queue:{pending};belt_objects:{seen}",
     )
 
 

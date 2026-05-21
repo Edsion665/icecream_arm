@@ -52,11 +52,11 @@ claw_settle_after_place_s: 2.0
 # step3 目标正上方精观测（米）
 place_reobserve_hover_m: 0.6
 max_refine_targets: 3
+hover_refine_observe_timeout_s: 10.0
 turntable_stepper_deg: 90.0
-stepper_settle_s: 10.0
+stepper_settle_s: 0
 retreat_lift_m: 0.1
 approach_hover_m: 0.1
-approach_reached_stable_frames: 3
 approach_settle_after_descend_s: 0.3
 arm_speed_approach_rad_s: [0.25, 0.2, 0.25, 0.2]
 arm_speed_place_rad_s: [0.25, 0.2, 0.25, 0.2]

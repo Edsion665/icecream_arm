@@ -208,6 +208,47 @@ def test_plan_pick_skips_placed_uses_next() -> None:
     assert pr.queued_target.shape_prefix == "Square"
 
 
+def test_plan_pick_object_matches_prefix_via_label_when_class_id_numeric() -> None:
+    settings = Settings()
+    queue = deque(
+        [
+            QueuedTarget(
+                class_id="Square_Pedestal_A",
+                shape_prefix="Square",
+                position=Position(0.1, 0.0, 0.0),
+                wrist_yaw_deg=0.0,
+                label="s",
+                placed=True,
+            ),
+            QueuedTarget(
+                class_id="Circle_Pedestal_Blue",
+                shape_prefix="Circle",
+                position=Position(0.2, 0.0, 0.0),
+                wrist_yaw_deg=0.0,
+                label="c",
+            ),
+        ]
+    )
+    snap = _snap(
+        [],
+        [
+            TrackSlot(
+                role="object",
+                class_id=2,
+                label="Circle_wafer",
+                position=Position(0.3, 0.0, 0.1),
+                wrist_yaw_deg=0.0,
+                confidence=0.9,
+            ),
+        ],
+    )
+    pr = plan_pick(settings, snap, queue)
+    assert pr.ok
+    assert pr.object_slot is not None
+    assert pr.queued_target is not None
+    assert pr.queued_target.shape_prefix == "Circle"
+
+
 def test_plan_pick_after_queue_head_popped_uses_next() -> None:
     settings = Settings()
     queue = deque(

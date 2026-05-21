@@ -142,7 +142,7 @@
 
 - 序列播完前 `GET /api/reached` 与阻塞 POST 的 `reached` 均为 `false`（`reach_reason: pose_seq_playing`）。
 - 新 `pose` / `pose_seq` / `joints` 等运动会**清空**未播完的序列（抢占）。
-- 帧数由当前四轴速度上限与位移估算（`arm_speed_rad_s` × `control_dt`），至少 1 帧。
+- 帧数由当前四轴速度上限与位移估算（`arm_speed_rad_s` × `control_dt`），至少 1 帧；`speed` 全零时用 `pose_seq_plan_speed_rad_s`（默认 8）估帧数，Pi ramp 仍走默认 `max_cmd_speed_rad_s`。
 
 适用：抓取/放置接近工作点、悬停对准等需要**竖直工具**的段。
 

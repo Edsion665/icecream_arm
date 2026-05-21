@@ -75,10 +75,10 @@ class CalculatorEngine:
         q_start = state.q_full[:ARM_AXES].copy()
         delta = q_target - q_start
         dist = float(np.linalg.norm(delta))
-        # 按最大速度估算帧数（至少 1 帧）
+        # 按最大速度估算帧数（至少 1 帧）。arm_speed 全零表示 Pi 默认 ramp，序列规划用 pose_seq_plan_speed_rad_s。
         max_speed = float(np.max(np.abs(state.arm_speed_rad_s[:ARM_AXES])))
         if max_speed < 1e-6:
-            max_speed = 0.8
+            max_speed = float(CONFIG.pose_seq_plan_speed_rad_s)
         n_frames = max(1, int(np.ceil(dist / (max_speed * CONFIG.control_dt))))
         frames = []
         for i in range(1, n_frames + 1):
@@ -160,6 +160,7 @@ class CalculatorEngine:
         state.q_cmd[:ARM_AXES] = state.q_full[:ARM_AXES].copy()
 
         p_rel_deg = np.rad2deg(state.q_cmd[:ARM_AXES]) - state.q_calib_deg[:ARM_AXES]
+        # 全零：UDP omega=0 → Pi 用 max_cmd_speed；非零：仅下降段 head 显式限速
         omega_arm = state.arm_speed_rad_s[:ARM_AXES].copy()
         j5_rel = float(state.wrist_rel_deg)
         return JointFrame(

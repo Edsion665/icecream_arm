@@ -87,42 +87,9 @@ class HeadFSM:
         hover = Position(work.x, work.y, work.z + h)
         return hover, work
 
-    def _move_to_hover(self, pos: Position, label: str) -> None:
-        """预接近悬停：pose_lin 全向慢速（lock_xy=false），比单次 pose 更易判到位。"""
-        spd = float(self.settings.vertical_move_speed_m_s)
-        self.speaker.send_pose_lin(
-            pos.x,
-            pos.y,
-            pos.z,
-            speed_m_s=spd,
-            lock_xy=False,
-            context=label,
-        )
-
-    def _vertical_move_to(self, pos: Position, label: str) -> None:
-        """竖直直线下降/上升：bridge 25Hz pose_lin + lock_xy。"""
-        spd = float(self.settings.vertical_move_speed_m_s)
-        self.speaker.send_pose_lin(
-            pos.x,
-            pos.y,
-            pos.z,
-            speed_m_s=spd,
-            lock_xy=True,
-            context=label,
-        )
-
-    def _vertical_lift(self, dz: float, label: str) -> None:
-        if dz <= 0.0:
-            return
-        spd = float(self.settings.vertical_move_speed_m_s)
-        self.speaker.send_pose_lin_delta(
-            0.0,
-            0.0,
-            float(dz),
-            speed_m_s=spd,
-            lock_xy=True,
-            context=label,
-        )
+    def _pose_seq_to(self, pos: Position, label: str) -> None:
+        """笛卡尔目标：bridge ``pose_seq``（25Hz 关节序列，末端竖直）。"""
+        self.speaker.send_pose_seq(pos.x, pos.y, pos.z, context=label)
 
     def _approach_then_descend(
         self,
@@ -132,18 +99,19 @@ class HeadFSM:
         *,
         tag: str,
         grip_closed: bool,
+        descend_speed: str = "approach",
     ) -> None:
-        """先到工作位上方 approach_hover_m，再 25Hz IK 竖直下降到工作位；确认到位后才返回。
+        """先到工作位上方 approach_hover_m，再 pose_seq 下降到工作位；bridge POST 阻塞到位后返回。
 
+        悬停段用 Pi 默认速度（不限速）；仅下降段可设 ``descend_speed`` 为 ``approach`` / ``place``。
         ``grip_closed`` 仅控制预接近/下降过程中是否保持夹爪状态（抓取应 False=张开；
-        放置应 True=闭合）。真正夹紧/松爪在调用方于到位确认之后单独 ``send_claw``。
+        放置应 True=闭合）。夹紧/松爪在调用方于 ``approach_settle_after_descend_s`` 之后 ``send_claw``。
         """
         s = self.settings
         hover, work = self._work_hover_and_pose(slot, role)
         h = float(self.settings.approach_hover_m)
         log.info(
-            "%s: 预接近 上方+%.3fm → (%.3f,%.3f,%.3f) 再竖直下降 (%.3f,%.3f,%.3f) "
-            "pose_lin %.3fm/s | 运动段夹爪=%s",
+            "%s: 预接近 上方+%.3fm → (%.3f,%.3f,%.3f) 再 pose_seq 下降 (%.3f,%.3f,%.3f) | 夹爪=%s",
             tag,
             h,
             hover.x,
@@ -152,41 +120,43 @@ class HeadFSM:
             work.x,
             work.y,
             work.z,
-            float(s.vertical_move_speed_m_s),
             "闭合" if grip_closed else "张开",
         )
         self._emit_claw(wrist_deg, f"{tag}_align_wrist", closed=grip_closed)
-        # 预接近：pose_lin 全向插补（非竖直段），避免单次 pose 跳变导致 Pi 长期卡在 1° 级误差
-        self._move_to_hover(hover, f"{tag}_goto_hover")
-        self._vertical_move_to(work, f"{tag}_descend_to_work")
-        self.speaker.wait_arm_reached_stable(
-            f"{tag}_descend_to_work",
-            stable_frames=s.approach_reached_stable_frames,
-            max_err_deg=s.approach_reached_max_err_deg,
-            expect_pose=(work.x, work.y, work.z),
-            pose_tol_m=s.approach_reached_pose_tol_m,
-        )
+        # 悬停：不 POST /api/speed（保持 Pi 默认）；bridge pose_seq 对全零速度用 pose_seq_plan_speed_rad_s 算帧数
+        self._pose_seq_to(hover, f"{tag}_goto_hover")
+        if descend_speed == "place":
+            self._apply_speed_place(f"{tag}_descend_speed")
+        elif descend_speed == "approach":
+            self._apply_speed_approach(f"{tag}_descend_speed")
+        self._pose_seq_to(work, f"{tag}_descend_to_work")
         settle = float(s.approach_settle_after_descend_s)
         if settle > 0.0:
             log.info("%s: 到位后额外等待 %.2fs", tag, settle)
             time.sleep(settle)
+        self._apply_speed_pi_default(f"{tag}_after_descend")
 
     def _pose_to(self, pos: Position, label: str, *, role: Role) -> None:
         """向 bridge 发笛卡尔目标；阻塞至 bridge 判到位（见 ``send_pose``）。"""
         self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
 
     def _place_descend_then_release(
-        self, tgt: TrackSlot, place_wrist: float, *, tag: str = "step7"
+        self,
+        tgt: TrackSlot,
+        place_wrist: float,
+        *,
+        tag: str = "step7",
+        descend_speed: str = "place",
     ) -> None:
-        """放置：上方预接近 → 减速下降到位 → 再松爪（step6 后已切换放置限速）。"""
+        """放置：上方预接近 → pose_seq 下降到位 → 再松爪。"""
         s = self.settings
-        # step6 后已是放置限速；仅做上方预接近再下降，不再重复切 speed
         self._approach_then_descend(
             tgt,
             "target",
             place_wrist,
             tag=tag,
             grip_closed=True,
+            descend_speed=descend_speed,
         )
         log.info("%s: 已确认下降到位，松爪", tag)
         self.speaker.send_claw(
@@ -201,23 +171,52 @@ class HeadFSM:
         """抓取/放置到位高度：真实目标 + role_z_offset_m。"""
         return work_pose_for_role(slot.position, role, self.settings)
 
-    def _observe_target_at_hover(
+    @staticmethod
+    def _is_hover_refine_ik_failure(exc: BaseException) -> bool:
+        msg = str(exc).lower()
+        return "ik failed" in msg or "pose ik failed" in msg
+
+    def _drop_queued_target(self, q: QueuedTarget, *, reason: str) -> None:
+        """从目标队列移除一项（step3 精观测失败时跳过该 pedestal）。"""
+        removed = False
+        try:
+            self.target_queue.remove(q)
+            removed = True
+        except ValueError:
+            for item in list(self.target_queue):
+                if item.class_id == q.class_id and item.shape_prefix == q.shape_prefix:
+                    self.target_queue.remove(item)
+                    removed = True
+                    break
+        if removed:
+            log.warning(
+                "队列移除 %s (前缀 %s): %s；剩余 %d 项",
+                q.class_id,
+                q.shape_prefix,
+                reason,
+                len(self.target_queue),
+            )
+        else:
+            log.warning("队列移除失败（未找到 %s）: %s", q.class_id, reason)
+
+    def _try_observe_target_at_hover(
         self,
         rough_tgt: TrackSlot,
         label: str,
         *,
         shape_prefix_lock: str,
         preferred: TrackSlot,
-    ) -> TrackSlot:
-        """真实目标正上方 place_reobserve_hover_m 稳定观测（无 z/j1 偏置）。"""
+    ) -> TrackSlot | None:
+        """正上方精观测；IK 失败或超时无 target 时返回 None（调用方删队列项）。"""
         hover_m = float(self.settings.place_reobserve_hover_m)
+        obs_timeout = float(self.settings.hover_refine_observe_timeout_s)
         raw_pos = strip_role_z_offset(rough_tgt.position, "target", self.settings)
         hover_pos = Position(raw_pos.x, raw_pos.y, raw_pos.z + hover_m)
         work_pos = self._work_pose(rough_tgt, "target")
         wrist = float(rough_tgt.wrist_yaw_deg)
         log.info(
             "%s: 正上方观测 真实目标上方+%.3f m | slot=%.3f,%.3f,%.3f raw=%.3f,%.3f,%.3f "
-            "hover=%.3f,%.3f,%.3f 放置工作高=%.3f,%.3f,%.3f wrist_cam=%.1f",
+            "hover=%.3f,%.3f,%.3f 放置工作高=%.3f,%.3f,%.3f wrist_cam=%.1f timeout=%.1fs",
             label,
             hover_m,
             rough_tgt.position.x,
@@ -233,13 +232,32 @@ class HeadFSM:
             work_pos.y,
             work_pos.z,
             wrist,
+            obs_timeout,
         )
         self._emit_claw(wrist, f"{label}_claw_before_hover")
-        self._pose_to(hover_pos, f"{label}_goto_hover", role="target")
+        try:
+            self._pose_to(hover_pos, f"{label}_goto_hover", role="target")
+        except RuntimeError as exc:
+            if self._is_hover_refine_ik_failure(exc):
+                log.warning("%s: 悬停位 IK 失败，跳过队列项 %s", label, rough_tgt.class_id)
+                return None
+            raise
         self._invalidate_camera_cache(f"{label}_after_hover_before_observe")
         self.tracker.set_role_z_offset_suppressed("target", True)
         try:
-            self._observe_stable("target", f"{label}_observe_at_hover")
+            if not self._observe_stable(
+                "target",
+                f"{label}_observe_at_hover",
+                timeout_s=obs_timeout,
+                raise_on_fail=False,
+            ):
+                log.warning(
+                    "%s: 正上方观测 %.1fs 内无稳定 target，跳过队列项 %s",
+                    label,
+                    obs_timeout,
+                    rough_tgt.class_id,
+                )
+                return None
         finally:
             self.tracker.set_role_z_offset_suppressed("target", False)
         snap = self.tracker.get_snapshot()
@@ -250,30 +268,46 @@ class HeadFSM:
             preferred=preferred,
         )
         if refined is None:
-            raise RuntimeError(
-                f"{label}: 正上方观测后无匹配 target（前缀 {shape_prefix_lock!r}）"
+            log.warning(
+                "%s: 观测后无匹配 target（前缀 %r），跳过队列项 %s",
+                label,
+                shape_prefix_lock,
+                rough_tgt.class_id,
             )
+            return None
         if shape_prefix(refined.class_id) != shape_prefix_lock:
-            raise RuntimeError(
-                f"target 前缀不一致: want {shape_prefix_lock}, got {refined.class_id}"
+            log.warning(
+                "%s: target 前缀不一致 want=%s got=%s，跳过队列项",
+                label,
+                shape_prefix_lock,
+                refined.class_id,
             )
+            return None
         self._log_all_targets(f"{label} 精观测后 target")
         return refined
 
     def _refine_queue_hover(self, n: int) -> None:
-        """step3：对队列前 n 项依次正上方精观测并写回 QueuedTarget。"""
+        """step3：对队列前 n 项依次正上方精观测；失败则从队列删除。"""
         items = list(self.target_queue)[: max(0, int(n))]
         if not items:
             log.warning("step3: 队列为空，跳过精观测")
             return
         for i, q in enumerate(items):
+            if q not in self.target_queue:
+                continue
             rough = queued_to_track_slot(q)
-            refined = self._observe_target_at_hover(
+            refined = self._try_observe_target_at_hover(
                 rough,
                 f"step3_hover_{i}",
                 shape_prefix_lock=q.shape_prefix,
                 preferred=rough,
             )
+            if refined is None:
+                self._drop_queued_target(
+                    q,
+                    reason="hover_observe_timeout_or_ik_failed",
+                )
+                continue
             q.position = refined.position
             q.wrist_yaw_deg = refined.wrist_yaw_deg
             q.refined = True
@@ -302,13 +336,8 @@ class HeadFSM:
         lift_m = float(self.settings.retreat_lift_m)
         if lift_m > 0.0:
             self._emit_claw(hold_wrist_deg, f"{tag}_claw_before_lift", closed=grip_closed)
-            log.info(
-                "%s: 上抬 dz=+%.3f m（pose_lin_delta @%.3fm/s）",
-                tag,
-                lift_m,
-                float(self.settings.vertical_move_speed_m_s),
-            )
-            self._vertical_lift(lift_m, f"{tag}_lift")
+            log.info("%s: 上抬 dz=+%.3f m（pose_delta）", tag, lift_m)
+            self._pose_delta_to(0.0, 0.0, lift_m, f"{tag}_lift")
         if abs(hold_wrist_deg - next_wrist_deg) > 1e-6:
             self._emit_claw(next_wrist_deg, f"{tag}_claw_wrist", closed=grip_closed)
 
@@ -399,18 +428,28 @@ class HeadFSM:
         )
         self._conveyor_until_object_ready(max_xy)
 
-    def _observe_stable(self, role: Role, label: str) -> None:
-        """至少一个 {role} 连续 N 帧稳定后写入槽位（仅写入已达 N 帧的目标）。"""
-        tw = self._cam_wait()
+    def _observe_stable(
+        self,
+        role: Role,
+        label: str,
+        *,
+        timeout_s: float | None = None,
+        raise_on_fail: bool = True,
+    ) -> bool:
+        """至少一个 {role} 连续 N 帧稳定后写入槽位。失败时返回 False 或抛错（由 ``raise_on_fail`` 决定）。"""
+        tw = float(timeout_s) if timeout_s is not None else self._cam_wait()
         n = self.settings.observe_stable_frames
         ok = self.tracker.observe_role_stable(role, tw)
-        if not ok:
-            if tw is None or tw <= 0.0:
-                raise RuntimeError(f"{label}: 观测被中断（tracker 已停止）")
-            raise RuntimeError(
-                f"{label}: {tw}s 内未见任一 {role} 连续 {n} 帧稳定；"
-                f"可增大 camera_wait_timeout_s 或放宽 observe_stable_*"
-            )
+        if ok:
+            return True
+        if not raise_on_fail:
+            return False
+        if tw is None or tw <= 0.0:
+            raise RuntimeError(f"{label}: 观测被中断（tracker 已停止）")
+        raise RuntimeError(
+            f"{label}: {tw}s 内未见任一 {role} 连续 {n} 帧稳定；"
+            f"可增大 camera_wait_timeout_s 或放宽 observe_stable_*"
+        )
 
     def _discard_slot(self, role: Role, label: str) -> None:
         """清空槽位（用完即弃，不从 last_frame 回填）。"""
@@ -592,13 +631,13 @@ class HeadFSM:
             pick_wrist,
             tag="step5",
             grip_closed=False,
+            descend_speed="approach",
         )
         log.info("step5: 已确认下降到位，开始夹紧")
 
         sp.send_claw(pick_wrist, s.claw_closed_for_pick, context="step5_claw_pick")
         if s.claw_settle_after_pick_s > 0:
             time.sleep(s.claw_settle_after_pick_s)
-        self._apply_speed_pi_default("step5_after_pick_claw")
 
         self._discard_slot("object", "step5_discard_object_after_pick")
 
@@ -608,13 +647,12 @@ class HeadFSM:
             obs_wrist_deg=tw,
             tag="step6_after_pick",
         )
-        self._apply_speed_place("step6_after_obs1")
-
-        self._place_descend_then_release(tgt, place_wrist, tag="step7")
+        self._place_descend_then_release(
+            tgt, place_wrist, tag="step7", descend_speed="place"
+        )
 
         self._last_place_wrist_deg = place_wrist
         self._mark_queue_item_placed(tgt)
-        self._apply_speed_pi_default("step7_after_place")
         log.info(
             "step7 放置完成，队列待做 %d / 共 %d 项",
             self._pending_queue_count(),
@@ -642,7 +680,7 @@ class HeadFSM:
 
         self._ensure_obs2_object_in_zone()
         self._observe_stable("object", "step8_observe_object_replan")
-        self._discard_slot("object", "step8_discard_object_before_next_pick")
+        self._log_all_objects("step8 obs2 object（plan 前）")
 
         snap = self.tracker.get_snapshot()
         pr = plan_pick(s, snap, self.target_queue)
@@ -677,15 +715,13 @@ class HeadFSM:
         s = self.settings
 
         self._cycle_reset()
+        self._apply_speed_pi_default("cycle_start_pi_default")
 
         self._setup_obs1_coarse_queue()
-
         n_refine = min(int(s.max_refine_targets), len(self.target_queue))
         self._refine_queue_hover(n_refine)
 
         self._setup_obs2_for_plan()
-
-        self._apply_speed_pi_default("cycle_pi_default_speed")
 
         pick_round = 0
         while self._pending_queue_count() > 0:

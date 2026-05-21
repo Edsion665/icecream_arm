@@ -29,9 +29,9 @@ class ControlConfig:
     # 手腕关节5固定角（度），IK 求解时作为约束传入
     q5_fixed_deg: float = 0.0
     # 到位判定容差（度），用于 ReachTracker 判断命令是否执行完成
-    reached_joints_tol_deg: float = 1.0
+    reached_joints_tol_deg: float = 1.5
     # Pi udp.p_rel_deg 与 bridge 指令相差超过此值(deg)时，到位判定只用 bridge 指令角
-    reached_udp_sync_tol_deg: float = 1.0
+    reached_udp_sync_tol_deg: float = 1.5
     reached_pose_tol_m: float = 0.005
     reached_wrist_tol_deg: float = 5.0
     # 已弃用：夹爪到位改由 UDP wrist_deg/grip_state + reached_stable_frames 判定
@@ -51,6 +51,8 @@ class ControlConfig:
     # 旧 WebSocket 回传（已弃用到位判定，仅 teleop 等可能仍用）
     rpi_ws_port: int = 8765
     pi_feedback_reconnect_interval_s: float = 3.0
+    # head 发 speed 全零（Pi 默认 ramp）时，pose_seq 帧数规划用该值(rad/s)，避免误用 0.8 拖慢悬停段
+    pose_seq_plan_speed_rad_s: float = 8.0
 
     @property
     def control_dt(self) -> float:
