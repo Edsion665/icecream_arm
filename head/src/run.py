@@ -50,30 +50,37 @@ class HeadFSM:
             self._emit_claw(wrist_deg, label, closed=closed)
 
     def _joints_obs(self, axes: list[float], label: str) -> None:
-        ack = self.speaker.send_joints(axes, context=label)
-        if not ack.ok:
-            raise RuntimeError(f"{label}: joints POST failed: {ack.error or ack.body}")
-        rep = self.speaker.wait_joints_reached(self._timeout(), context=label)
-        if not self.speaker.joints_in_position(rep):
-            raise RuntimeError(f"{label}: joints not reached: {rep.error or rep.body}")
+        self.speaker.send_joints(axes, context=label)
 
     def _pose_to(self, pos: Position, label: str, *, role: Role) -> None:
         """向 bridge 发笛卡尔目标（z 已在相机 ingest 时按 role 抬升）。"""
-        ack = self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
-        if not ack.ok:
-            raise RuntimeError(f"{label}: pose POST failed: {ack.error or ack.body}")
-        rep = self.speaker.wait_pose_reached(self._timeout(), context=label)
-        if not self.speaker.pose_in_position(rep):
-            raise RuntimeError(f"{label}: pose not reached: {rep.error or rep.body}")
+        self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
+
+    def _pose_approach_then_target(self, pos: Position, label: str, *, role: Role) -> None:
+        """先移到目标正上方 approach_hover_m，再保持 xy 垂直到目标 z。"""
+        hover_m = float(self.settings.approach_hover_m)
+        if hover_m <= 0.0:
+            self._pose_to(pos, label, role=role)
+            return
+        above = Position(pos.x, pos.y, pos.z + hover_m)
+        log.info(
+            "%s: 接近 %s 先悬停 z+%.3f m -> (%.3f, %.3f, %.3f) 再垂直到 (%.3f, %.3f, %.3f)",
+            label,
+            role,
+            hover_m,
+            above.x,
+            above.y,
+            above.z,
+            pos.x,
+            pos.y,
+            pos.z,
+        )
+        self._pose_to(above, f"{label}_hover", role=role)
+        self._pose_to(pos, f"{label}_descend", role=role)
 
     def _pose_delta_to(self, dx: float, dy: float, dz: float, label: str) -> None:
         """相对 bridge 当前 pose 目标增量移动（用于抓取/放置后上抬）。"""
-        ack = self.speaker.send_pose_delta(dx, dy, dz, context=label)
-        if not ack.ok:
-            raise RuntimeError(f"{label}: pose_delta POST failed: {ack.error or ack.body}")
-        rep = self.speaker.wait_pose_reached(self._timeout(), context=label)
-        if not self.speaker.pose_in_position(rep):
-            raise RuntimeError(f"{label}: pose_delta not reached: {rep.error or rep.body}")
+        self.speaker.send_pose_delta(dx, dy, dz, context=label)
 
     def _retreat_to_obs(
         self,
@@ -302,13 +309,12 @@ class HeadFSM:
         if s.emit_claw_on_every_transition:
             self._emit_claw(pick_wrist, "step5_claw_after_plan")
 
-        # 6: pose to object (wrist aligned in claw before move)
+        # 6: 物体上方悬停 → 垂直下降到位（腕角在移动前已对齐）
         self._emit_claw(pick_wrist, "step6_claw_before_object_pose")
-        self._pose_to(obj.position, "step6_object_pose", role="object")
+        self._pose_approach_then_target(obj.position, "step6_object", role="object")
 
         # 7: pick claw + object wrist
-        cr = sp.send_claw(pick_wrist, s.claw_closed_for_pick, context="step7_claw_pick")
-        sp.require_claw(cr, "step7_claw_pick")
+        sp.send_claw(pick_wrist, s.claw_closed_for_pick, context="step7_claw_pick")
         if s.claw_settle_after_pick_s > 0:
             time.sleep(s.claw_settle_after_pick_s)
 
@@ -349,15 +355,14 @@ class HeadFSM:
 
         place_wrist = self._wrist_place(tgt)
         self._emit_claw(place_wrist, "step10_claw_before_target_pose")
-        self._pose_to(tgt.position, "step10_target_pose", role="target")
+        self._pose_approach_then_target(tgt.position, "step10_target", role="target")
 
         self._pop_queue_after_place(tgt)
 
         # 11: place claw + target wrist
-        cr2 = sp.send_claw(
+        sp.send_claw(
             place_wrist, closed=not s.claw_open_for_place, context="step11_claw_place"
         )
-        sp.require_claw(cr2, "step11_claw_place")
         if s.claw_settle_after_place_s > 0:
             time.sleep(s.claw_settle_after_place_s)
 

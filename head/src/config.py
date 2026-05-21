@@ -37,7 +37,7 @@ class Settings:
     merge_pos_eps_m: float = 0.005
     merge_yaw_eps_deg: float = 3.0
     # 观测阶段：同一目标/物体连续 N 帧位置、腕角相近后才写入槽位
-    observe_stable_frames: int = 3
+    observe_stable_frames: int = 5
     observe_stable_pos_eps_m: float | None = None
     observe_stable_yaw_eps_deg: float | None = None
     # 目标队列排序与 object 评分参考点 (robot_base, m)；距此点越近优先级越高
@@ -67,6 +67,8 @@ class Settings:
     # 步7 夹紧 / 步11 松开成功后，再等待若干秒再进入后续关节运动，避免夹爪未到位就抬臂
     claw_settle_after_pick_s: float = 1.0
     claw_settle_after_place_s: float = 1.0
+    # 抓取/放置前：先移到目标正上方该高度（米），再垂直到位
+    approach_hover_m: float = 0.1
     # 抓取/放置后撤离：先沿 +z 平移（米），再转腕，再关节回观测位
     retreat_lift_m: float = 0.1
     # obs2：先探视野若干秒；无 object 或水平距基点过远则开传送带，直至物体进入抓取区
@@ -98,6 +100,8 @@ class Settings:
             raise ValueError("bridge_reached_poll_s must be positive")
         if self.observe_stable_frames < 1:
             raise ValueError("observe_stable_frames must be >= 1")
+        if self.approach_hover_m < 0.0:
+            raise ValueError("approach_hover_m must be >= 0")
         if self.retreat_lift_m < 0.0:
             raise ValueError("retreat_lift_m must be >= 0")
         if self.conveyor_obs2_probe_s <= 0.0:
@@ -154,6 +158,7 @@ def load_settings(path: str | Path) -> Settings:
         initial_grip_open=bool(raw.get("initial_grip_open", True)),
         claw_settle_after_pick_s=float(raw.get("claw_settle_after_pick_s", 1.0)),
         claw_settle_after_place_s=float(raw.get("claw_settle_after_place_s", 1.0)),
+        approach_hover_m=float(raw.get("approach_hover_m", raw.get("retreat_lift_m", 0.1))),
         retreat_lift_m=float(raw.get("retreat_lift_m", 0.1)),
         conveyor_obs2_probe_s=float(raw.get("conveyor_obs2_probe_s", 5.0)),
         conveyor_object_max_xy_m=float(raw.get("conveyor_object_max_xy_m", 0.6)),

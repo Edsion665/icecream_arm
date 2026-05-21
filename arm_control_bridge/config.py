@@ -29,12 +29,13 @@ class ControlConfig:
     # 手腕关节5固定角（度），IK 求解时作为约束传入
     q5_fixed_deg: float = 0.0
     # 到位判定容差（度），用于 ReachTracker 判断命令是否执行完成
-    reached_joints_tol_deg: float = 5.0
+    reached_joints_tol_deg: float = 1.0
     # Pi udp.p_rel_deg 与 bridge 指令相差超过此值(deg)时，到位判定只用 bridge 指令角
     reached_udp_sync_tol_deg: float = 1.0
     reached_pose_tol_m: float = 0.005
     reached_wrist_tol_deg: float = 5.0
-    reached_claw_delay_s: float = 2.0
+    # 已弃用：夹爪到位改由 UDP wrist_deg/grip_state + reached_stable_frames 判定
+    reached_claw_delay_s: float = 1.0
     reached_timeout_s: float = 10.0
     # 连续 N 帧 Pi 反馈在容差内才置 reached:true（25Hz 下 N=5≈200ms 防抖，但机械 settling 常需数秒才凑满 N 帧）
     reached_stable_frames: int = 2

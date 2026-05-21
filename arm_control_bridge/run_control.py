@@ -13,6 +13,7 @@ import time
 from typing import Optional
 
 from .constants import IMMEDIATE_ACK_KINDS
+from .io.listener import wants_reached_wait
 from .exceptions import UDPTransportError
 from .runtime import (
     ReachSnapshot,
@@ -102,6 +103,77 @@ def _update_reach_snapshot(
         reach_meta=reach_meta,
     )
     return reached, err
+
+
+def _reached_for_waiting(
+    tracker,
+    engine,
+    state,
+    kin,
+    snapshot: ReachSnapshot,
+    *,
+    pi_fb=None,
+    fb_arm_rad=None,
+) -> tuple[bool, float, dict]:
+    """按当前 pending 命令类型做 UDP（或仿真）到位判定。"""
+    kind = tracker.cmd_kind
+    if kind == "claw":
+        if pi_fb is not None:
+            reached, err, meta = pi_fb.compute_claw_reached(
+                state.wrist_rel_deg, state.grip_state
+            )
+            return reached, err, meta
+        from .config import CONFIG
+
+        if CONFIG.require_pi_feedback_for_reached:
+            return (
+                False,
+                float("inf"),
+                {
+                    "feedback_available": False,
+                    "reach_source": "bridge_cmd_only",
+                    "reach_reason": "no_pi_feedback",
+                    "mode": "claw",
+                },
+            )
+        return (
+            True,
+            0.0,
+            {"feedback_available": False, "reach_source": "no_fb", "mode": "claw", "reach_reason": "ok"},
+        )
+    err_f = _update_reach_snapshot(
+        engine, state, kin, snapshot, pi_fb=pi_fb, fb_arm_rad=fb_arm_rad
+    )
+    reached, err = err_f[0], err_f[1]
+    body = snapshot.get()
+    meta = {k: v for k, v in body.items() if k not in ("ok", "reached")}
+    return reached, err, meta
+
+
+def _command_waits_reached(cmd) -> bool:
+    """payload 中 ``wait_reached: false`` 时不启动到位等待（如 idle）。"""
+    payload = getattr(cmd, "payload", None)
+    if not isinstance(payload, dict):
+        return True
+    return wants_reached_wait(payload)
+
+
+def _feed_result_dict(
+    snapshot: ReachSnapshot,
+    *,
+    err: float,
+    reach_meta: dict,
+) -> dict:
+    body = snapshot.get()
+    result: dict = {
+        "ok": True,
+        "reached": True,
+        "error_joints_deg": round(float(err), 3),
+    }
+    result.update(reach_meta)
+    if body.get("actual_pose") is not None:
+        result["actual_pose"] = body["actual_pose"]
+    return result
 
 
 def run_loop(
@@ -209,7 +281,6 @@ def run_loop(
                 if c is None:
                     continue
                 if isinstance(c, ClawCommand):
-                    tracker.accept("claw")
                     claw_rx.emit(c)
                     continue
                 if c.kind == "ping":
@@ -233,7 +304,9 @@ def run_loop(
                     reach_snapshot.reset_stable_buffer()
                     reach_snapshot.set_last_cmd(c.kind)
                 else:
-                    tracker.accept(c.kind)
+                    reach_snapshot.set_last_cmd(c.kind)
+                    if _command_waits_reached(c):
+                        tracker.accept(c.kind)
                 dump_next_udp_frame = True
 
             while True:
@@ -248,6 +321,9 @@ def run_loop(
                 state.grip_state = 1.0 if float(payload.get("grip_state", state.grip_state)) >= 0.5 else 0.0
                 state.servo_deg = np.array([state.wrist_rel_deg, state.grip_state], dtype=float)
                 dump_next_udp_frame = True
+                if _command_waits_reached(cc):
+                    reach_snapshot.set_last_cmd("claw")
+                    tracker.accept("claw")
 
             frame = engine.step(None, state, dt=CONFIG.control_dt)
             if dump_next_udp_frame:
@@ -257,19 +333,14 @@ def run_loop(
                 if state.stepper_deg_cmd != 0.0:
                     state.stepper_deg_cmd = 0.0
 
-            reached, err = _update_reach_snapshot(
-                engine, state, kin, reach_snapshot, pi_fb=pi_fb
-            )
             if tracker.waiting:
-                body = reach_snapshot.get()
-                result = {
-                    "ok": True,
-                    "reached": bool(body.get("reached")),
-                    "error_joints_deg": round(err, 3),
-                }
-                if body.get("actual_pose") is not None:
-                    result["actual_pose"] = body["actual_pose"]
+                reached, err, reach_meta = _reached_for_waiting(
+                    tracker, engine, state, kin, reach_snapshot, pi_fb=pi_fb
+                )
+                result = _feed_result_dict(snapshot=reach_snapshot, err=err, reach_meta=reach_meta)
                 tracker.feed(reached, result)
+            else:
+                _update_reach_snapshot(engine, state, kin, reach_snapshot, pi_fb=pi_fb)
 
             next_t += CONFIG.control_dt
             sleep_t = next_t - time.monotonic()
@@ -468,12 +539,14 @@ def run_sim_loop(
             if c is None:
                 continue
             if isinstance(c, ClawCommand):
-                tracker.accept("claw")
                 payload = c.payload
                 state.set_wrist_rel_deg(float(payload.get("wrist_deg", state.wrist_rel_deg)))
                 state.grip_state = 1.0 if float(payload.get("grip_state", state.grip_state)) >= 0.5 else 0.0
                 state.servo_deg = np.array([state.wrist_rel_deg, state.grip_state], dtype=float)
                 dump_next_udp_frame = True
+                if _command_waits_reached(c):
+                    reach_snapshot.set_last_cmd("claw")
+                    tracker.accept("claw")
                 continue
             if c.kind == "stepper":
                 state.stepper_deg_cmd = float(
@@ -490,7 +563,9 @@ def run_sim_loop(
                 reach_snapshot.reset_stable_buffer()
                 reach_snapshot.set_last_cmd(c.kind)
             else:
-                tracker.accept(c.kind)
+                reach_snapshot.set_last_cmd(c.kind)
+                if _command_waits_reached(c):
+                    tracker.accept(c.kind)
             dump_next_udp_frame = True
             if c.kind in ("pose", "pose_delta"):
                 log(
@@ -540,19 +615,22 @@ def run_sim_loop(
 
         q_sim_raw = arm.get_joint_positions()
         fb_sim = np.asarray(q_sim_raw, dtype=float).ravel()[:4] if q_sim_raw is not None else None
-        reached, err = _update_reach_snapshot(
-            engine, state, kin, reach_snapshot, fb_arm_rad=fb_sim, pi_fb=None
-        )
         if tracker.waiting:
-            body = reach_snapshot.get()
-            result = {
-                "ok": True,
-                "reached": bool(body.get("reached")),
-                "error_joints_deg": round(err, 3),
-            }
-            if body.get("actual_pose") is not None:
-                result["actual_pose"] = body["actual_pose"]
+            reached, err, reach_meta = _reached_for_waiting(
+                tracker,
+                engine,
+                state,
+                kin,
+                reach_snapshot,
+                pi_fb=None,
+                fb_arm_rad=fb_sim,
+            )
+            result = _feed_result_dict(snapshot=reach_snapshot, err=err, reach_meta=reach_meta)
             tracker.feed(reached, result)
+        else:
+            _update_reach_snapshot(
+                engine, state, kin, reach_snapshot, fb_arm_rad=fb_sim, pi_fb=None
+            )
 
     stop_reply_worker(tracker)
     if adapter is not None:

@@ -2,7 +2,5 @@
 
 from __future__ import annotations
 
-# 入队即更新目标；HTTP/TCP 立即 ack，到位由 GET /api/reached 查询
-IMMEDIATE_ACK_KINDS = frozenset(
-    {"pose", "pose_delta", "joints", "joints_delta", "stepper", "conveyor"}
-)
+# 仅非运动类立即 ack；joints/pose/claw 阻塞至 UDP 判到位（新命令可抢占旧等待）
+IMMEDIATE_ACK_KINDS = frozenset({"stepper", "conveyor"})

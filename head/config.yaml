@@ -16,16 +16,18 @@ idle_grip_state: 0
 merge_pos_eps_m: 0.005
 merge_yaw_eps_deg: 3.0
 # 相机 position.z 抬升（米）：target +40cm，object +20cm
-target_z_offset_m: 0.45
-object_z_offset_m: 0.28
+target_z_offset_m: 0.42
+object_z_offset_m: 0.27
 
-observe_stable_frames: 1
+observe_stable_frames: 2
 observe_stable_pos_eps_m: 0.01
 observe_stable_yaw_eps_deg: 5.0
 
-claw_settle_after_pick_s: 0
-claw_settle_after_place_s: 0
-retreat_lift_m: 0.05
+claw_settle_after_pick_s: 1
+claw_settle_after_place_s: 1
+# 抓取/放置前悬停高度（米，相对目标 z 上移）
+approach_hover_m: 0.1
+retreat_lift_m: 0.1
 # 转盘临位观察位置
 observe1_axes_rel_deg: [-90.0, 20.0, -100.0, -90.0]
 # 传送带观察位置

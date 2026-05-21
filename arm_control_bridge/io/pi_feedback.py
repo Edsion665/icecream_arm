@@ -36,6 +36,8 @@ class PiFeedbackSnapshot:
 
     udp_listening: bool
     motor_rad: Optional[np.ndarray]
+    wrist_deg: Optional[float]
+    grip_state: Optional[float]
     packet_age_ms: Optional[float]
     pi_seq: Optional[int]
     updated_monotonic: float
@@ -57,6 +59,8 @@ class PiFeedbackClient:
         self._lock = threading.Lock()
         self._listening = False
         self._motor_rad: Optional[np.ndarray] = None
+        self._wrist_deg: Optional[float] = None
+        self._grip_state: Optional[float] = None
         self._packet_age_ms: Optional[float] = None
         self._pi_seq: Optional[int] = None
         self._updated_monotonic: float = 0.0
@@ -72,6 +76,8 @@ class PiFeedbackClient:
             return PiFeedbackSnapshot(
                 udp_listening=self._listening,
                 motor_rad=self._motor_rad.copy() if self._motor_rad is not None else None,
+                wrist_deg=self._wrist_deg,
+                grip_state=self._grip_state,
                 packet_age_ms=age,
                 pi_seq=self._pi_seq,
                 updated_monotonic=self._updated_monotonic,
@@ -139,6 +145,67 @@ class PiFeedbackClient:
         )
         return reached, error, meta
 
+    def compute_claw_reached(
+        self,
+        target_wrist_deg: float,
+        target_grip: float,
+        *,
+        wrist_tol_deg: float = CONFIG.reached_wrist_tol_deg,
+        require_feedback: bool = CONFIG.require_pi_feedback_for_reached,
+        max_packet_age_ms: Optional[float] = CONFIG.max_camera_packet_age_ms_for_reached,
+    ) -> tuple[bool, float, dict[str, Any]]:
+        """反馈 ``wrist_deg`` / ``grip_state`` vs bridge 爪指令。"""
+        snap = self.get_snapshot()
+        meta: dict[str, Any] = {
+            "feedback_available": False,
+            "reach_source": "pi2camera_udp",
+            "udp_listening": snap.udp_listening,
+            "mode": "claw",
+        }
+        tgt_w = float(target_wrist_deg)
+        tgt_g = 1.0 if float(target_grip) >= 0.5 else 0.0
+        meta["target_wrist_deg"] = round(tgt_w, 3)
+        meta["target_grip_state"] = int(tgt_g)
+
+        if not snap.udp_listening:
+            meta["reach_reason"] = "udp_not_listening"
+            return False, float("inf"), meta
+
+        if require_feedback and (snap.wrist_deg is None or snap.grip_state is None):
+            meta["reach_reason"] = "no_claw_feedback"
+            return False, float("inf"), meta
+
+        if snap.wrist_deg is None or snap.grip_state is None:
+            meta["reach_reason"] = "no_claw_feedback"
+            return False, float("inf"), meta
+
+        if max_packet_age_ms is not None and snap.packet_age_ms is not None:
+            if float(snap.packet_age_ms) > float(max_packet_age_ms):
+                meta["reach_reason"] = "packet_stale"
+                meta["packet_age_ms"] = round(float(snap.packet_age_ms), 1)
+                return False, float("inf"), meta
+
+        actual_w = float(snap.wrist_deg)
+        actual_g = 1.0 if float(snap.grip_state) >= 0.5 else 0.0
+        err_w = abs(actual_w - tgt_w)
+        grip_ok = actual_g == tgt_g
+        reached = err_w < float(wrist_tol_deg) and grip_ok
+        error = err_w if grip_ok else float("inf")
+
+        meta.update(
+            {
+                "feedback_available": True,
+                "actual_wrist_deg": round(actual_w, 3),
+                "actual_grip_state": int(actual_g),
+                "error_wrist_deg": round(err_w, 3),
+                "reached_wrist_tol_deg": float(wrist_tol_deg),
+                "packet_age_ms": round(float(snap.packet_age_ms), 1) if snap.packet_age_ms is not None else None,
+                "pi_seq": snap.pi_seq,
+                "reach_reason": "ok" if reached else "over_tol",
+            }
+        )
+        return reached, error, meta
+
     def close(self) -> None:
         self._stop.set()
 
@@ -185,18 +252,35 @@ class PiFeedbackClient:
             return
         if msg.get("type") != "camera_state":
             return
-        arm = msg.get("motor_rad")
-        if arm is None:
-            return
         try:
-            arr = np.array(arm, dtype=float).ravel()[:4]
-            if len(arr) < 4:
-                return
+            arr = None
+            arm = msg.get("motor_rad")
+            if arm is not None:
+                arr = np.array(arm, dtype=float).ravel()[:4]
+                if len(arr) < 4:
+                    arr = None
         except (TypeError, ValueError):
+            arr = None
+        wrist = msg.get("wrist_deg")
+        grip = msg.get("grip_state")
+        try:
+            wrist_f = float(wrist) if wrist is not None else None
+        except (TypeError, ValueError):
+            wrist_f = None
+        try:
+            grip_f = float(grip) if grip is not None else None
+        except (TypeError, ValueError):
+            grip_f = None
+        if arr is None and wrist_f is None and grip_f is None:
             return
         seq = msg.get("seq")
         with self._lock:
-            self._motor_rad = arr
+            if arr is not None:
+                self._motor_rad = arr
+            if wrist_f is not None:
+                self._wrist_deg = wrist_f
+            if grip_f is not None:
+                self._grip_state = grip_f
             self._updated_monotonic = time.monotonic()
             try:
                 self._pi_seq = int(seq) if seq is not None else None

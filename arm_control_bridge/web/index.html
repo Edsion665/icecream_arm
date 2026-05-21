@@ -40,7 +40,7 @@
   </section>
   <section class="card">
     <h2>② 舵机信息接口（仅实机）</h2>
-    <p class="hint">夹爪：0=open，1=close（与 bridge2pi 一致）。</p>
+    <p class="hint">夹爪：0=open，1=close。每次 POST /api/claw 后 wrist_deg 自动 −10°（下次点击用新值）。</p>
     <div class="row3">
       <div><label>wrist_deg</label><input type="number" id="wrist" step="1" value="0" /></div>
       <div><label>open_close（open/close 或 0/1）</label><input type="text" id="openclose" value="open" /></div>
@@ -88,9 +88,15 @@
       const axes_rel_deg = [+j1.value, +j2.value, +j3.value, +j4.value];
       try { await post("/api/joints", { axes_rel_deg }); log("joints ok " + JSON.stringify(axes_rel_deg)); } catch (e) { log(String(e), true); }
     };
+    const wristInput = document.getElementById("wrist");
     document.getElementById("btnClaw").onclick = async () => {
-      const wrist_deg = +wrist.value; const open_close = String(openclose.value || "open");
-      try { await post("/api/claw", { wrist_deg, open_close }); log("claw ok " + JSON.stringify({ wrist_deg, open_close })); } catch (e) { log(String(e), true); }
+      const wrist_deg = +wristInput.value;
+      const open_close = String(openclose.value || "open");
+      try {
+        await post("/api/claw", { wrist_deg, open_close });
+        log("claw ok " + JSON.stringify({ wrist_deg, open_close }));
+        wristInput.value = String(wrist_deg - 10);
+      } catch (e) { log(String(e), true); }
     };
     document.getElementById("sendAbs").onclick = async () => {
       const body = { x: +x.value, y: +y.value, z: +z.value };

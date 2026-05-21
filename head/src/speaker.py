@@ -41,7 +41,8 @@ class BridgeClient:
         data = json.dumps(payload).encode("utf-8")
         req = Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
         try:
-            with urlopen(req, timeout=30.0) as resp:  # nosec B310
+            post_timeout = max(30.0, float(self._settings.state_timeout_s) + 5.0)
+            with urlopen(req, timeout=post_timeout) as resp:  # nosec B310
                 raw = resp.read().decode("utf-8")
                 code = resp.getcode() or 200
                 try:
@@ -141,56 +142,40 @@ class BridgeClient:
             reason,
         )
 
-    def wait_joints_reached(self, timeout_s: float, *, context: str = "") -> BridgeReply:
-        deadline = time.monotonic() + max(float(timeout_s), 0.0)
-        t0 = time.monotonic()
-        last: BridgeReply | None = None
-        while time.monotonic() < deadline:
-            last = self.poll_reached()
-            if self.joints_in_position(last):
-                self._log_reached_wait(context or "wait_joints_reached", t0, last)
-                return last
-            time.sleep(self._reached_poll_s)
-        final = last if last is not None else self.poll_reached()
-        body = dict(final.body) if isinstance(final.body, dict) else {}
-        body.setdefault("ok", False)
-        body["reached"] = False
-        body["error"] = "timeout"
-        label = context or "wait_joints_reached"
-        self.log_reached_timeout(label, BridgeReply(final.ok, final.status_code, body, final.error), timeout_s=timeout_s)
-        return BridgeReply(False, 408, body, error="timeout")
-
-    def wait_pose_reached(self, timeout_s: float, *, context: str = "") -> BridgeReply:
-        deadline = time.monotonic() + max(float(timeout_s), 0.0)
-        t0 = time.monotonic()
-        last: BridgeReply | None = None
-        while time.monotonic() < deadline:
-            last = self.poll_reached()
-            if self.pose_in_position(last):
-                self._log_reached_wait(context or "wait_pose_reached", t0, last)
-                return last
-            time.sleep(self._reached_poll_s)
-        final = last if last is not None else self.poll_reached()
-        body = dict(final.body) if isinstance(final.body, dict) else {}
-        body.setdefault("ok", False)
-        body["reached"] = False
-        body["error"] = "timeout"
-        label = context or "wait_pose_reached"
-        self.log_reached_timeout(label, BridgeReply(final.ok, final.status_code, body, final.error), timeout_s=timeout_s)
-        return BridgeReply(False, 408, body, error="timeout")
+    def _require_blocking_reached(
+        self, rep: BridgeReply, label: str, *, expect_pose: bool = False
+    ) -> BridgeReply:
+        """方案 A：POST 阻塞至 bridge UDP 判到位；失败/被抢占/超时在此抛出。"""
+        b = rep.body if isinstance(rep.body, dict) else {}
+        err = b.get("error") or rep.error
+        if err == "superseded":
+            raise RuntimeError(f"{label}: superseded by newer command")
+        if not rep.ok or rep.status_code != 200:
+            if err == "timeout":
+                self.log_reached_timeout(label, rep, timeout_s=float(self._settings.state_timeout_s))
+            raise RuntimeError(f"{label}: bridge failed: {err or b}")
+        if self._require_bridge_feedback and not bool(b.get("feedback_available", False)):
+            raise RuntimeError(
+                f"{label}: no pi feedback (reach_reason={b.get('reach_reason')!r})"
+            )
+        if not bool(b.get("reached", False)):
+            raise RuntimeError(f"{label}: not reached: {b}")
+        if expect_pose:
+            ap = b.get("actual_pose")
+            if not isinstance(ap, dict) or not all(k in ap for k in ("x", "y", "z")):
+                raise RuntimeError(f"{label}: missing actual_pose in bridge response")
+        return rep
 
     def send_joints(self, axes_rel_deg: List[float], *, context: str = "") -> BridgeReply:
         if len(axes_rel_deg) != 4:
             return BridgeReply(False, 0, {}, error="axes_rel_deg must have length 4")
-        log.debug(
-            "bridge POST /api/joints %s axes_rel_deg=%s",
-            f"({context})" if context else "",
-            list(axes_rel_deg),
-        )
-        return self._post(
+        label = context or "joints"
+        log.debug("bridge POST /api/joints (%s) axes_rel_deg=%s", label, list(axes_rel_deg))
+        rep = self._post(
             "/api/joints",
             {"cmd": "joints", "axes_rel_deg": list(axes_rel_deg)},
         )
+        return self._require_blocking_reached(rep, label)
 
     def _reached_with_feedback(self, reply: BridgeReply) -> bool:
         if not reply.ok or reply.status_code != 200:
@@ -210,29 +195,27 @@ class BridgeClient:
         return self._reached_with_feedback(reply)
 
     def send_pose(self, x: float, y: float, z: float, *, context: str = "") -> BridgeReply:
-        log.debug(
-            "bridge POST /api/pose %s x=%.4f y=%.4f z=%.4f",
-            f"({context})" if context else "",
-            x,
-            y,
-            z,
-        )
-        return self._post("/api/pose", {"cmd": "pose", "x": x, "y": y, "z": z})
+        label = context or "pose"
+        log.debug("bridge POST /api/pose (%s) x=%.4f y=%.4f z=%.4f", label, x, y, z)
+        rep = self._post("/api/pose", {"cmd": "pose", "x": x, "y": y, "z": z})
+        return self._require_blocking_reached(rep, label, expect_pose=True)
 
     def send_pose_delta(
         self, dx: float, dy: float, dz: float, *, context: str = ""
     ) -> BridgeReply:
+        label = context or "pose_delta"
         log.debug(
-            "bridge POST /api/pose_delta %s dx=%.4f dy=%.4f dz=%.4f",
-            f"({context})" if context else "",
+            "bridge POST /api/pose_delta (%s) dx=%.4f dy=%.4f dz=%.4f",
+            label,
             float(dx),
             float(dy),
             float(dz),
         )
-        return self._post(
+        rep = self._post(
             "/api/pose_delta",
             {"cmd": "pose_delta", "dx": float(dx), "dy": float(dy), "dz": float(dz)},
         )
+        return self._require_blocking_reached(rep, label, expect_pose=True)
 
     def pose_in_position(self, reply: BridgeReply) -> bool:
         if not reply.ok or reply.status_code != 200:
@@ -260,16 +243,19 @@ class BridgeClient:
             float(wrist_deg),
             grip_state,
         )
+        label = context or "claw"
         rep = self._post("/api/claw", payload)
-        if rep.ok:
-            self._last_grip_closed = closed
-        else:
-            log.warning("bridge claw failed status=%s error=%s body=%s", rep.status_code, rep.error, rep.body)
+        try:
+            rep = self._require_blocking_reached(rep, label)
+        except RuntimeError:
+            log.warning("bridge claw failed status=%s body=%s", rep.status_code, rep.body)
+            raise
+        self._last_grip_closed = closed
         return rep
 
     def require_claw(self, rep: BridgeReply, label: str) -> None:
-        if not rep.ok:
-            raise RuntimeError(f"{label}: claw failed: {rep.error or rep.body}")
+        """``send_claw`` 已阻塞判到位；保留兼容旧调用。"""
+        self._require_blocking_reached(rep, label)
 
     def toggle_grip(self, wrist_deg: float) -> BridgeReply:
         return self.send_claw(wrist_deg, not self._last_grip_closed)
@@ -292,20 +278,30 @@ class BridgeClient:
         grip_closed: bool = False,
         context: str = "idle_hold",
     ) -> None:
-        """启动待命：向 bridge 下发全零关节与 claw（不等待到位，仅尽力 POST）。"""
+        """启动待命：向 bridge 下发关节与 claw（``wait_reached: false``，不阻塞、不要求 UDP 反馈）。"""
         if len(axes_rel_deg) != 4:
             log.warning("send_idle_zeros: axes 长度须为 4，跳过")
             return
-        jr = self.send_joints(list(axes_rel_deg), context=context)
+        jr = self._post(
+            "/api/joints",
+            {
+                "cmd": "joints",
+                "axes_rel_deg": list(axes_rel_deg),
+                "wait_reached": False,
+            },
+        )
         if not jr.ok:
             log.warning("idle joints failed: %s", jr.error or jr.body)
         grip_state = 0 if grip_closed else 1
-        payload = {
-            "cmd": "claw",
-            "wrist_deg": float(wrist_deg),
-            "grip_state": grip_state,
-        }
-        cr = self._post("/api/claw", payload)
+        cr = self._post(
+            "/api/claw",
+            {
+                "cmd": "claw",
+                "wrist_deg": float(wrist_deg),
+                "grip_state": grip_state,
+                "wait_reached": False,
+            },
+        )
         if cr.ok:
             self._last_grip_closed = grip_closed
         else:

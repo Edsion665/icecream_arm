@@ -23,6 +23,16 @@ LogFn = Optional[Callable[[str], None]]
 PendingFn = Optional[Callable[..., None]]
 
 
+def wants_reached_wait(obj: dict[str, Any]) -> bool:
+    """``wait_reached: false`` 时仅更新目标，HTTP/TCP 立即返回（待命 idle 等）。"""
+    v = obj.get("wait_reached", True)
+    if v is False or v == 0:
+        return False
+    if isinstance(v, str) and v.strip().lower() in ("0", "false", "no"):
+        return False
+    return True
+
+
 def _http_browser_base_url(bind_host: str, port: int) -> str:
     """绑定在任意地址时，日志里给出可在浏览器打开的 URL（避免写死 ``0.0.0.0``）。"""
     if bind_host and bind_host not in ("0.0.0.0", "::", ""):
@@ -299,11 +309,18 @@ class NetworkListener(BaseListener):
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     try:
-                        cmd = CommandNormalizer.normalize_line(line.decode("utf-8"))
-                        if cmd is not None:
-                            if self._on_pending is not None and cmd.kind not in IMMEDIATE_ACK_KINDS:
-                                self._on_pending(tcp_conn=conn, http_slot=None)
-                            self.emit(cmd)
+                        raw = json.loads(line.decode("utf-8"))
+                        if not isinstance(raw, dict):
+                            continue
+                        wait = wants_reached_wait(raw)
+                        cmd = CommandNormalizer.normalize_obj(raw)
+                        if (
+                            self._on_pending is not None
+                            and cmd.kind not in IMMEDIATE_ACK_KINDS
+                            and wait
+                        ):
+                            self._on_pending(tcp_conn=conn, http_slot=None)
+                        self.emit(cmd)
                     except ValueError as e:
                         self._on_log(f"[TCP] 忽略行: {e}")
         finally:
@@ -441,8 +458,9 @@ def start_http_server(
                 self._send_json(400, {"ok": False, "error": "invalid json"})
                 return
             kind = routes[path]
+            wait = wants_reached_wait(obj)
             slot: Optional[ReplySlot] = None
-            if on_pending is not None and kind not in IMMEDIATE_ACK_KINDS:
+            if on_pending is not None and kind not in IMMEDIATE_ACK_KINDS and wait:
                 slot = ReplySlot()
                 on_pending(tcp_conn=None, http_slot=slot)
             try:
