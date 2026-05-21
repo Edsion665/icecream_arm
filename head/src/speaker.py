@@ -91,6 +91,83 @@ class BridgeClient:
     def poll_reached(self) -> BridgeReply:
         return self._get("/api/reached")
 
+    def _reached_frame_strict(
+        self,
+        rep: BridgeReply,
+        *,
+        max_err_deg: float,
+        expect_pose: tuple[float, float, float] | None = None,
+        pose_tol_m: float = 0.015,
+    ) -> bool:
+        if not rep.ok or not self._reached_with_feedback(rep):
+            return False
+        b = rep.body if isinstance(rep.body, dict) else {}
+        if not bool(b.get("reached", False)):
+            return False
+        err = float(b.get("error_joints_deg", float("inf")))
+        if err > float(max_err_deg):
+            return False
+        per = b.get("per_axis_err_deg")
+        if isinstance(per, (list, tuple)) and per:
+            if max(float(x) for x in per) > float(max_err_deg):
+                return False
+        if expect_pose is not None:
+            ap = b.get("actual_pose")
+            if not isinstance(ap, dict):
+                return False
+            tol = float(pose_tol_m)
+            for key, want in zip(("x", "y", "z"), expect_pose):
+                if key not in ap:
+                    return False
+                if abs(float(ap[key]) - float(want)) > tol:
+                    return False
+        return True
+
+    def wait_arm_reached_stable(
+        self,
+        label: str,
+        *,
+        stable_frames: int = 3,
+        max_err_deg: float | None = None,
+        expect_pose: tuple[float, float, float] | None = None,
+        pose_tol_m: float | None = None,
+    ) -> None:
+        """POST 阻塞返回后，再轮询直到连续 ``stable_frames`` 帧严格到位（关节+可选 pose）。"""
+        s = self._settings
+        n = max(1, int(stable_frames))
+        err_lim = float(max_err_deg if max_err_deg is not None else s.approach_reached_max_err_deg)
+        ptol = float(pose_tol_m if pose_tol_m is not None else s.approach_reached_pose_tol_m)
+        poll_s = max(self._reached_poll_s, 0.05)
+        deadline = time.monotonic() + float(s.state_timeout_s)
+        streak = 0
+        while time.monotonic() < deadline:
+            rep = self.poll_reached()
+            ok = self._reached_frame_strict(
+                rep,
+                max_err_deg=err_lim,
+                expect_pose=expect_pose,
+                pose_tol_m=ptol,
+            )
+            if ok:
+                streak += 1
+                if streak >= n:
+                    b = rep.body if isinstance(rep.body, dict) else {}
+                    log.info(
+                        "%s: 连续 %d 帧严格到位 err_deg=%s pose_err_m=%s reason=%s",
+                        label,
+                        n,
+                        b.get("error_joints_deg"),
+                        b.get("pose_err_m"),
+                        b.get("reach_reason"),
+                    )
+                    return
+            else:
+                streak = 0
+            time.sleep(poll_s)
+        rep = self.poll_reached()
+        self.log_reached_timeout(label, rep, timeout_s=float(self._settings.state_timeout_s))
+        raise RuntimeError(f"{label}: wait_arm_reached_stable timeout ({n} frames)")
+
     @staticmethod
     def log_reached_timeout(context: str, rep: BridgeReply, *, timeout_s: float) -> None:
         """超时：打印四轴反馈 vs 设定角（来自 bridge /api/reached 的 pi2camera 字段）。"""
@@ -200,6 +277,71 @@ class BridgeClient:
         rep = self._post("/api/pose", {"cmd": "pose", "x": x, "y": y, "z": z})
         return self._require_blocking_reached(rep, label, expect_pose=True)
 
+    def send_pose_lin(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        *,
+        speed_m_s: float,
+        lock_xy: bool = True,
+        context: str = "",
+    ) -> BridgeReply:
+        """笛卡尔直线：bridge 以 control_hz(25Hz) 逐步 IK，lock_xy 时末端仅竖直移动。"""
+        label = context or "pose_lin"
+        log.info(
+            "bridge POST /api/pose_lin (%s) x=%.4f y=%.4f z=%.4f speed=%.3f lock_xy=%s",
+            label,
+            float(x),
+            float(y),
+            float(z),
+            float(speed_m_s),
+            lock_xy,
+        )
+        rep = self._post(
+            "/api/pose_lin",
+            {
+                "cmd": "pose_lin",
+                "x": float(x),
+                "y": float(y),
+                "z": float(z),
+                "speed_m_s": float(speed_m_s),
+                "lock_xy": bool(lock_xy),
+            },
+        )
+        return self._require_blocking_reached(rep, label, expect_pose=True)
+
+    def send_pose_lin_delta(
+        self,
+        dx: float,
+        dy: float,
+        dz: float,
+        *,
+        speed_m_s: float,
+        lock_xy: bool = True,
+        context: str = "",
+    ) -> BridgeReply:
+        label = context or "pose_lin_delta"
+        log.info(
+            "bridge POST /api/pose_lin_delta (%s) dz=%.4f speed=%.3f lock_xy=%s",
+            label,
+            float(dz),
+            float(speed_m_s),
+            lock_xy,
+        )
+        rep = self._post(
+            "/api/pose_lin_delta",
+            {
+                "cmd": "pose_lin_delta",
+                "dx": float(dx),
+                "dy": float(dy),
+                "dz": float(dz),
+                "speed_m_s": float(speed_m_s),
+                "lock_xy": bool(lock_xy),
+            },
+        )
+        return self._require_blocking_reached(rep, label, expect_pose=True)
+
     def send_pose_delta(
         self, dx: float, dy: float, dz: float, *, context: str = ""
     ) -> BridgeReply:
@@ -270,18 +412,39 @@ class BridgeClient:
         )
         return self._post("/api/conveyor", {"cmd": "conveyor", "run": run_i})
 
+    def send_stepper(self, stepper_deg: float, *, context: str = "") -> BridgeReply:
+        """转盘步进增量（deg）；bridge 立即 ack，不阻塞到位。"""
+        deg = float(max(-180.0, min(180.0, stepper_deg)))
+        log.info(
+            "bridge POST /api/stepper %s stepper_deg=%.1f",
+            f"({context})" if context else "",
+            deg,
+        )
+        rep = self._post("/api/stepper", {"cmd": "stepper", "stepper_deg": deg})
+        if not rep.ok:
+            raise RuntimeError(
+                f"{context or 'stepper'}: stepper POST failed: {rep.error or rep.body}"
+            )
+        return rep
+
     def send_speed(self, axes_rad_s: List[float], *, context: str = "") -> BridgeReply:
         """设置四轴 ramp 速度上限（rad/s），通过 bridge UDP omega_rad_s[0:4] 下发至 Pi。
-        全零时 Pi 侧回退到 config 默认值。
+        全零时 Pi 侧回退到 config 默认值；非零值锁存直至下一条 speed。
         """
         if len(axes_rad_s) != 4:
             return BridgeReply(False, 0, {}, error="axes_rad_s must have length 4")
-        log.debug(
+        axes = [float(v) for v in axes_rad_s]
+        log.info(
             "bridge POST /api/speed %s axes_rad_s=%s",
             f"({context})" if context else "",
-            list(axes_rad_s),
+            axes,
         )
-        return self._post("/api/speed", {"cmd": "speed", "axes_rad_s": list(axes_rad_s)})
+        rep = self._post("/api/speed", {"cmd": "speed", "axes_rad_s": axes})
+        if not rep.ok:
+            raise RuntimeError(
+                f"{context or 'speed'}: speed POST failed: {rep.error or rep.body}"
+            )
+        return rep
 
     def send_idle_zeros(
         self,

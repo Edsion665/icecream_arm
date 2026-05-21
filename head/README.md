@@ -16,27 +16,36 @@
 
 树莓派示例见 `doc/pi2head.md`。
 
-## v3 主循环（概要）
+## v3 主循环（八步 + 内层 5–8）
 
 | 步 | 行为 |
 |---|------|
-| （首） | 每轮开始清空 `target` / `object` 槽（不沿用上一轮） |
-| 1 | `joints` obs1 → `claw`（腕零 + **夹爪张开**） |
-| 2 | 在 **obs1** 后稳定观测 `target`（**任一**目标连续 N 帧稳定即写入，不要求画面内全部）→ 建 `target_queue` |
-| 3 | `claw`（obs2 入口腕角）→ `joints` obs2 |
-| 4 | 在 **obs2** 后稳定观测 `object`（任一 object 连续 N 帧稳定即写入）→ 写入 object 槽 |
-| 5 | `plan`：按队列优先级在传送带找同前缀 `object`；目标位来自 obs1 队列，不要求 obs2 再看到 target |
-| 6–7 | `claw`（物体腕）→ `pose` 物体 → `claw` 抓取；抓取后 **丢弃 object 槽** |
-| 8 | 抓取夹紧后：`pose` **上抬**（默认 +10cm）→ `claw` 转腕 → `joints` 回 obs1 |
-| 9 | 在 **obs1** 下再次稳定观测 `target`（放置用，须重新观测） |
-| 10–11 | obs1 粗选 → 真实目标**上方 60cm** 重观测（无 z/j1 偏置）→ 垂直到 **真实目标 + target_z_offset_m** → `claw` 释放 |
-| 11b | 放置松爪后：`pose` **上抬** → `claw` 转腕 → `joints` 回 obs1（夹爪保持张开） |
-| 11 末 | **丢弃** target/object 槽 |
-| 12 | 循环回（首） |
+| （首） | 清空 `target` / `object` 槽 |
+| 1 | `joints` obs1 + 夹爪张开 |
+| 2 | obs1 **粗观测** `target` → `target_queue` |
+| 3 | 队列**前 N** 项（`max_refine_targets`）：各目标**正上方**精观测 → 写回队列 |
+| 4 | `joints` obs2 + 传送带送料（如需）+ 稳定观测 `object` |
+| **5–8 内层** | 见下表；队列空或 step8 无法 `plan_pick` 时结束内层 |
+| 末 | `POST /api/stepper` 转盘 `turntable_stepper_deg`（默认 +90°）→ 下轮从 step1 |
 
-**槽位语义**：`target` / `object` 均为用完即弃；**仅**在对应观测位（obs1 得 target、obs2 得 object）并经 `wait` + `clear` + `apply` 后的快照可用于本轮后续 `plan` / `pose`。
+**内层循环（每放一个 target 一轮）：**
 
-**为何第二轮 step2 与 step3 同一时刻、像「直接去 obs2」**：ingestion 持续更新 `_last_frame`，槽位虽在每轮清空，**但** `wait_for_roles` 看的是缓存帧；若仍含上一轮的 `target`，等待会立刻通过。默认 **`require_fresh_detection_after_obs: true`**：每次 obs1 / obs2 / 抓取后回 obs1 的 **joints 到位后** 会丢弃该缓存，必须再收到 **新** 的 `POST /api/detection` 才会继续（与「在 obs1/obs2 再获得」一致）。联调单发一帧时可临时设 `false`。
+| 步 | 行为 |
+|---|------|
+| 5 | `plan_pick` → 物体上方 `pose` → **`pose_lin` 竖直下降**（25Hz IK，`vertical_move_speed_m_s`）→ 到位确认 → 夹紧 |
+| 6 | 上抬 → 放置腕角 → **`joints` 回 obs1**（Pi 默认速度）；**到位后**再切换放置降速 |
+| 7 | 放置位上方 → **`pose_lin` 竖直下降** → 到位确认 → 松爪；上抬用 **`pose_lin_delta`** |
+| 8 | 上抬 → 转腕 → **obs2**；队列非空则探视野/传送带 + 再观测 `object`，能 `plan_pick` 则回到 5 |
+
+**槽位语义**：粗 target 在 step2；精坐标在 step3 写回队列；每轮 pick 后丢弃 `object`，step8 前重新观测 `object`。放置后队列项仅标记 `placed`，**stepper 转动后**才整体清空队列。
+
+**配置**：`max_refine_targets`、`place_reobserve_hover_m`、`turntable_stepper_deg`、`stepper_settle_s`、`arm_speed_place_rad_s`（见 `config.example.yaml`）。
+
+**速度**：平时发 `[0,0,0,0]` 用 Pi 默认；**竖直下降/上抬**用 bridge `POST /api/pose_lin`（`lock_xy=true`，25Hz IK 插补，`vertical_move_speed_m_s`）；step6 回 obs1 用 `arm_speed_place_rad_s`（关节段）。
+
+**预接近**：`approach_hover_m` 悬停后 `pose_lin` 竖直到位；到位后 `approach_reached_stable_frames` + `approach_settle_after_descend_s` 再夹爪/松爪。
+
+**为何 step2 与 step3 同一时刻、像「直接去 obs2」**：ingestion 持续更新 `_last_frame`，槽位虽在每轮清空，**但** `wait_for_roles` 看的是缓存帧；若仍含上一轮的 `target`，等待会立刻通过。默认 **`require_fresh_detection_after_obs: true`**：obs1 / obs2 **joints 到位后** 会丢弃该缓存，须再收到 **新** `POST /api/detection` 才继续。联调单发一帧时可临时设 `false`。
 
 **为何会在 obs1 / obs2 之间来回动很多下**：若 `camera_wait_timeout_s` 为**有限秒数**，等不到 target/object 会抛错，`run_forever` 捕获后**整轮重跑** `run_one_cycle`（又从周期首清空 → obs1 → …），看起来就像反复在观测位之间运动。联调请用 **`camera_wait_timeout_s: null`**（默认）或省略该项，使在 **obs1 一直等 target**、在 **obs2 一直等 object**，直到 ingestion 发来含对应 role 的帧。
 

@@ -25,9 +25,26 @@ observe_stable_yaw_eps_deg: 5.0
 
 claw_settle_after_pick_s: 1
 claw_settle_after_place_s: 1
-# 放置重观测：真实目标正上方高度（米），与 target_z_offset_m 无关
+# step3 目标正上方精观测高度（米）
 place_reobserve_hover_m: 0.65
+# step3 对粗观测队列前 N 项精观测写回
+max_refine_targets: 3
+# 本轮队列放完后转盘步进（deg，增量）
+turntable_stepper_deg: 90.0
+stepper_settle_s: 10.0
 retreat_lift_m: 0.1
+# 抓取/放置：先到工作位上方该高度(m)，再减速竖直下降到位
+approach_hover_m: 0.1
+# 下降后连续 N 次 /api/reached 为真再夹爪/松爪（避免 HTTP 先返回、机械未到位）
+approach_reached_stable_frames: 5
+approach_reached_max_err_deg: 0.8
+approach_reached_pose_tol_m: 0.015
+approach_settle_after_descend_s: 1
+# step5/7 竖直段：bridge 25Hz pose_lin IK（lock_xy 仅 z 变化）
+vertical_move_speed_m_s: 0.03
+arm_speed_approach_rad_s: [0.25, 0.2, 0.25, 0.2]
+# step6 后放置段（与 approach 可分开调）
+arm_speed_place_rad_s: [0.25, 0.2, 0.25, 0.3]
 # 转盘临位观察位置
 observe1_axes_rel_deg: [-90.0, 20.0, -100.0, -90.0]
 # 传送带观察位置

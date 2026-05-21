@@ -49,9 +49,17 @@ claw_open_for_place: true
 claw_settle_after_pick_s: 2.0
 claw_settle_after_place_s: 2.0
 # 抓取/放置后：先上抬（米，默认 10cm）→ 转腕 → 关节回观测位
-# 放置重观测：真实目标正上方（米）
+# step3 目标正上方精观测（米）
 place_reobserve_hover_m: 0.6
+max_refine_targets: 3
+turntable_stepper_deg: 90.0
+stepper_settle_s: 10.0
 retreat_lift_m: 0.1
+approach_hover_m: 0.1
+approach_reached_stable_frames: 3
+approach_settle_after_descend_s: 0.3
+arm_speed_approach_rad_s: [0.25, 0.2, 0.25, 0.2]
+arm_speed_place_rad_s: [0.25, 0.2, 0.25, 0.2]
 # obs1/obs2 到位后 claw 腕角（仅观测阶段 step1/step3，与抓取/放置补偿无关）
 claw_after_joints_wrist_deg: 0.0
 obs2_entry_wrist_deg: 0.0

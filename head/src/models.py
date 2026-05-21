@@ -74,6 +74,9 @@ class QueuedTarget:
     position: Position
     wrist_yaw_deg: float
     label: str
+    refined: bool = False
+    # 本轮已放置完成；队列在 stepper 转动后才整体清空
+    placed: bool = False
 
 
 @dataclass

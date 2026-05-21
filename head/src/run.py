@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from collections import deque
-from typing import Deque, FrozenSet
+from typing import Deque
 
 from src.conveyor_obs import object_in_pick_zone
 from src.coordinates import (
@@ -20,7 +20,12 @@ from src.config import Settings, load_settings
 from src.listener import IngestionServer
 from src.models import Position, QueuedTarget, Role, TrackSlot
 from src.pi2head_listener import Pi2HeadServer
-from src.planner import build_target_queue, peek_target_track, plan_pick
+from src.planner import (
+    build_target_queue,
+    peek_target_track,
+    plan_pick,
+    queued_to_track_slot,
+)
 from src.shape_match import shape_prefix
 from src.speaker import BridgeClient
 from src.tracker import Tracker
@@ -39,6 +44,7 @@ class HeadFSM:
         self._cycle_shape_prefix: str | None = None
         self._cycle_planned_target: TrackSlot | None = None
         self._cycle_queued_target: QueuedTarget | None = None
+        self._last_place_wrist_deg: float = 0.0
 
     def _timeout(self) -> float:
         return self.settings.state_timeout_s
@@ -58,23 +64,159 @@ class HeadFSM:
     def _joints_obs(self, axes: list[float], label: str) -> None:
         self.speaker.send_joints(axes, context=label)
 
+    def _apply_arm_speed(self, axes_rad_s: list[float], label: str) -> None:
+        """下发四轴 ramp 速度上限（rad/s），见 bridge ``POST /api/speed``。"""
+        self.speaker.send_speed(axes_rad_s, context=label)
+
+    def _apply_speed_pi_default(self, label: str) -> None:
+        """四轴全零 → Pi 沿用 config.max_cmd_speed_rad_s（非 bridge 内部默认）。"""
+        self._apply_arm_speed([0.0, 0.0, 0.0, 0.0], label)
+
+    def _apply_speed_place(self, label: str) -> None:
+        self._apply_arm_speed(list(self.settings.arm_speed_place_rad_s), label)
+
+    def _apply_speed_approach(self, label: str) -> None:
+        self._apply_arm_speed(list(self.settings.arm_speed_approach_rad_s), label)
+
+    def _work_hover_and_pose(
+        self, slot: TrackSlot, role: Role
+    ) -> tuple[Position, Position]:
+        """工作位与上方预接近点（+approach_hover_m）。"""
+        work = self._work_pose(slot, role)
+        h = float(self.settings.approach_hover_m)
+        hover = Position(work.x, work.y, work.z + h)
+        return hover, work
+
+    def _move_to_hover(self, pos: Position, label: str) -> None:
+        """预接近悬停：pose_lin 全向慢速（lock_xy=false），比单次 pose 更易判到位。"""
+        spd = float(self.settings.vertical_move_speed_m_s)
+        self.speaker.send_pose_lin(
+            pos.x,
+            pos.y,
+            pos.z,
+            speed_m_s=spd,
+            lock_xy=False,
+            context=label,
+        )
+
+    def _vertical_move_to(self, pos: Position, label: str) -> None:
+        """竖直直线下降/上升：bridge 25Hz pose_lin + lock_xy。"""
+        spd = float(self.settings.vertical_move_speed_m_s)
+        self.speaker.send_pose_lin(
+            pos.x,
+            pos.y,
+            pos.z,
+            speed_m_s=spd,
+            lock_xy=True,
+            context=label,
+        )
+
+    def _vertical_lift(self, dz: float, label: str) -> None:
+        if dz <= 0.0:
+            return
+        spd = float(self.settings.vertical_move_speed_m_s)
+        self.speaker.send_pose_lin_delta(
+            0.0,
+            0.0,
+            float(dz),
+            speed_m_s=spd,
+            lock_xy=True,
+            context=label,
+        )
+
+    def _approach_then_descend(
+        self,
+        slot: TrackSlot,
+        role: Role,
+        wrist_deg: float,
+        *,
+        tag: str,
+        grip_closed: bool,
+    ) -> None:
+        """先到工作位上方 approach_hover_m，再 25Hz IK 竖直下降到工作位；确认到位后才返回。
+
+        ``grip_closed`` 仅控制预接近/下降过程中是否保持夹爪状态（抓取应 False=张开；
+        放置应 True=闭合）。真正夹紧/松爪在调用方于到位确认之后单独 ``send_claw``。
+        """
+        s = self.settings
+        hover, work = self._work_hover_and_pose(slot, role)
+        h = float(self.settings.approach_hover_m)
+        log.info(
+            "%s: 预接近 上方+%.3fm → (%.3f,%.3f,%.3f) 再竖直下降 (%.3f,%.3f,%.3f) "
+            "pose_lin %.3fm/s | 运动段夹爪=%s",
+            tag,
+            h,
+            hover.x,
+            hover.y,
+            hover.z,
+            work.x,
+            work.y,
+            work.z,
+            float(s.vertical_move_speed_m_s),
+            "闭合" if grip_closed else "张开",
+        )
+        self._emit_claw(wrist_deg, f"{tag}_align_wrist", closed=grip_closed)
+        # 预接近：pose_lin 全向插补（非竖直段），避免单次 pose 跳变导致 Pi 长期卡在 1° 级误差
+        self._move_to_hover(hover, f"{tag}_goto_hover")
+        self._vertical_move_to(work, f"{tag}_descend_to_work")
+        self.speaker.wait_arm_reached_stable(
+            f"{tag}_descend_to_work",
+            stable_frames=s.approach_reached_stable_frames,
+            max_err_deg=s.approach_reached_max_err_deg,
+            expect_pose=(work.x, work.y, work.z),
+            pose_tol_m=s.approach_reached_pose_tol_m,
+        )
+        settle = float(s.approach_settle_after_descend_s)
+        if settle > 0.0:
+            log.info("%s: 到位后额外等待 %.2fs", tag, settle)
+            time.sleep(settle)
+
     def _pose_to(self, pos: Position, label: str, *, role: Role) -> None:
-        """向 bridge 发笛卡尔目标（pos 为最终笛卡尔目标，已含工作高度偏置时用 work_pose）。"""
+        """向 bridge 发笛卡尔目标；阻塞至 bridge 判到位（见 ``send_pose``）。"""
         self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
+
+    def _place_descend_then_release(
+        self, tgt: TrackSlot, place_wrist: float, *, tag: str = "step7"
+    ) -> None:
+        """放置：上方预接近 → 减速下降到位 → 再松爪（step6 后已切换放置限速）。"""
+        s = self.settings
+        # step6 后已是放置限速；仅做上方预接近再下降，不再重复切 speed
+        self._approach_then_descend(
+            tgt,
+            "target",
+            place_wrist,
+            tag=tag,
+            grip_closed=True,
+        )
+        log.info("%s: 已确认下降到位，松爪", tag)
+        self.speaker.send_claw(
+            place_wrist,
+            closed=not s.claw_open_for_place,
+            context=f"{tag}_release_at_place",
+        )
+        if s.claw_settle_after_place_s > 0:
+            time.sleep(s.claw_settle_after_place_s)
 
     def _work_pose(self, slot: TrackSlot, role: Role) -> Position:
         """抓取/放置到位高度：真实目标 + role_z_offset_m。"""
         return work_pose_for_role(slot.position, role, self.settings)
 
-    def _place_reobserve_at_hover(self, rough_tgt: TrackSlot, label: str) -> TrackSlot:
-        """真实目标上方 place_reobserve_hover_m 重观测；ingest 关闭 z 偏置与 j1 腕角补偿。"""
+    def _observe_target_at_hover(
+        self,
+        rough_tgt: TrackSlot,
+        label: str,
+        *,
+        shape_prefix_lock: str,
+        preferred: TrackSlot,
+    ) -> TrackSlot:
+        """真实目标正上方 place_reobserve_hover_m 稳定观测（无 z/j1 偏置）。"""
         hover_m = float(self.settings.place_reobserve_hover_m)
         raw_pos = strip_role_z_offset(rough_tgt.position, "target", self.settings)
         hover_pos = Position(raw_pos.x, raw_pos.y, raw_pos.z + hover_m)
         work_pos = self._work_pose(rough_tgt, "target")
         wrist = float(rough_tgt.wrist_yaw_deg)
         log.info(
-            "%s: 悬停重观测 真实目标上方+%.3f m | slot=%.3f,%.3f,%.3f raw=%.3f,%.3f,%.3f "
+            "%s: 正上方观测 真实目标上方+%.3f m | slot=%.3f,%.3f,%.3f raw=%.3f,%.3f,%.3f "
             "hover=%.3f,%.3f,%.3f 放置工作高=%.3f,%.3f,%.3f wrist_cam=%.1f",
             label,
             hover_m,
@@ -104,44 +246,105 @@ class HeadFSM:
         refined = peek_target_track(
             snap,
             self.target_queue,
-            shape_prefix_lock=self._cycle_shape_prefix,
-            preferred=self._cycle_planned_target,
+            shape_prefix_lock=shape_prefix_lock,
+            preferred=preferred,
         )
         if refined is None:
             raise RuntimeError(
-                f"{label}: 悬停重观测后无匹配 target（前缀 {self._cycle_shape_prefix!r}）"
+                f"{label}: 正上方观测后无匹配 target（前缀 {shape_prefix_lock!r}）"
             )
-        if self._cycle_shape_prefix and shape_prefix(refined.class_id) != self._cycle_shape_prefix:
+        if shape_prefix(refined.class_id) != shape_prefix_lock:
             raise RuntimeError(
-                f"target 前缀不一致: want {self._cycle_shape_prefix}, got {refined.class_id}"
+                f"target 前缀不一致: want {shape_prefix_lock}, got {refined.class_id}"
             )
-        self._log_all_targets(f"{label} 重观测后 target")
+        self._log_all_targets(f"{label} 精观测后 target")
         return refined
+
+    def _refine_queue_hover(self, n: int) -> None:
+        """step3：对队列前 n 项依次正上方精观测并写回 QueuedTarget。"""
+        items = list(self.target_queue)[: max(0, int(n))]
+        if not items:
+            log.warning("step3: 队列为空，跳过精观测")
+            return
+        for i, q in enumerate(items):
+            rough = queued_to_track_slot(q)
+            refined = self._observe_target_at_hover(
+                rough,
+                f"step3_hover_{i}",
+                shape_prefix_lock=q.shape_prefix,
+                preferred=rough,
+            )
+            q.position = refined.position
+            q.wrist_yaw_deg = refined.wrist_yaw_deg
+            q.refined = True
+            log.info(
+                "step3[%d] 已写回队列 %s refined pos=(%.3f,%.3f,%.3f)",
+                i,
+                q.class_id,
+                q.position.x,
+                q.position.y,
+                q.position.z,
+            )
 
     def _pose_delta_to(self, dx: float, dy: float, dz: float, label: str) -> None:
         """相对 bridge 当前 pose 目标增量移动（用于抓取/放置后上抬）。"""
         self.speaker.send_pose_delta(dx, dy, dz, context=label)
 
-    def _retreat_to_obs(
+    def _retreat_lift_and_wrist(
         self,
         *,
         hold_wrist_deg: float,
         grip_closed: bool,
-        obs_axes: list[float],
-        obs_wrist_deg: float,
+        next_wrist_deg: float,
         tag: str,
     ) -> None:
-        """夹/松爪后：保持夹爪与腕角 → 相对当前位姿上抬 → 转腕 → 关节回观测位。"""
+        """夹/松爪后：保持夹爪 → 上抬 → 转腕（不回观测关节位）。"""
         lift_m = float(self.settings.retreat_lift_m)
         if lift_m > 0.0:
             self._emit_claw(hold_wrist_deg, f"{tag}_claw_before_lift", closed=grip_closed)
-            log.info("%s: 上抬 dz=+%.3f m（pose_delta，相对 bridge 当前位姿）", tag, lift_m)
-            self._pose_delta_to(0.0, 0.0, lift_m, f"{tag}_lift")
-        if abs(hold_wrist_deg - obs_wrist_deg) > 1e-6:
-            self._emit_claw(obs_wrist_deg, f"{tag}_claw_wrist_before_obs", closed=grip_closed)
-        self._joints_obs(obs_axes, f"{tag}_obs_joints")
-        self._emit_claw(obs_wrist_deg, f"{tag}_claw_at_obs", closed=grip_closed)
-        self._maybe_emit_claw(obs_wrist_deg, f"{tag}_claw_at_obs_dup", closed=grip_closed)
+            log.info(
+                "%s: 上抬 dz=+%.3f m（pose_lin_delta @%.3fm/s）",
+                tag,
+                lift_m,
+                float(self.settings.vertical_move_speed_m_s),
+            )
+            self._vertical_lift(lift_m, f"{tag}_lift")
+        if abs(hold_wrist_deg - next_wrist_deg) > 1e-6:
+            self._emit_claw(next_wrist_deg, f"{tag}_claw_wrist", closed=grip_closed)
+
+    def _retreat_to_obs1_after_pick(
+        self,
+        *,
+        pick_wrist_deg: float,
+        place_wrist_deg: float,
+        obs_wrist_deg: float,
+        tag: str,
+    ) -> None:
+        """step6：上抬 → 放置腕角 → joints 回 obs1（夹爪保持闭合）；在 Pi 默认速度下完成。"""
+        self._retreat_lift_and_wrist(
+            hold_wrist_deg=pick_wrist_deg,
+            grip_closed=self.settings.claw_closed_for_pick,
+            next_wrist_deg=place_wrist_deg,
+            tag=tag,
+        )
+        self._joints_obs(list(self.settings.observe1_axes_rel_deg), f"{tag}_obs1_joints")
+        self._emit_claw(
+            obs_wrist_deg,
+            f"{tag}_claw_at_obs1",
+            closed=self.settings.claw_closed_for_pick,
+        )
+
+    def _go_obs2_joints(self, *, from_wrist_deg: float, grip_closed: bool, tag: str) -> None:
+        """上抬（可选）→ obs2 入口腕角 → joints obs2。"""
+        obs2_wrist = float(self.settings.obs2_entry_wrist_deg)
+        self._retreat_lift_and_wrist(
+            hold_wrist_deg=from_wrist_deg,
+            grip_closed=grip_closed,
+            next_wrist_deg=obs2_wrist,
+            tag=tag,
+        )
+        self._joints_obs(list(self.settings.observe2_axes_rel_deg), f"{tag}_obs2_joints")
+        self._emit_claw(obs2_wrist, f"{tag}_claw_at_obs2", closed=grip_closed)
 
     def _set_conveyor(self, run: int, label: str) -> None:
         rep = self.speaker.send_conveyor(run, context=label)
@@ -281,148 +484,228 @@ class HeadFSM:
         self.target_queue.clear()
         self.target_queue.extend(build_target_queue(targets, self._plan_ref()))
 
-    def _pop_queue_after_place(self, tgt: TrackSlot) -> None:
+    def _pending_queue_count(self) -> int:
+        return sum(1 for q in self.target_queue if not q.placed)
+
+    def _mark_queue_item_placed(self, tgt: TrackSlot) -> None:
+        """放置完成：仅标记队项，不删队；stepper 后再 ``target_queue.clear()``。"""
         if not self.target_queue:
             return
         planned = self._cycle_queued_target
         if planned is not None:
-            for i, q in enumerate(self.target_queue):
+            for q in self.target_queue:
                 if q.shape_prefix == planned.shape_prefix and q.class_id == planned.class_id:
-                    if q.position.dist(planned.position) < 0.02:
-                        del self.target_queue[i]
-                        return
-        head = self.target_queue[0]
-        if head.shape_prefix == shape_prefix(tgt.class_id):
-            self.target_queue.popleft()
+                    q.placed = True
+                    log.info(
+                        "队列标记已放置: %s（剩余待做 %d / 共 %d）",
+                        q.class_id,
+                        self._pending_queue_count(),
+                        len(self.target_queue),
+                    )
+                    return
+        prefix = shape_prefix(tgt.class_id)
+        for q in self.target_queue:
+            if q.shape_prefix == prefix:
+                q.placed = True
+                log.info(
+                    "队列标记已放置(按前缀): %s（剩余待做 %d / 共 %d）",
+                    q.class_id,
+                    self._pending_queue_count(),
+                    len(self.target_queue),
+                )
+                return
+        log.warning("放置完成但未匹配队列项 prefix=%s", prefix)
 
-    def run_one_cycle(self) -> None:
-        s = self.settings
-        sp = self.speaker
-        tw = s.claw_after_joints_wrist_deg
-        obs2_wrist = s.obs2_entry_wrist_deg
+    def _clear_target_queue_after_stepper(self) -> None:
+        n = len(self.target_queue)
+        if n:
+            log.info("stepper 后清空目标队列（%d 项）", n)
+        self.target_queue.clear()
 
-        # 0: 每轮开始丢弃上一轮残留；target/object 只允许在本轮 obs1/obs2 后的 clear+apply 中建立
+    def _cycle_reset(self) -> None:
         self._discard_slot("target", "cycle_start_discard_target")
         self._discard_slot("object", "cycle_start_discard_object")
         self.target_queue.clear()
         self._cycle_shape_prefix = None
         self._cycle_planned_target = None
         self._cycle_queued_target = None
+        self._last_place_wrist_deg = 0.0
 
-        # 1: 先到 obs1 关节位，再腕零 + 夹爪张开
+    def _setup_obs1_coarse_queue(self) -> None:
+        """step1–2：obs1 关节位 + 粗观测建队。"""
+        s = self.settings
+        tw = s.claw_after_joints_wrist_deg
         self._joints_obs(list(s.observe1_axes_rel_deg), "step1_obs1_joints")
         self._emit_claw(tw, "step1_claw_wrist0_open", closed=False)
         self._maybe_emit_claw(tw, "step1_emit_dup", closed=False)
         self._invalidate_camera_cache("after_step1_obs1_before_wait_target")
-
-        # 2: obs1 稳定观测 target（连续 N 帧）后建队
         self._observe_stable("target", "step2_observe_target")
         self._rebuild_target_queue_from_snapshot()
-        self._log_all_targets("obs1 第1次 target")
+        self._log_all_targets("step2 粗观测 target")
+        if not self.target_queue:
+            raise RuntimeError("step2: obs1 粗观测后 target 队列为空")
 
-        # 3: obs2 + claw at obs2 entry wrist
-        self._emit_claw(obs2_wrist, "step3_claw_before_obs2")
-        self._maybe_emit_claw(obs2_wrist, "step3_emit_dup")
-        self._joints_obs(list(s.observe2_axes_rel_deg), "step3_obs2_joints")
-        self._invalidate_camera_cache("after_step3_obs2_before_wait_object")
-
-        # 4: obs2 探视野 / 必要时传送带送料，再稳定观测 object
+    def _setup_obs2_for_plan(self) -> None:
+        """step4：obs2 关节位 + 传送带送料 + 稳定观测 object。"""
+        s = self.settings
+        obs2_wrist = s.obs2_entry_wrist_deg
+        self._emit_claw(obs2_wrist, "step4_claw_before_obs2")
+        self._maybe_emit_claw(obs2_wrist, "step4_emit_dup")
+        self._joints_obs(list(s.observe2_axes_rel_deg), "step4_obs2_joints")
+        self._invalidate_camera_cache("after_step4_obs2_before_wait_object")
         self._ensure_obs2_object_in_zone()
         self._observe_stable("object", "step4_observe_object")
-        self._log_all_objects("obs2 全部 object")
+        self._log_all_objects("step4 obs2 object")
 
-        # 5: PLAN — obs1 队列优先级（近→远）；传送带按同前缀 object 抓取
+    def _pick_place_one(self) -> bool:
+        """step5–7：plan → 抓取 → 回 obs1 → 放置。成功返回 True。"""
+        s = self.settings
+        sp = self.speaker
+        tw = s.claw_after_joints_wrist_deg
+
+        if self._pending_queue_count() == 0:
+            return False
+
         snap = self.tracker.get_snapshot()
         pr = plan_pick(s, snap, self.target_queue)
         if not pr.ok or pr.object_slot is None or pr.target_slot is None:
-            raise RuntimeError(f"PLAN failed: {pr.reason}")
-        obj: TrackSlot = pr.object_slot
-        tgt_plan = pr.target_slot
-        if tgt_plan is None:
-            raise RuntimeError("PLAN internal: target_slot missing")
+            log.warning("step5 plan_pick 失败: %s", pr.reason)
+            return False
+
+        obj = pr.object_slot
+        tgt = pr.target_slot
         self._cycle_queued_target = pr.queued_target
-        self._cycle_planned_target = tgt_plan
-        self._cycle_shape_prefix = shape_prefix(tgt_plan.class_id)
-        self._log_pick(obj, tgt_plan)
+        self._cycle_planned_target = tgt
+        self._cycle_shape_prefix = shape_prefix(tgt.class_id)
+        self._log_pick(obj, tgt)
 
         pick_wrist = self._wrist_pick(obj)
+        place_wrist = self._wrist_place(tgt)
+        self._log_place(tgt)
+
         if s.emit_claw_on_every_transition:
             self._emit_claw(pick_wrist, "step5_claw_after_plan")
 
-        # 6: 真实物体 + object_z_offset_m（腕角在移动前已对齐）
-        self._emit_claw(pick_wrist, "step6_claw_before_object_pose")
-        self._pose_to(self._work_pose(obj, "object"), "step6_object_pose", role="object")
+        self._approach_then_descend(
+            obj,
+            "object",
+            pick_wrist,
+            tag="step5",
+            grip_closed=False,
+        )
+        log.info("step5: 已确认下降到位，开始夹紧")
 
-        # 7: pick claw + object wrist
-        sp.send_claw(pick_wrist, s.claw_closed_for_pick, context="step7_claw_pick")
+        sp.send_claw(pick_wrist, s.claw_closed_for_pick, context="step5_claw_pick")
         if s.claw_settle_after_pick_s > 0:
             time.sleep(s.claw_settle_after_pick_s)
+        self._apply_speed_pi_default("step5_after_pick_claw")
 
-        # 规划用 object 已消费，丢弃槽位；下次 object 必须再在 obs2 后等待帧并 clear+apply
-        self._discard_slot("object", "step7_discard_object_after_pick")
+        self._discard_slot("object", "step5_discard_object_after_pick")
 
-        # 8: 夹紧后上抬 → 转腕 → 回 obs1（夹爪保持闭合）
-        self._retreat_to_obs(
-            hold_wrist_deg=pick_wrist,
-            grip_closed=s.claw_closed_for_pick,
-            obs_axes=list(s.observe1_axes_rel_deg),
+        self._retreat_to_obs1_after_pick(
+            pick_wrist_deg=pick_wrist,
+            place_wrist_deg=place_wrist,
             obs_wrist_deg=tw,
-            tag="step8_after_pick",
+            tag="step6_after_pick",
         )
-        self._invalidate_camera_cache("after_step8_obs1_before_wait_target_place")
+        self._apply_speed_place("step6_after_obs1")
 
-        # 9: obs1 第二次稳定观测 target（放置用，不得沿用抓取前槽位）
-        self._observe_stable("target", "step9_observe_target")
-        self._log_all_targets("obs1 第2次 target")
+        self._place_descend_then_release(tgt, place_wrist, tag="step7")
 
-        # 10: obs1 粗选 target → 移到目标上方 40cm 重观测 → 垂直接近放置位
-        snap2 = self.tracker.get_snapshot()
-        rough_tgt = peek_target_track(
-            snap2,
-            self.target_queue,
-            shape_prefix_lock=self._cycle_shape_prefix,
-            preferred=self._cycle_planned_target,
+        self._last_place_wrist_deg = place_wrist
+        self._mark_queue_item_placed(tgt)
+        self._apply_speed_pi_default("step7_after_place")
+        log.info(
+            "step7 放置完成，队列待做 %d / 共 %d 项",
+            self._pending_queue_count(),
+            len(self.target_queue),
         )
-        if rough_tgt is None:
-            raise RuntimeError(
-                f"手中前缀 {self._cycle_shape_prefix!r}，obs1 无同形状 target，无法放置"
+        return True
+
+    def _obs2_check_more_work(self) -> bool:
+        """step8：回 obs2；队列非空且能 plan 则继续 5–8，否则结束内层循环。"""
+        pending = self._pending_queue_count()
+        if pending == 0:
+            log.info("step8: 队列无待做项，结束内层循环")
+            return False
+
+        s = self.settings
+        grip_open = not s.claw_open_for_place
+        from_wrist = float(self._last_place_wrist_deg)
+
+        self._go_obs2_joints(
+            from_wrist_deg=from_wrist,
+            grip_closed=grip_open,
+            tag="step8_after_place",
+        )
+        self._invalidate_camera_cache("step8_after_obs2_before_replan")
+
+        self._ensure_obs2_object_in_zone()
+        self._observe_stable("object", "step8_observe_object_replan")
+        self._discard_slot("object", "step8_discard_object_before_next_pick")
+
+        snap = self.tracker.get_snapshot()
+        pr = plan_pick(s, snap, self.target_queue)
+        if pr.ok and pr.object_slot is not None and pr.target_slot is not None:
+            log.info(
+                "step8: 待做 %d / 共 %d，可继续下一轮抓取（%s）",
+                pending,
+                len(self.target_queue),
+                pr.queued_target.shape_prefix if pr.queued_target else "?",
             )
-        if self._cycle_shape_prefix and shape_prefix(rough_tgt.class_id) != self._cycle_shape_prefix:
-            raise RuntimeError(
-                f"target 前缀不一致: want {self._cycle_shape_prefix}, got {rough_tgt.class_id}"
+            return True
+
+        log.info(
+            "step8: 待做 %d / 共 %d 但 plan_pick 失败（%s），结束内层循环",
+            pending,
+            len(self.target_queue),
+            pr.reason,
+        )
+        return False
+
+    def _turntable_step(self) -> None:
+        """队列本轮放完后：stepper 增量转动转盘。"""
+        s = self.settings
+        deg = float(s.turntable_stepper_deg)
+        self.speaker.send_stepper(deg, context="turntable_step")
+        settle = float(s.stepper_settle_s)
+        if settle > 0.0:
+            log.info("stepper 后等待 %.1fs", settle)
+            time.sleep(settle)
+
+    def run_one_cycle(self) -> None:
+        s = self.settings
+
+        self._cycle_reset()
+
+        self._setup_obs1_coarse_queue()
+
+        n_refine = min(int(s.max_refine_targets), len(self.target_queue))
+        self._refine_queue_hover(n_refine)
+
+        self._setup_obs2_for_plan()
+
+        self._apply_speed_pi_default("cycle_pi_default_speed")
+
+        pick_round = 0
+        while self._pending_queue_count() > 0:
+            pick_round += 1
+            log.info(
+                "内层循环 第 %d 轮，队列待做 %d / 共 %d 项",
+                pick_round,
+                self._pending_queue_count(),
+                len(self.target_queue),
             )
-        self._log_place(rough_tgt)
+            if not self._pick_place_one():
+                raise RuntimeError("step5–7 pick_place 失败")
+            if not self._obs2_check_more_work():
+                break
 
-        tgt = self._place_reobserve_at_hover(rough_tgt, "step10")
-        self._log_place(tgt)
+        self._turntable_step()
+        self._clear_target_queue_after_stepper()
 
-        place_wrist = self._wrist_place(tgt)
-        self._emit_claw(place_wrist, "step10_claw_before_place_descend")
-        self._pose_to(self._work_pose(tgt, "target"), "step10_target_pose", role="target")
-
-        self._pop_queue_after_place(tgt)
-
-        # 11: place claw + target wrist
-        sp.send_claw(
-            place_wrist, closed=not s.claw_open_for_place, context="step11_claw_place"
-        )
-        if s.claw_settle_after_place_s > 0:
-            time.sleep(s.claw_settle_after_place_s)
-
-        # 11b: 松爪后上抬 → 转腕 → 回 obs1（夹爪保持张开）
-        self._retreat_to_obs(
-            hold_wrist_deg=place_wrist,
-            grip_closed=not s.claw_open_for_place,
-            obs_axes=list(s.observe1_axes_rel_deg),
-            obs_wrist_deg=tw,
-            tag="step11b_after_place",
-        )
-
-        # 本轮 target/object 已用完，丢弃；下一轮必须再在 obs1/obs2 后重新获得
-        self._discard_slot("target", "step11_discard_target_after_place")
-        self._discard_slot("object", "step11_discard_object_after_place")
-
-        # 12: loop — caller runs run_forever
+        self._discard_slot("target", "cycle_end_discard_target")
+        self._discard_slot("object", "cycle_end_discard_object")
 
     def run_forever(self) -> None:
         single = os.environ.get("HEAD_SINGLE_CYCLE", "").lower() in ("1", "true", "yes")

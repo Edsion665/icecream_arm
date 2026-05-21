@@ -39,7 +39,7 @@ def build_target_queue(targets: List[TrackSlot], ref: Position) -> List[QueuedTa
     return out
 
 
-def _queued_to_track_slot(q: QueuedTarget) -> TrackSlot:
+def queued_to_track_slot(q: QueuedTarget) -> TrackSlot:
     return TrackSlot(
         role="target",
         class_id=q.class_id,
@@ -99,6 +99,8 @@ def plan_pick(
     min_conf = settings.min_object_confidence
 
     for q_item in queue:
+        if q_item.placed:
+            continue
         prefix = q_item.shape_prefix
         if not prefix:
             continue
@@ -106,7 +108,7 @@ def plan_pick(
         best_obj = _best_object_for_prefix(objs, ref, min_conf)
         if best_obj is None:
             continue
-        planned_tgt = _queued_to_track_slot(q_item)
+        planned_tgt = queued_to_track_slot(q_item)
         return PlanResult(
             ok=True,
             reason="",
@@ -162,6 +164,6 @@ def peek_target_track(
 
     for q in target_queue:
         if q.shape_prefix == shape_prefix_lock:
-            return _queued_to_track_slot(q)
+            return queued_to_track_slot(q)
 
     return None

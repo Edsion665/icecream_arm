@@ -8,7 +8,12 @@ import pytest
 
 from src.config import Settings
 from src.models import Position, QueuedTarget, SceneSnapshot, TrackSlot
-from src.planner import build_target_queue, peek_target_track, plan_pick
+from src.planner import (
+    build_target_queue,
+    peek_target_track,
+    plan_pick,
+    queued_to_track_slot,
+)
 
 
 def _slot(
@@ -153,3 +158,79 @@ def test_peek_target_track_preferred_disambiguation() -> None:
     )
     assert t is not None
     assert t.class_id == "Square_Pedestal_A"
+
+
+def test_queued_to_track_slot_uses_refined_queue_position() -> None:
+    q = QueuedTarget(
+        class_id="Square_Pedestal_A",
+        shape_prefix="Square",
+        position=Position(0.99, 0.88, 0.77),
+        wrist_yaw_deg=15.0,
+        label="ped",
+        refined=True,
+    )
+    t = queued_to_track_slot(q)
+    assert t.position.x == pytest.approx(0.99)
+    assert t.wrist_yaw_deg == pytest.approx(15.0)
+
+
+def test_plan_pick_skips_placed_uses_next() -> None:
+    settings = Settings()
+    queue = deque(
+        [
+            QueuedTarget(
+                class_id="Circle_Pedestal_Blue",
+                shape_prefix="Circle",
+                position=Position(0.0, 0.0, 0.0),
+                wrist_yaw_deg=0.0,
+                label="c",
+            ),
+            QueuedTarget(
+                class_id="Square_Pedestal_Blue",
+                shape_prefix="Square",
+                position=Position(0.1, 0.0, 0.0),
+                wrist_yaw_deg=0.0,
+                label="s",
+            ),
+        ]
+    )
+    queue[0].placed = True
+    snap = SceneSnapshot(
+        slots_by_role={
+            "object": [
+                _slot("object", "Square", "Square", 0.0, 0.0, 0.0),
+            ],
+        }
+    )
+    pr = plan_pick(settings, snap, queue)
+    assert pr.ok
+    assert pr.queued_target is not None
+    assert pr.queued_target.shape_prefix == "Square"
+
+
+def test_plan_pick_after_queue_head_popped_uses_next() -> None:
+    settings = Settings()
+    queue = deque(
+        [
+            QueuedTarget(
+                class_id="Trapezium_Pedestal_B",
+                shape_prefix="Trapezium",
+                position=Position(0.1, 0.0, 0.0),
+                wrist_yaw_deg=0.0,
+                label="t",
+            ),
+            QueuedTarget(
+                class_id="Square_Pedestal_A",
+                shape_prefix="Square",
+                position=Position(0.5, 0.0, 0.0),
+                wrist_yaw_deg=0.0,
+                label="s",
+            ),
+        ]
+    )
+    queue.popleft()
+    snap = _snap([], [_slot("object", "Square", 0.2)])
+    pr = plan_pick(settings, snap, queue)
+    assert pr.ok
+    assert pr.queued_target is not None
+    assert pr.queued_target.shape_prefix == "Square"
