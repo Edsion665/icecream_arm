@@ -28,7 +28,7 @@ class ReachSnapshot:
 
     def last_cmd_is_pose(self) -> bool:
         with self._lock:
-            return self._last_cmd_kind in ("pose", "pose_delta")
+            return self._last_cmd_kind in ("pose", "pose_seq", "pose_delta")
 
     def update(
         self,

@@ -65,13 +65,51 @@ class CalculatorEngine:
         state.q_pose_target_rad = q_tgt
         return True
 
+    def _build_pose_seq(self, xyz: np.ndarray, state: CalculatorState) -> bool:
+        """从当前关节角插值到 IK 目标，生成 25Hz 帧序列，写入 state.pose_seq_frames。
+        返回 False 表示 IK 失败。
+        """
+        if not self._pose_to_joints(xyz, state):
+            return False
+        q_target = state.q_calib_rad[:ARM_AXES] + np.deg2rad(state.joint_rel_deg_4)
+        q_start = state.q_full[:ARM_AXES].copy()
+        delta = q_target - q_start
+        dist = float(np.linalg.norm(delta))
+        # 按最大速度估算帧数（至少 1 帧）
+        max_speed = float(np.max(np.abs(state.arm_speed_rad_s[:ARM_AXES])))
+        if max_speed < 1e-6:
+            max_speed = 0.8
+        n_frames = max(1, int(np.ceil(dist / (max_speed * CONFIG.control_dt))))
+        frames = []
+        for i in range(1, n_frames + 1):
+            alpha = i / n_frames
+            q_i = q_start + alpha * delta
+            # j4 由 j2+j3 几何约束重算，保证末端竖直
+            q4c = float(Q4_OFFSET_RAD + Q4_Q23_COEFF * (q_i[1] + q_i[2]))
+            q4c = float(np.clip(q4c, IK_CONFIG.q4_safe_min, IK_CONFIG.q4_safe_max))
+            q_i[3] = q4c
+            rel_deg = np.rad2deg(q_i) - state.q_calib_deg[:ARM_AXES]
+            frames.append(rel_deg.copy())
+        state.pose_seq_frames = frames
+        state.joint_rel_deg_4 = np.rad2deg(q_start) - state.q_calib_deg[:ARM_AXES]
+        return True
+
     def apply_command(self, cmd: MotionCommand4Axis, state: CalculatorState) -> None:
         p = cmd.payload
+        if cmd.kind in ("pose", "pose_seq", "pose_delta", "joints", "joints_delta"):
+            state.pose_seq_frames = []
         if cmd.kind == "pose":
             xi, yi, zi = frontend_pose_to_internal_m(float(p["x"]), float(p["y"]), float(p["z"]))
             xyz = np.array([xi, yi, zi], dtype=float)
             if not self._pose_to_joints(xyz, state):
                 raise ValueError(f"pose IK failed for ({xi:.4f}, {yi:.4f}, {zi:.4f})")
+            state.pose_xyz = xyz
+            state.mode = MotionMode.JOINTS
+        elif cmd.kind == "pose_seq":
+            xi, yi, zi = frontend_pose_to_internal_m(float(p["x"]), float(p["y"]), float(p["z"]))
+            xyz = np.array([xi, yi, zi], dtype=float)
+            if not self._build_pose_seq(xyz, state):
+                raise ValueError(f"pose_seq IK failed for ({xi:.4f}, {yi:.4f}, {zi:.4f})")
             state.pose_xyz = xyz
             state.mode = MotionMode.JOINTS
         elif cmd.kind == "pose_delta":
@@ -106,7 +144,13 @@ class CalculatorEngine:
         if command is not None:
             self.apply_command(command, state)
 
-        self._mover.step(state, dt=dt)
+        # pose_seq 模式：逐帧消费序列，最后一帧保持；序列播放期间跳过 JointMover
+        if state.pose_seq_frames:
+            frame_rel = state.pose_seq_frames.pop(0)
+            state.joint_rel_deg_4 = frame_rel.copy()
+            state.q_full[:ARM_AXES] = state.q_calib_rad[:ARM_AXES] + np.deg2rad(frame_rel)
+        else:
+            self._mover.step(state, dt=dt)
 
         wrist_rad = state.wrist_joint_rad()
         state.q_full[4] = wrist_rad
@@ -140,6 +184,8 @@ class CalculatorEngine:
         joints_tol_deg: float = CONFIG.reached_joints_tol_deg,
     ) -> Tuple[bool, float]:
         """到位判定：``(reached, error)``；error 均为关节角度范数（度）。"""
+        if state.pose_seq_frames:
+            return False, float("inf")
         if fb_arm_rad is not None:
             q_actual = np.asarray(fb_arm_rad, dtype=float).ravel()[:ARM_AXES]
         else:
