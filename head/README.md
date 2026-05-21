@@ -4,7 +4,7 @@
 
 ## 文档
 
-- [doc/head2bridge.md](doc/head2bridge.md) — head → bridge（`joints` / `pose` / `claw`）
+- [doc/head2bridge.md](doc/head2bridge.md) — head → bridge（`joints` / `pose` / **`pose_seq`** / `claw`；§10 IK 双模式与 FSM 用法）
 - [doc/camera2head.md](doc/camera2head.md) — camera → head（`detection` v1.1）
 - [doc/pi2head.md](doc/pi2head.md) — 树莓派 → head（`start` / `ping`，放行 FSM）
 
@@ -26,15 +26,25 @@
 | 3 | `claw`（obs2 入口腕角）→ `joints` obs2 |
 | 4 | 在 **obs2** 后稳定观测 `object`（任一 object 连续 N 帧稳定即写入）→ 写入 object 槽 |
 | 5 | `plan`：按队列优先级在传送带找同前缀 `object`；目标位来自 obs1 队列，不要求 obs2 再看到 target |
-| 6–7 | `claw`（物体腕）→ `pose` 物体 → `claw` 抓取；抓取后 **丢弃 object 槽** |
-| 8 | 抓取夹紧后：`pose` **上抬**（默认 +10cm）→ `claw` 转腕 → `joints` 回 obs1 |
+| 6–7 | `claw`（物体腕）→ 笛卡尔到物体（默认 `send_pose`，竖直段建议 **`send_pose_seq`**）→ `claw` 抓取；抓取后 **丢弃 object 槽** |
+| 8 | 抓取夹紧后：`pose_delta` **上抬**（默认 +10cm）→ `claw` 转腕 → `joints` 回 obs1 |
 | 9 | 在 **obs1** 下再次稳定观测 `target`（放置用，须重新观测） |
-| 10–11 | obs1 粗选 → 真实目标**上方 60cm** 重观测（无 z/j1 偏置）→ 垂直到 **真实目标 + target_z_offset_m** → `claw` 释放 |
-| 11b | 放置松爪后：`pose` **上抬** → `claw` 转腕 → `joints` 回 obs1（夹爪保持张开） |
+| 10–11 | obs1 粗选 → 悬停重观测（`pose` 或 **`pose_seq`**）→ 放置工作高度（建议 **`pose_seq`**）→ `claw` 释放 |
+| 11b | 放置松爪后：`pose_delta` **上抬** → `claw` 转腕 → `joints` 回 obs1（夹爪保持张开） |
 | 11 末 | **丢弃** target/object 槽 |
 | 12 | 循环回（首） |
 
 **槽位语义**：`target` / `object` 均为用完即弃；**仅**在对应观测位（obs1 得 target、obs2 得 object）并经 `wait` + `clear` + `apply` 后的快照可用于本轮后续 `plan` / `pose`。
+
+### 笛卡尔 IK 双模式（head → bridge）
+
+| 模式 | `BridgeClient` | 何时用 |
+|---|---|---|
+| 单帧 `pose` | `send_pose` | 默认；`_pose_to()` 当前实现 |
+| 序列 `pose_seq` | `send_pose_seq` | 抓取/放置接近、悬停对准；j4 随 j2/j3 保持竖直 |
+| 增量 | `send_pose_delta` | step8/11b 上抬（`_pose_delta_to`） |
+
+选型与 FSM 改法见 **[doc/head2bridge.md §10](doc/head2bridge.md#10-head-逻辑如何调用-ik-双模式)**。终端联调示例见该文档 §7。
 
 **为何第二轮 step2 与 step3 同一时刻、像「直接去 obs2」**：ingestion 持续更新 `_last_frame`，槽位虽在每轮清空，**但** `wait_for_roles` 看的是缓存帧；若仍含上一轮的 `target`，等待会立刻通过。默认 **`require_fresh_detection_after_obs: true`**：每次 obs1 / obs2 / 抓取后回 obs1 的 **joints 到位后** 会丢弃该缓存，必须再收到 **新** 的 `POST /api/detection` 才会继续（与「在 obs1/obs2 再获得」一致）。联调单发一帧时可临时设 `false`。
 
@@ -73,7 +83,7 @@ cp config.example.yaml config.yaml
 PYTHONPATH=. python -m src.run --config config.yaml
 ```
 
-默认 **ingestion** 监听 `config.yaml` 中 `ingest_host:ingest_port`（示例 `0.0.0.0:8776`）。**bridge** 基址 `bridge_base_url`（示例 `http://127.0.0.1:8775`）。
+默认 **ingestion** 监听 `config.yaml` 中 `ingest_host:ingest_port`（示例 `0.0.0.0:8776`）。**bridge** 基址 `bridge_base_url`（须与 `arm_control_bridge` 的 HTTP 端口一致，nosim 常见 `http://127.0.0.1:8877`）。
 
 ## curl 联调
 

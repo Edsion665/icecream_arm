@@ -1,215 +1,223 @@
-# head2bridge API 规范（icecream 上位机 -> bridge，v1.0 / 与 arm v2.2 同形）
+# head2bridge API 规范（icecream 上位机 -> bridge，v1.1 / 与 arm v2.3 同形）
 
 - 文档状态：stable
-- 适用场景：icecream **head**（UI / 策略 / 脚本）向 **bridge**（如 `nosim_bridge`、`arm_control_bridge` 同类 listener）下达机械臂控制指令
-- 对端：bridge 进程（TCP/HTTP 监听）
-- 相关文档：本仓库 [`camera2head.md`](camera2head.md)；与 isaac-sim 侧 [`arm_control_bridge/doc/head2bridge.md`](../../../isaac-sim/arm_control_bridge/doc/head2bridge.md) 为**同源线格式**（便于同一套 curl 与字段语义）
+- 适用场景：icecream **head**（FSM / 脚本）向 **arm_control_bridge** 下达机械臂控制
+- 实现：`head/src/speaker.py`（`BridgeClient`）、`head/src/run.py`（`HeadFSM`）
+- 相关文档：[`camera2head.md`](camera2head.md)、[`pi2head.md`](pi2head.md)；bridge 侧详规 [`../../arm_control_bridge/doc/head2bridge.md`](../../arm_control_bridge/doc/head2bridge.md)
 
 ## 1. 范围（Scope）
 
-本文档定义上位机与 bridge 之间的**控制与响应**约定，包括：
+本文档定义 head 与 bridge 之间的**控制与响应**约定，并说明 head **如何选用笛卡尔 IK 双模式**。
 
-- TCP JSON 行协议（上行命令；笛卡尔命令支持下行到位反馈，与 arm v2.2 一致）
-- HTTP JSON API（`pose` / `pose_delta` 成功时可含实际位姿回传）
-- 6 维控制语义（4 电机 + 手腕 + 夹爪状态）
+包含：
 
-不包含：
+- TCP / HTTP JSON（与 arm_control_bridge 同源）
+- `BridgeClient.send_pose` / `send_pose_seq` / `send_pose_delta`
+- v3 FSM 中各步推荐用法
 
-- bridge 到下游设备的二进制 UDP / 串口细节（见各 bridge 仓库内 `bridge2pi` 等文档）
+不包含：bridge → Pi 的 UDP 帧（见 `arm_control_bridge` 内 `bridge2pi` 文档）。
 
 ## 2. 传输与端点
 
-**默认示例端口**（与 isaac `9888` / `8765` 错开，便于同机多服务；生产环境以启动参数为准）：
+**端口以实际启动为准**（同机多服务时常与示例错开）：
 
-### 2.1 TCP（JSON 行）
+| 链路 | 默认（示例） | 配置 |
+|---|---|---|
+| bridge HTTP | `http://127.0.0.1:8877` | `arm_control_bridge` → `CONFIG.web_test_port` |
+| head → bridge | 同上 | `head/config.yaml` → `bridge_base_url` |
+| bridge TCP | `0.0.0.0:9888` | bridge 监听端口 |
+| head ingestion | `0.0.0.0:8776` | `ingest_port` |
 
-- 默认监听：`0.0.0.0:9898`
-- 编码：UTF-8
-- 每行一条 JSON（`\n` 分隔）
-
-### 2.2 HTTP（JSON）
-
-- 默认服务：`127.0.0.1:8775`
-- 启用条件：由实现决定（例如 `--web-port > 0` 时监听 `8775`）
-- `Content-Type: application/json`
+`bridge_base_url` **必须与** bridge HTTP 基址一致，否则 `send_pose_seq` 等会 404 或连错服务。
 
 ## 3. 接口总览
 
-1. **关节信息接口（4 电机）**：`joints` / `joints_delta`
-2. **舵机信息接口（手腕 + 夹爪）**：`claw`
-3. **位置控制接口（笛卡尔）**：`pose` / `pose_delta`
-4. **其它**：`stop`（别名 `estop`/`halt`）、`ping`
+1. **关节（4 电机）**：`joints` / `joints_delta` → `send_joints`
+2. **手腕 + 夹爪**：`claw` → `send_claw`
+3. **笛卡尔（IK 双模式）**：`pose` / `pose_seq` / `pose_delta` → 见 §4、§10
+4. **其它**：`stop`、`ping`；idle 阶段周期 `joints` + `claw`
 
-## 4. 命令结构
+## 4. 笛卡尔 IK 双模式（协议层）
 
-### 4.1 通用请求体
+与 bridge 文档 §4.5 一致，head 侧通过 **不同 HTTP 路由 / `cmd`** 选择模式：
+
+| 模式 | bridge `cmd` | HTTP | `BridgeClient` 方法 | 行为摘要 |
+|---|---|---|---|---|
+| **1. 单帧** | `pose` | `POST /api/pose` | `send_pose(x,y,z)` | IK 一次 → 单帧目标 → Pi ramp |
+| **2. 序列** | `pose_seq` | `POST /api/pose_seq` | `send_pose_seq(x,y,z)` | PC 25Hz 插值，每帧 j4∝j2+j3 |
+| **增量** | `pose_delta` | `POST /api/pose_delta` | `send_pose_delta(dx,dy,dz)` | 在当前目标上增量，走**模式 1** |
+
+公共请求字段（`pose` / `pose_seq`）：`x`, `y`, `z`（m，与 `Position` / 相机 `robot_base` 一致）。
+
+成功且到位时，阻塞 POST 响应含 `actual_pose`（及 `reached` 等），`send_pose` 与 `send_pose_seq` **校验规则相同**（见 `speaker._require_blocking_reached`）。
+
+## 5. 命令结构（字段）
+
+### 5.1 通用
 
 | 字段 | 类型 | 必选 | 说明 |
 |---|---|---:|---|
-| `cmd` | string | 否 | 命令名，与 `type` 二选一 |
-| `type` | string | 否 | 命令名别名，与 `cmd` 二选一 |
+| `cmd` | string | 否 | 与 `type` 二选一 |
 
-约束：
+### 5.2 `joints` / `joints_delta` / `claw`
 
-- 命令名大小写不敏感。
-- `cmd`/`type` 都缺失：`missing_field: 缺少字段 cmd 或 type`。
+与 bridge 规范相同；`claw` 须 `wrist_deg` + `grip_state`/`open_close`（**0=合拢，1=张开**，与 bridge 一致）。
 
-### 4.2 关节信息接口：`joints`
+### 5.3 `pose` / `pose_seq` / `pose_delta`
 
-别名：`joint`、`axes`、`set_joints`
+见 §4；`pose_delta` 额外需要 `dx`, `dy`, `dz`。
 
-| 字段 | 类型 | 必选 | 单位 | 约束 |
-|---|---|---:|---|---|
-| `axes_rel_deg` | array[number] | 是 | deg | 长度必须为 4 |
+## 6. 请求与响应
 
-语义：直接更新 J1~J4 的相对标定角（绝对目标）。
+### 6.1 笛卡尔到位字段
 
-错误：长度非法 → `invalid_length: axes_rel_deg 必须长度 4`。
+| 字段 | 说明 |
+|---|---|
+| `actual_pose` | 到位后实测 `x/y/z`（m） |
+| `reached` | 是否判到位 |
+| `error_joints_deg` | 关节误差（度） |
 
-### 4.3 关节增量接口：`joints_delta`
+`pose_seq` 播放期间 bridge 对外 `reached: false`（`reach_reason: pose_seq_playing`），播完后与 `pose` 相同。
 
-别名：`delta_joints`、`axes_delta`
-
-| 字段 | 类型 | 必选 | 单位 | 约束 |
-|---|---|---:|---|---|
-| `deltas_rel_deg` | array[number] | 是 | deg | 长度必须为 4 |
-
-错误：长度非法 → `invalid_length: deltas_rel_deg 必须长度 4`。
-
-### 4.4 舵机信息接口：`claw`
-
-别名：`wrist`、`gripper`
-
-须同时提供：
-
-1. `wrist_deg`（手腕角度，单位度）
-2. 夹爪：`grip_state` 或 `open_close`，归一到 `0/1`（**`0=合拢`，`1=张开`**）
-
-缺字段：`missing_field: claw 需要 wrist_deg + (grip_state/open_close)`。
-
-### 4.5 位置控制接口：`pose` / `pose_delta`
-
-`pose`（别名：`set_pose`、`xyz`）
-
-| 字段 | 类型 | 必选 | 单位 |
-|---|---|---:|---|
-| `x` | number | 是 | m |
-| `y` | number | 是 | m |
-| `z` | number | 是 | m |
-
-`pose_delta`（别名：`delta_pose`、`nudge`）
-
-| 字段 | 类型 | 必选 | 单位 |
-|---|---|---:|---|
-| `dx` | number | 是 | m |
-| `dy` | number | 是 | m |
-| `dz` | number | 是 | m |
-
-**到达确认（与 arm v2.2 一致）**：`pose` / `pose_delta` 成功且判定到位时，响应须携带 `actual_pose`（及可选 `reached`、`error_pose_m`）。详见 §5。
-
-### 4.6 其他命令
-
-- `stop`：实现可仅记录，不保证硬停。
-- `ping`：连通性检查。
-
-## 5. 请求与响应
-
-### 5.1 到达反馈字段（笛卡尔）
-
-| 字段 | 类型 | 出现时机 | 说明 |
-|---|---|---|---|
-| `actual_pose` | object | `ok: true` 且笛卡尔运动完成 | `x`/`y`/`z`，单位 **m** |
-| `reached` | boolean | 可选 | 判定已到达目标 |
-| `error_pose_m` | number | 可选 | 位置误差范数（m） |
-
-约定：`pose` / `pose_delta` 成功路径应返回 `actual_pose`；失败为 `ok: false` 与 `error`。
-
-### 5.2 TCP
-
-- 输入：每行一条 JSON。
-- 输出：对 `pose` / `pose_delta`，到位后可下行一行 JSON，语义与 HTTP 成功体一致。
-
-### 5.3 HTTP
-
-路由映射：
+### 6.2 HTTP 路由
 
 - `POST /api/pose` → `cmd=pose`
+- `POST /api/pose_seq` → `cmd=pose_seq`
 - `POST /api/pose_delta` → `cmd=pose_delta`
-- `POST /api/joints` → `cmd=joints`
-- `POST /api/joints_delta` → `cmd=joints_delta`
-- `POST /api/claw` → `cmd=claw`
+- `POST /api/joints` · `/api/joints_delta` · `/api/claw`
+- `GET /api/reached` → 轮询快照（`poll_reached`，一般由 bridge 阻塞 POST 代替）
 
-笛卡尔成功示例：
+## 7. curl 联调（不经过 head）
 
-```json
-{
-  "ok": true,
-  "reached": true,
-  "actual_pose": {"x": 0.349, "y": 0.201, "z": 0.248},
-  "error_pose_m": 0.002
-}
-```
-
-其它命令成功：`{"ok": true}`
-
-失败：`{"ok": false, "error": "错误描述"}`
-
-## 6. 错误模型
-
-| 场景 | HTTP | 错误字符串示例 |
-|---|---:|---|
-| JSON 解析失败 | 400 | `invalid json` |
-| 缺少 `cmd/type` | 400 | `missing_field: 缺少字段 cmd 或 type` |
-| 数组长度非法 | 400 | `invalid_length: axes_rel_deg 必须长度 4` |
-| 夹爪值非法 | 400 | `invalid_value: grip_state 必须为 0/1` |
-| 未知命令 | 400 | `unknown_cmd: xxx` |
-
-说明：TCP 路径中的错误可记录并丢弃当前行，不中断服务。
-
-## 7. curl 联调示例
-
-以下假定 HTTP 监听 `127.0.0.1:8775`（按实际端口替换）。
+假定 bridge HTTP 为 `127.0.0.1:8877`：
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8775/api/joints \
-  -H 'Content-Type: application/json' \
-  -d '{"cmd":"joints","axes_rel_deg":[0,10,-90,-70]}'
-```
-
-```bash
-curl -sS -X POST http://127.0.0.1:8775/api/joints_delta \
-  -H 'Content-Type: application/json' \
-  -d '{"cmd":"joints_delta","deltas_rel_deg":[0,0,2,-1]}'
-```
-
-```bash
-curl -sS -X POST http://127.0.0.1:8775/api/claw \
-  -H 'Content-Type: application/json' \
-  -d '{"cmd":"claw","wrist_deg":20,"open_close":"close"}'
-```
-
-```bash
-curl -sS -X POST http://127.0.0.1:8775/api/pose \
+# 模式 1
+curl -sS -X POST http://127.0.0.1:8877/api/pose \
   -H 'Content-Type: application/json' \
   -d '{"cmd":"pose","x":0.35,"y":0.20,"z":0.25}'
-```
 
-```bash
-curl -sS -X POST http://127.0.0.1:8775/api/pose_delta \
+# 模式 2（竖直约束序列）
+curl -sS -X POST http://127.0.0.1:8877/api/pose_seq \
   -H 'Content-Type: application/json' \
-  -d '{"cmd":"pose_delta","dx":0,"dy":0,"dz":-0.01}'
+  -d '{"cmd":"pose_seq","x":0.35,"y":0.20,"z":0.25}'
+
+# 上抬 10cm（模式 1 增量）
+curl -sS -X POST http://127.0.0.1:8877/api/pose_delta \
+  -H 'Content-Type: application/json' \
+  -d '{"cmd":"pose_delta","dx":0,"dy":0,"dz":0.10}'
 ```
 
-## 8. TCP 最小联调（每行一条 JSON）
+## 8. TCP 最小联调
 
 ```json
-{"cmd":"joints","axes_rel_deg":[0,10,-90,-70]}
-{"cmd":"joints_delta","deltas_rel_deg":[0,0,2,-1]}
-{"cmd":"claw","wrist_deg":20,"open_close":"close"}
 {"cmd":"pose","x":0.35,"y":0.20,"z":0.25}
+{"cmd":"pose_seq","x":0.35,"y":0.20,"z":0.25}
+{"cmd":"pose_delta","dx":0,"dy":0,"dz":0.10}
 ```
 
-## 9. 交叉引用
+## 9. 错误模型
 
-- 感知上报（相机 → head）：[`camera2head.md`](camera2head.md)
-- isaac-sim 同源规范：仓库根下 `isaac-sim/arm_control_bridge/doc/head2bridge.md`（与上文相对链接一致）
+与 bridge 一致：`400` + `error` 字符串；运动超时 `408`；`error: superseded` 表示被新命令抢占。
+
+## 10. head 逻辑：如何调用 IK 双模式
+
+### 10.1 代码入口
+
+```
+head/src/run.py          HeadFSM._pose_to / _pose_delta_to
+        ↓
+head/src/speaker.py      BridgeClient.send_pose | send_pose_seq | send_pose_delta
+        ↓ HTTP
+arm_control_bridge       engine: pose 单帧 IK | pose_seq 序列 | pose_delta
+```
+
+**当前默认**：`_pose_to()` → `send_pose()`（模式 1）。  
+**竖直段**：改为 `send_pose_seq()` 或给 `_pose_to(..., vertical=True)`（见 §10.3）。
+
+### 10.2 终端直接测 `send_pose_seq`（与 FSM 相同客户端）
+
+```bash
+cd /path/to/icecreamarm/head
+PYTHONPATH=. python3 -c "
+from src.config import load_settings
+from src.speaker import BridgeClient
+s = load_settings('config.yaml')
+sp = BridgeClient(s)
+rep = sp.send_pose_seq(0.35, 0.20, 0.25, context='pick_vertical')
+print('ok=', rep.ok, 'body=', rep.body)
+"
+```
+
+`context` 只出现在 head 日志，不进 JSON body。
+
+### 10.3 v3 FSM 步骤与推荐模式
+
+| 代码位置 | 标签示例 | 现实现 | 推荐 |
+|---|---|---|---|
+| `_pose_to` → step6 物体位 | `step6_object_pose` | `send_pose` | **`send_pose_seq`** |
+| `_pose_to` → step10 放置位 | `step10_target_pose` | `send_pose` | **`send_pose_seq`** |
+| `_place_reobserve_at_hover` | `*_goto_hover` | `send_pose` | **`send_pose_seq`**（竖直要求高时） |
+| `_pose_delta_to` → step8/11b 上抬 | `*_retreat_lift` | `send_pose_delta` | 保持（短 Z 向） |
+| step1/3 `joints`、idle | — | `send_joints` | 不涉及 IK 模式 |
+
+**原则**：
+
+- 需要 **j2/j3/j4 同步、末端竖直** 的笛卡尔接近 → `send_pose_seq`
+- 已接近目标后的 **纯上抬 / 小增量** → `send_pose_delta`（内部单帧 IK）
+- 粗调、待命、竖直要求低 → `send_pose`
+
+### 10.4 在 FSM 中接入（示例）
+
+**方式 A — 按步骤显式调用**（改动最小）：
+
+```python
+# step6 抓取接近
+self.speaker.send_pose_seq(
+    work.x, work.y, work.z, context="step6_object_pose"
+)
+```
+
+**方式 B — 扩展 `_pose_to` 统一入口**（推荐长期维护）：
+
+```python
+def _pose_to(self, pos: Position, label: str, *, role: Role, vertical: bool = False) -> None:
+    if vertical:
+        self.speaker.send_pose_seq(pos.x, pos.y, pos.z, context=label)
+    else:
+        self.speaker.send_pose(pos.x, pos.y, pos.z, context=label)
+```
+
+调用处：
+
+```python
+self._pose_to(self._work_pose(obj, "object"), "step6_object_pose", role="object", vertical=True)
+self._pose_to(self._work_pose(tgt, "target"), "step10_target_pose", role="target", vertical=True)
+```
+
+上抬**不要**改成 `pose_seq`，继续：
+
+```python
+self._pose_delta_to(0.0, 0.0, self.settings.retreat_lift_m, "step8_retreat_lift")
+```
+
+### 10.5 与其它 head 行为的关系
+
+- **`send_claw` / `send_joints`**：与 IK 模式独立；仍须在 `pose` / `pose_seq` 前后按 FSM 顺序调用。
+- **`state_timeout_s`**：对 `send_pose_seq` 同样生效（序列更长时可能需加大超时）。
+- **`require_bridge_feedback`**：两种笛卡尔模式均要求 Pi UDP 反馈才判 `ok`。
+- **命令抢占**：FSM 下发新 `pose`/`pose_seq`/`joints` 会清空 bridge 未播完的 `pose_seq` 队列。
+
+### 10.6 联调检查清单
+
+1. bridge 已启动且 `web_test_port > 0`（日志中有 HTTP URL）。
+2. `config.yaml` 的 `bridge_base_url` 与 bridge 端口一致。
+3. §7 `curl` 测通 `pose_seq` 后，再改 FSM 或 §10.2 脚本。
+4. 真机确认 `pi2camera` UDP 反馈，否则 `require_bridge_feedback` 会报错。
+
+## 11. 交叉引用
+
+- 感知：[`camera2head.md`](camera2head.md)
+- 放行 FSM：[`pi2head.md`](pi2head.md)
+- FSM 步骤表：[`../README.md`](../README.md)
+- bridge 协议与 bridge 侧 head 集成：[`../../arm_control_bridge/doc/head2bridge.md`](../../arm_control_bridge/doc/head2bridge.md)

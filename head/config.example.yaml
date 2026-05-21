@@ -1,6 +1,7 @@
 # Copy to config.yaml and adjust. Paths relative to cwd when starting.
 
-bridge_base_url: "http://127.0.0.1:8775"
+# 须与 arm_control_bridge CONFIG.web_test_port 一致（nosim 默认 8877）
+bridge_base_url: "http://127.0.0.1:8877"
 ingest_host: "0.0.0.0"
 ingest_port: 8776
 # Optional TCP JSON lines (camera2head §2.1); set null to disable
@@ -58,6 +59,7 @@ obs2_entry_wrist_deg: 0.0
 # 抓取/放置 claw：wrist_cmd = wrist_cam − (J1(x,y) − observe*_axes_rel_deg[0])，J1 与 bridge IK 一致
 # Extra claw POST on every micro-transition (joints/pose/plan boundaries)
 emit_claw_on_every_transition: false
+# 笛卡尔 IK：FSM 中 _pose_to 默认 send_pose；竖直段在 run.py 改用 send_pose_seq（见 doc/head2bridge.md §10）
 # BridgeClient initial grip: true=张开 → 下发 grip_state=1；false=合拢 → grip_state=0
 initial_grip_open: true
 # 每次 obs1 / obs2 / 抓取后回 obs1 的关节到位后清空相机缓存帧；wait 必须收到**新** ingest 才继续（避免上一轮 _last_frame 让 step2 与 step3 同一时刻触发）

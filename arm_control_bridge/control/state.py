@@ -59,6 +59,8 @@ class CalculatorState:
     initialized: bool = False
     # pose 命令经 IK 解算后的目标关节角（rad），供 is_reached 判定使用
     q_pose_target_rad: Optional[np.ndarray] = None
+    # pose_seq 模式：待发送的关节角序列（每帧 arm_rel_deg_4，度，相对标定）
+    pose_seq_frames: list = field(default_factory=list)
 
     def wrist_joint_rad(self) -> float:
         """手腕舵机角（弧度，含标定）：与 ``wrist_rel_deg`` / UDP ``p_rel_deg[4]`` 一致。"""
@@ -86,6 +88,7 @@ class CalculatorState:
         self.q_full[4] = float(self.q5_fixed_rad)
         self.q_cmd[:NUM_JOINTS] = self.q_full[:NUM_JOINTS].copy()
         self.mode = MotionMode.JOINTS
+        self.pose_seq_frames = []
         self.initialized = True
 
     def sync_from_articulation_rad(self, q_joint_rad: np.ndarray, n_dof: int) -> None:

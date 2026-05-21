@@ -149,6 +149,11 @@ class CommandNormalizer:
                 if key not in obj:
                     raise ValueError(f"missing_field: pose 缺少 {key}")
             return MotionCommand4Axis(kind="pose", payload=obj)
+        if k in ("pose_seq",):
+            for key in ("x", "y", "z"):
+                if key not in obj:
+                    raise ValueError(f"missing_field: pose_seq 缺少 {key}")
+            return MotionCommand4Axis(kind="pose_seq", payload=obj)
         if k in ("pose_delta", "delta_pose", "nudge"):
             for key in ("dx", "dy", "dz"):
                 if key not in obj:
@@ -452,6 +457,7 @@ def start_http_server(
             path = self.path.split("?")[0]
             routes = {
                 "/api/pose": "pose",
+                "/api/pose_seq": "pose_seq",
                 "/api/pose_delta": "pose_delta",
                 "/api/joints": "joints",
                 "/api/joints_delta": "joints_delta",

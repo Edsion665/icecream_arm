@@ -94,6 +94,23 @@ def _update_reach_snapshot(
     """每周期刷新到位快照（pi2camera 反馈角 vs 设定角，见 ``PiFeedbackClient``）。"""
     import numpy as np
 
+    if state.pose_seq_frames:
+        reach_meta = {
+            "feedback_available": False,
+            "reach_source": "pose_seq_playing",
+            "reach_reason": "pose_seq_playing",
+        }
+        reach_meta["commanded_rel_deg"] = [
+            round(float(x), 3) for x in np.asarray(state.joint_rel_deg_4, dtype=float).ravel()[:4]
+        ]
+        snapshot.update(
+            mode=state.mode.value,
+            reached_now=False,
+            error_joints_deg=float("inf"),
+            reach_meta=reach_meta,
+        )
+        return False, float("inf")
+
     reach_meta: dict = {}
     if pi_fb is not None:
         reached, err, reach_meta = pi_fb.compute_arm_reached(state.joint_rel_deg_4)

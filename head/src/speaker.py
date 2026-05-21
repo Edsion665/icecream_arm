@@ -22,7 +22,12 @@ class BridgeReply:
 
 
 class BridgeClient:
-    """HTTP client for head2bridge (joints / pose / claw)."""
+    """HTTP client for head2bridge (joints / pose / claw).
+
+    笛卡尔 IK 两种模式（互斥，按场景选用）：
+    - ``send_pose``：单帧目标角，由 Pi ramp 跟踪；延迟低，j2/j3/j4 可能不同步。
+    - ``send_pose_seq``：PC 按 bridge 控制频率（默认 25Hz）逐帧下发，j4 随 j2/j3 几何约束同步。
+    """
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -193,6 +198,15 @@ class BridgeClient:
         if mode is not None and mode != "joints":
             return False
         return self._reached_with_feedback(reply)
+
+    def send_pose_seq(self, x: float, y: float, z: float, *, context: str = "") -> BridgeReply:
+        """发送 pose_seq 命令：bridge 侧按 25Hz 序列插值下发，j4 由 j2/j3 几何约束同步。
+        接口与 send_pose 完全一致，阻塞至序列播完并到位。
+        """
+        label = context or "pose_seq"
+        log.debug("bridge POST /api/pose_seq (%s) x=%.4f y=%.4f z=%.4f", label, x, y, z)
+        rep = self._post("/api/pose_seq", {"cmd": "pose_seq", "x": x, "y": y, "z": z})
+        return self._require_blocking_reached(rep, label, expect_pose=True)
 
     def send_pose(self, x: float, y: float, z: float, *, context: str = "") -> BridgeReply:
         label = context or "pose"
