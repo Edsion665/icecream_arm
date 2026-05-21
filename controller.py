@@ -138,7 +138,13 @@ class ArmController:
         return [float(v) for v in self._last_ramp_vmax_rad_s]
 
     def _tracking_ramp_vmax_rad_s(self) -> tuple[float, float, float, float]:
-        """跟踪时 cmd_p 向 UDP 目标靠拢的每轴最大角速度 (rad/s)。"""
+        """跟踪时 cmd_p 向 UDP 目标靠拢的每轴最大角速度 (rad/s)。
+        若 UDP omega_rad_s[0:4] 任一轴非零，则用 UDP 值覆盖 config 默认值。
+        """
+        if self._udp_latch_omega is not None:
+            udp_v = self._udp_latch_omega[:4]
+            if any(float(v) > 0 for v in udp_v):
+                return tuple(max(1e-4, abs(float(v))) for v in udp_v)
         return tuple(max(1e-4, float(v)) for v in self._cfg.max_cmd_speed_rad_s)
 
     def _apply_tracking_ramp(

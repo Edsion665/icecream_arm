@@ -152,7 +152,7 @@ class ControlConfig:
         _env_float("ARM_CONTROL_CAL_R0", 2.055016),
         _env_float("ARM_CONTROL_CAL_R1", 3.6232),
         _env_float("ARM_CONTROL_CAL_R2", -4.1500),
-        _env_float("ARM_CONTROL_CAL_R3", 3.4896),
+        _env_float("ARM_CONTROL_CAL_R3", 0.378),
     )
     
     hold_kp: tuple[float, float, float, float] = (
@@ -176,7 +176,7 @@ class ControlConfig:
         _env_float("ARM_CONTROL_HOLD_KD_4", 2.0),
     )
 
-    # hold_kd: tuple[float, float, float, float] = (
+    # hold_kd: tuple[float, float, float, foat] = (
     #     _env_float("ARM_CONTROL_HOLD_KD_1", 1.0),
     #     _env_float("ARM_CONTROL_HOLD_KD_2", 3.0),
     #     _env_float("ARM_CONTROL_HOLD_KD_3", 1.0),
@@ -197,7 +197,7 @@ class ControlConfig:
         max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M1", 0.8)),
         max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M2", 0.6)),
         max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M3", 0.8)),
-        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M4", 0.8)),
+        max(1e-4, _env_float("ARM_CONTROL_MAX_SPEED_M4", 1.5)),
     )
     # 启动安全门：在收到首帧 UDP 后，先冻结后续 UDP 输入，按限速从当前位姿追到首帧目标，
     # 到达后再恢复正常 UDP 逐帧跟踪，以避免“晚启动+首帧跳变”带来的突变风险。
