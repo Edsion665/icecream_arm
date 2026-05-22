@@ -31,9 +31,60 @@ def strip_role_z_offset(pos: Position, role: Role, settings: Settings) -> Positi
     return Position(pos.x, pos.y, pos.z - dz)
 
 
+def work_pose_from_camera(pos: Position, role: Role, settings: Settings) -> Position:
+    """相机真实坐标 → bridge 工作高度（真实 z + role_z_offset_m）。
+
+    用于 step3 抑制 z 抬升期间的 ingest：slot 内为 z_req，须显式加偏置后再入队。
+    """
+    return apply_role_z_offset(pos, role, settings)
+
+
 def work_pose_for_role(pos: Position, role: Role, settings: Settings) -> Position:
-    """抓取/放置到位：真实目标 xy,z + role_z_offset_m（仅一层工作高度偏置）。"""
+    """抓取/放置到位：真实 z + role_z_offset_m。
+
+    约定队列 / 正常 ingest 的 slot 已含 role z 偏置；先 strip 再 apply 得到同一工作高度。
+    """
     return apply_role_z_offset(strip_role_z_offset(pos, role, settings), role, settings)
+
+
+def object_pick_hover_and_work(
+    pos: Position, settings: Settings
+) -> tuple[Position, Position]:
+    """object step5：预接近 z、夹取 z（固定高度，xy 来自感知）。"""
+    x, y = float(pos.x), float(pos.y)
+    return (
+        Position(x, y, float(settings.object_pick_hover_z_m)),
+        Position(x, y, float(settings.object_pick_work_z_m)),
+    )
+
+
+def target_place_hover_and_work(
+    pos: Position, settings: Settings
+) -> tuple[Position, Position]:
+    """target step7：预接近 z、放置 z（固定高度，xy 来自队列/感知）。"""
+    x, y = float(pos.x), float(pos.y)
+    return (
+        Position(x, y, float(settings.target_place_hover_z_m)),
+        Position(x, y, float(settings.target_place_work_z_m)),
+    )
+
+
+def target_refine_hover_pose(pos: Position, settings: Settings) -> Position:
+    """target step3：正上方精观测位 z（固定 0.5 m 等，xy 来自粗观测）。"""
+    return Position(
+        float(pos.x),
+        float(pos.y),
+        float(settings.target_refine_hover_z_m),
+    )
+
+
+def target_queue_pose_after_refine(cam: Position, settings: Settings) -> Position:
+    """step3 写回队列：xy 用精观测，z 用固定放置工作高度。"""
+    return Position(
+        float(cam.x),
+        float(cam.y),
+        float(settings.target_place_work_z_m),
+    )
 
 
 def j1_deg_from_xy(x: float, y: float) -> float:

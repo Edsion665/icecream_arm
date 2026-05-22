@@ -49,10 +49,16 @@ claw_open_for_place: true
 claw_settle_after_pick_s: 2.0
 claw_settle_after_place_s: 2.0
 # 抓取/放置后：先上抬（米，默认 10cm）→ 转腕 → 关节回观测位
-# step3 目标正上方精观测（米）
-place_reobserve_hover_m: 0.6
+# 运动固定 z（米）；xy 仍来自感知
+target_refine_hover_z_m: 0.5
+object_pick_hover_z_m: 0.35
+object_pick_work_z_m: 0.25
+target_place_hover_z_m: 0.25
+target_place_work_z_m: 0.15
 max_refine_targets: 3
 hover_refine_observe_timeout_s: 10.0
+# step3 精观测：悬停与观测期间夹爪腕角（度）；0 便于相机标定 wrist_yaw_deg
+hover_refine_claw_wrist_deg: 0.0
 turntable_stepper_deg: 90.0
 stepper_settle_s: 0
 retreat_lift_m: 0.1

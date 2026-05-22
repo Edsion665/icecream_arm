@@ -10,10 +10,11 @@ from typing import Deque
 
 from src.conveyor_obs import object_in_pick_zone
 from src.coordinates import (
-    strip_role_z_offset,
-    work_pose_for_role,
+    object_pick_hover_and_work,
+    target_place_hover_and_work,
+    target_queue_pose_after_refine,
+    target_refine_hover_pose,
     wrist_deg_for_object,
-    wrist_deg_for_target,
     wrist_j1_bias_deg,
 )
 from src.config import Settings, load_settings
@@ -81,11 +82,12 @@ class HeadFSM:
     def _work_hover_and_pose(
         self, slot: TrackSlot, role: Role
     ) -> tuple[Position, Position]:
-        """工作位与上方预接近点（+approach_hover_m）。"""
-        work = self._work_pose(slot, role)
-        h = float(self.settings.approach_hover_m)
-        hover = Position(work.x, work.y, work.z + h)
-        return hover, work
+        """预接近与工作位：xy 来自 slot，z 为配置固定高度（米）。"""
+        if role == "object":
+            return object_pick_hover_and_work(slot.position, self.settings)
+        if role == "target":
+            return target_place_hover_and_work(slot.position, self.settings)
+        raise ValueError(f"unsupported role for pick/place: {role}")
 
     def _pose_seq_to(self, pos: Position, label: str) -> None:
         """笛卡尔目标：bridge ``pose_seq``（25Hz 关节序列，末端竖直）。"""
@@ -109,14 +111,14 @@ class HeadFSM:
         """
         s = self.settings
         hover, work = self._work_hover_and_pose(slot, role)
-        h = float(self.settings.approach_hover_m)
         log.info(
-            "%s: 预接近 上方+%.3fm → (%.3f,%.3f,%.3f) 再 pose_seq 下降 (%.3f,%.3f,%.3f) | 夹爪=%s",
+            "%s: 预接近 z=%.3f → (%.3f,%.3f,%.3f) 再 pose_seq 下降 z=%.3f (%.3f,%.3f,%.3f) | 夹爪=%s",
             tag,
-            h,
+            hover.z,
             hover.x,
             hover.y,
             hover.z,
+            work.z,
             work.x,
             work.y,
             work.z,
@@ -167,10 +169,6 @@ class HeadFSM:
         if s.claw_settle_after_place_s > 0:
             time.sleep(s.claw_settle_after_place_s)
 
-    def _work_pose(self, slot: TrackSlot, role: Role) -> Position:
-        """抓取/放置到位高度：真实目标 + role_z_offset_m。"""
-        return work_pose_for_role(slot.position, role, self.settings)
-
     @staticmethod
     def _is_hover_refine_ik_failure(exc: BaseException) -> bool:
         msg = str(exc).lower()
@@ -208,33 +206,28 @@ class HeadFSM:
         preferred: TrackSlot,
     ) -> TrackSlot | None:
         """正上方精观测；IK 失败或超时无 target 时返回 None（调用方删队列项）。"""
-        hover_m = float(self.settings.place_reobserve_hover_m)
         obs_timeout = float(self.settings.hover_refine_observe_timeout_s)
-        raw_pos = strip_role_z_offset(rough_tgt.position, "target", self.settings)
-        hover_pos = Position(raw_pos.x, raw_pos.y, raw_pos.z + hover_m)
-        work_pos = self._work_pose(rough_tgt, "target")
-        wrist = float(rough_tgt.wrist_yaw_deg)
+        s = self.settings
+        hover_pos = target_refine_hover_pose(rough_tgt.position, s)
+        _, work_pos = target_place_hover_and_work(rough_tgt.position, s)
+        wrist_observe = float(s.hover_refine_claw_wrist_deg)
         log.info(
-            "%s: 正上方观测 真实目标上方+%.3f m | slot=%.3f,%.3f,%.3f raw=%.3f,%.3f,%.3f "
-            "hover=%.3f,%.3f,%.3f 放置工作高=%.3f,%.3f,%.3f wrist_cam=%.1f timeout=%.1fs",
+            "%s: 正上方精观测 z=%.3f (%.3f,%.3f,%.3f) 放置固定 z_work=%.3f "
+            "粗观测slot=(%.3f,%.3f,%.3f) wrist_cam=%.1f 精观测夹爪腕角=%.1f timeout=%.1fs",
             label,
-            hover_m,
-            rough_tgt.position.x,
-            rough_tgt.position.y,
-            rough_tgt.position.z,
-            raw_pos.x,
-            raw_pos.y,
-            raw_pos.z,
+            hover_pos.z,
             hover_pos.x,
             hover_pos.y,
             hover_pos.z,
-            work_pos.x,
-            work_pos.y,
             work_pos.z,
-            wrist,
+            rough_tgt.position.x,
+            rough_tgt.position.y,
+            rough_tgt.position.z,
+            float(rough_tgt.wrist_yaw_deg),
+            wrist_observe,
             obs_timeout,
         )
-        self._emit_claw(wrist, f"{label}_claw_before_hover")
+        self._emit_claw(wrist_observe, f"{label}_claw_before_hover")
         try:
             self._pose_to(hover_pos, f"{label}_goto_hover", role="target")
         except RuntimeError as exc:
@@ -242,6 +235,7 @@ class HeadFSM:
                 log.warning("%s: 悬停位 IK 失败，跳过队列项 %s", label, rough_tgt.class_id)
                 return None
             raise
+        self._emit_claw(wrist_observe, f"{label}_claw_at_hover_for_observe")
         self._invalidate_camera_cache(f"{label}_after_hover_before_observe")
         self.tracker.set_role_z_offset_suppressed("target", True)
         try:
@@ -308,16 +302,20 @@ class HeadFSM:
                     reason="hover_observe_timeout_or_ik_failed",
                 )
                 continue
-            q.position = refined.position
+            cam = refined.position
+            q.position = target_queue_pose_after_refine(cam, self.settings)
             q.wrist_yaw_deg = refined.wrist_yaw_deg
             q.refined = True
             log.info(
-                "step3[%d] 已写回队列 %s refined pos=(%.3f,%.3f,%.3f)",
+                "step3[%d] 已写回队列 %s camera_xy=(%.3f,%.3f) camera_z=%.3f "
+                "queue_z=%.3f wrist_cam=%.1f",
                 i,
                 q.class_id,
-                q.position.x,
-                q.position.y,
+                cam.x,
+                cam.y,
+                cam.z,
                 q.position.z,
+                q.wrist_yaw_deg,
             )
 
     def _pose_delta_to(self, dx: float, dy: float, dz: float, label: str) -> None:
@@ -476,7 +474,8 @@ class HeadFSM:
         return wrist_deg_for_object(slot.wrist_yaw_deg, slot.position, self.settings)
 
     def _wrist_place(self, slot: TrackSlot) -> float:
-        return wrist_deg_for_target(slot.wrist_yaw_deg, slot.position, self.settings)
+        """放置：直接使用精观测写回的 wrist_cam，不做 J1 补偿。"""
+        return float(slot.wrist_yaw_deg)
 
     def _log_all_targets(self, title: str) -> None:
         snap = self.tracker.get_snapshot()
@@ -507,13 +506,9 @@ class HeadFSM:
         )
 
     def _log_place(self, tgt: TrackSlot) -> None:
-        s = self.settings
-        j1_obs = float(s.observe1_axes_rel_deg[0])
-        bias = wrist_j1_bias_deg(tgt.position.x, tgt.position.y, j1_obs)
         log.info(
-            "放置 %s j1_bias=%.1f wrist_cmd=%.1f",
+            "放置 %s wrist_cmd=wrist_cam=%.1f（无 J1 补偿）",
             self._fmt_slot_pos(tgt),
-            bias,
             self._wrist_place(tgt),
         )
 

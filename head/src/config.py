@@ -67,12 +67,22 @@ class Settings:
     # 步7 夹紧 / 步11 松开成功后，再等待若干秒再进入后续关节运动，避免夹爪未到位就抬臂
     claw_settle_after_pick_s: float = 1.0
     claw_settle_after_place_s: float = 1.0
-    # step3：目标正上方精观测高度（米）；与 target_z_offset_m 无关
+    # step3：目标正上方精观测 z（米，固定；xy 仍来自感知）
+    target_refine_hover_z_m: float = 0.5
+    # object step5：预接近 / 夹取固定 z（米）
+    object_pick_hover_z_m: float = 0.35
+    object_pick_work_z_m: float = 0.25
+    # target step7：预接近 / 放置固定 z（米）
+    target_place_hover_z_m: float = 0.25
+    target_place_work_z_m: float = 0.15
+    # 已废弃：运动 z 见上列 fixed_*；保留字段避免旧 yaml 报错
     place_reobserve_hover_m: float = 0.6
     # step3：对粗观测队列前 N 项做正上方精观测并写回队列
     max_refine_targets: int = 3
     # step3 正上方观测：该秒数内无稳定 target 则从队列删除该项
     hover_refine_observe_timeout_s: float = 10.0
+    # step3 精观测：悬停与观测期间夹爪腕角（度）；0 便于相机标定 wrist_yaw_deg
+    hover_refine_claw_wrist_deg: float = 0.0
     # 本轮队列全部放置后：转盘步进增量角（deg，bridge stepper 语义）
     turntable_stepper_deg: float = 90.0
     stepper_settle_s: float = 0.0
@@ -195,6 +205,11 @@ def load_settings(path: str | Path) -> Settings:
         initial_grip_open=bool(raw.get("initial_grip_open", True)),
         claw_settle_after_pick_s=float(raw.get("claw_settle_after_pick_s", 1.0)),
         claw_settle_after_place_s=float(raw.get("claw_settle_after_place_s", 1.0)),
+        target_refine_hover_z_m=float(raw.get("target_refine_hover_z_m", 0.5)),
+        object_pick_hover_z_m=float(raw.get("object_pick_hover_z_m", 0.35)),
+        object_pick_work_z_m=float(raw.get("object_pick_work_z_m", 0.25)),
+        target_place_hover_z_m=float(raw.get("target_place_hover_z_m", 0.25)),
+        target_place_work_z_m=float(raw.get("target_place_work_z_m", 0.15)),
         place_reobserve_hover_m=float(raw.get("place_reobserve_hover_m", 0.6)),
         retreat_lift_m=float(raw.get("retreat_lift_m", 0.1)),
         conveyor_obs2_probe_s=float(raw.get("conveyor_obs2_probe_s", 5.0)),
@@ -204,6 +219,7 @@ def load_settings(path: str | Path) -> Settings:
         require_bridge_feedback=bool(raw.get("require_bridge_feedback", True)),
         max_refine_targets=int(raw.get("max_refine_targets", 3)),
         hover_refine_observe_timeout_s=float(raw.get("hover_refine_observe_timeout_s", 10.0)),
+        hover_refine_claw_wrist_deg=float(raw.get("hover_refine_claw_wrist_deg", 0.0)),
         turntable_stepper_deg=float(raw.get("turntable_stepper_deg", 90.0)),
         stepper_settle_s=float(raw.get("stepper_settle_s", 0.0)),
         approach_hover_m=float(raw.get("approach_hover_m", 0.1)),

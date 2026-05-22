@@ -37,16 +37,20 @@
 | 7 | 放置位 **`pose_seq` 下降** → 到位确认 → 松爪；上抬用 **`pose_delta`** |
 | 8 | 上抬 → 转腕 → **obs2**；队列非空则探视野/传送带 + 再观测 `object`，能 `plan_pick` 则回到 5 |
 
-**槽位语义**：粗 target 在 step2；精坐标在 step3 写回队列；pick 后丢弃 `object`，step8 重新观测后直接 `plan_pick`（不在 plan 前 discard）。放置后队列项仅标记 `placed`，**stepper 转动后**才整体清空队列。
+**槽位语义**：粗 target 在 step2；精观测在 step3 写回 **xy + wrist_cam**，**z 固定**为 `target_place_work_z_m`（默认 0.15 m）；pick 后丢弃 `object`，step8 重新观测后直接 `plan_pick`。放置后队列项仅标记 `placed`，**stepper 转动后**才整体清空队列。
 
-**配置**：`max_refine_targets`、`place_reobserve_hover_m`、`hover_refine_observe_timeout_s`（正上方观测超时或 IK 失败则删队列项）、`turntable_stepper_deg`、`stepper_settle_s`、`arm_speed_place_rad_s`（见 `config.example.yaml`）。
+**固定运动高度（robot_base z，米）**：`target_refine_hover_z_m` 0.5（step3 精观测）· `object_pick_hover_z_m` 0.35 / `object_pick_work_z_m` 0.25（step5）· `target_place_hover_z_m` 0.25 / `target_place_work_z_m` 0.15（step7）。`target_z_offset_m` 仅影响 ingest 槽位显示，**不参与**上述 bridge 笛卡尔 z。
+
+**配置**：`max_refine_targets`、`hover_refine_observe_timeout_s`、`hover_refine_claw_wrist_deg`、`turntable_stepper_deg`、`arm_speed_*`（见 `config.example.yaml`）。
+
+**腕角**：step3 精观测前/悬停时夹爪腕角设为 `hover_refine_claw_wrist_deg`（默认 0），相机测得的 `wrist_yaw_deg` 写回队列；step7 放置直接下发该 `wrist_cam`，**不做 J1 补偿**（抓取 object 仍用 obs2 J1 补偿）。
 
 **速度**（两层，勿混）：
 - **Pi ramp**：仅 `POST /api/speed` 非零时限速；head 只在 **下降 pose_seq 前** 发 `arm_speed_*`；其余发 `[0,0,0,0]` 或不下发 → Pi 用自身 `max_cmd_speed_rad_s`。
 - **bridge pose_seq 帧数**：由 `arm_speed_rad_s` 估播放时长；全零时用 bridge `pose_seq_plan_speed_rad_s`（默认 8），避免悬停段被误算成 0.8 rad/s 慢放。
 - **上抬** `pose_delta`、**关节** `joints` 不单独限速（下降结束会恢复 Pi 默认）。
 
-**预接近**：`approach_hover_m` 悬停 + `pose_seq` 到工作高度；bridge POST 阻塞判到位后 `approach_settle_after_descend_s` 再夹爪/松爪。
+**预接近/下降**：固定 z 悬停 → `pose_seq` 到固定 z 工作位；bridge POST 阻塞判到位后 `approach_settle_after_descend_s` 再夹爪/松爪。
 
 **为何 step2 与 step3 同一时刻、像「直接去 obs2」**：ingestion 持续更新 `_last_frame`，槽位虽在每轮清空，**但** `wait_for_roles` 看的是缓存帧；若仍含上一轮的 `target`，等待会立刻通过。默认 **`require_fresh_detection_after_obs: true`**：obs1 / obs2 **joints 到位后** 会丢弃该缓存，须再收到 **新** `POST /api/detection` 才继续。联调单发一帧时可临时设 `false`。
 
