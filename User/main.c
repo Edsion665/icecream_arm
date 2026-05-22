@@ -19,7 +19,7 @@ int main(void)
 
     SystemInit();
     Hardware_Init();
-    Delay_ms(3000);
+    Delay_ms(1500);
 
     /* USART1：FB 上行 / MIT 二进制下行（波特率见 Serial.h） */
     Serial_Init();
@@ -69,10 +69,11 @@ int main(void)
             Serial_SendString("motor connected!\r\n");
         }
     }
-
+		
+     
     Servo_Init();
     Stepper_Init();
-    Conveyor_Init();
+    Conveyor_Init();  
 
     while (1) {
         Serial_ServiceRxDma();

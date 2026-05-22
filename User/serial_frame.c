@@ -67,11 +67,6 @@ int SerialFrame_ParseBinMit(const RpiBinFrame_t *frame,
     if (aux != 0) {
         stepper_deg = (int16_t)(((uint16_t)d[RPI_OFF_STEPPER_DEG] << 8) |
                                 d[RPI_OFF_STEPPER_DEG + 1]);
-        if (stepper_deg > 180) {
-            stepper_deg = 180;
-        } else if (stepper_deg < -180) {
-            stepper_deg = -180;
-        }
         aux->stepper_delta_deg = stepper_deg;
         aux->conveyor_run = (d[RPI_OFF_CONVEYOR_RUN] != 0u) ? 1u : 0u;
     }

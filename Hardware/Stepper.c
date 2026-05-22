@@ -302,12 +302,6 @@ int32_t Stepper_GetPosSteps(void)
 /*================ 下行目标 / 周期更新 ================*/
 void Stepper_SetTargetDeltaDeg(float deg)
 {
-    if (deg > STEPPER_DEG_MAX) {
-        deg = STEPPER_DEG_MAX;
-    } else if (deg < STEPPER_DEG_MIN) {
-        deg = STEPPER_DEG_MIN;
-    }
-
     if (deg == 0.0f) {
         return;
     }
@@ -387,10 +381,10 @@ int16_t Stepper_GetLogicalDeg(void)
     float deg;
 
     deg = (float)s_pos_steps * 360.0f / (float)STEPPER_PULSES_PER_REV;
-    if (deg > 180.0f) {
-        deg = 180.0f;
-    } else if (deg < -180.0f) {
-        deg = -180.0f;
+    if (deg > 32767.0f) {
+        deg = 32767.0f;
+    } else if (deg < -32768.0f) {
+        deg = -32768.0f;
     }
     return (int16_t)(deg + (deg >= 0.0f ? 0.5f : -0.5f));
 }

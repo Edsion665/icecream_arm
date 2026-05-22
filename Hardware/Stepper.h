@@ -16,7 +16,7 @@
 
 /*================ 转角运动参数（改这里即可调速度/限幅） ================*/
 #ifndef STEPPER_MOVE_RPM
-#define STEPPER_MOVE_RPM            15.0f   /* Stepper_MoveDegrees 运行转速 */
+#define STEPPER_MOVE_RPM            100.0f   /* Stepper_MoveDegrees 运行转速 */
 #endif
 #ifndef STEPPER_DIR_SETUP_MS
 #define STEPPER_DIR_SETUP_MS        2u      /* DIR 建立时间，再出 STEP */
@@ -24,12 +24,6 @@
 /* 与 main 循环 Delay_ms(INTERVAL_MS) 一致，用于非阻塞 DIR 等待 */
 #ifndef STEPPER_UPDATE_PERIOD_MS
 #define STEPPER_UPDATE_PERIOD_MS    2u
-#endif
-#ifndef STEPPER_DEG_MIN
-#define STEPPER_DEG_MIN             (-180.0f)
-#endif
-#ifndef STEPPER_DEG_MAX
-#define STEPPER_DEG_MAX             180.0f
 #endif
 
 /*================ 上电测试 ================*/
