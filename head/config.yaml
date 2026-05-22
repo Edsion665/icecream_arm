@@ -28,13 +28,13 @@ claw_settle_after_place_s: 1
 # 运动固定 z（米）：xy 仍来自相机/队列
 target_refine_hover_z_m: 0.5   # step3 精观测
 object_pick_hover_z_m: 0.35     # step5 预接近
-object_pick_work_z_m: 0.25      # step5 夹取
+object_pick_work_z_m: 0.20      # step5 夹取
 target_place_hover_z_m: 0.25    # step7 预接近
 target_place_work_z_m: 0.18     # step7 放置
 # step3 对粗观测队列前 N 项精观测写回
 max_refine_targets: 3
 # step3 正上方观测超时（秒）：无稳定 target 或 IK 失败则从队列删除
-hover_refine_observe_timeout_s: 10.0
+hover_refine_observe_timeout_s: 3.0
 # step3 精观测悬停/观测期间夹爪腕角（度）；0 便于相机标定 wrist_yaw_deg
 hover_refine_claw_wrist_deg: 0.0
 # 本轮队列放完后转盘步进（deg，增量）

@@ -140,14 +140,17 @@ class BridgeClient:
         )
 
     def _require_blocking_reached(self, rep: BridgeReply, label: str) -> BridgeReply:
-        """POST 阻塞至 bridge 判到位（Pi UDP 四轴误差 + 连续 N 帧防抖）；失败在此抛出。"""
+        """POST 阻塞至 bridge 判到位；到位超时只记录并继续，其他失败仍抛出。"""
         b = rep.body if isinstance(rep.body, dict) else {}
         err = b.get("error") or rep.error
         if err == "superseded":
             raise RuntimeError(f"{label}: superseded by newer command")
+        is_timeout = err == "timeout" or rep.status_code == 408
+        if is_timeout:
+            self.log_reached_timeout(label, rep, timeout_s=float(self._settings.state_timeout_s))
+            log.warning("%s: bridge 到位等待超时，继续执行下一步", label)
+            return rep
         if not rep.ok or rep.status_code != 200:
-            if err == "timeout":
-                self.log_reached_timeout(label, rep, timeout_s=float(self._settings.state_timeout_s))
             raise RuntimeError(f"{label}: bridge failed: {err or b}")
         if self._require_bridge_feedback and not bool(b.get("feedback_available", False)):
             raise RuntimeError(
