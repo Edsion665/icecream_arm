@@ -113,7 +113,7 @@ class CommandNormalizer:
             x = float(v)
         except (TypeError, ValueError) as ex:
             raise ValueError("invalid_value: stepper_deg 必须为数字") from ex
-        return float(max(-180.0, min(180.0, x)))
+        return float(max(-360.0, min(360.0, x)))
 
     @staticmethod
     def _normalize_conveyor_run(v: Any) -> float:

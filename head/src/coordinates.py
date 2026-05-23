@@ -58,14 +58,21 @@ def object_pick_hover_and_work(
     )
 
 
+def _target_place_offset_xyz(settings: Settings) -> tuple[float, float, float]:
+    o = settings.target_place_offset_m or [0.0, 0.0, 0.0]
+    return float(o[0]), float(o[1]), float(o[2])
+
+
 def target_place_hover_and_work(
     pos: Position, settings: Settings
 ) -> tuple[Position, Position]:
-    """target step7：预接近 z、放置 z（固定高度，xy 来自队列/感知）。"""
-    x, y = float(pos.x), float(pos.y)
+    """target step7：固定高度 + ``target_place_offset_m``（重物放置补偿，仅 step7）。"""
+    dx, dy, dz = _target_place_offset_xyz(settings)
+    x = float(pos.x) + dx
+    y = float(pos.y) + dy
     return (
-        Position(x, y, float(settings.target_place_hover_z_m)),
-        Position(x, y, float(settings.target_place_work_z_m)),
+        Position(x, y, float(settings.target_place_hover_z_m) + dz),
+        Position(x, y, float(settings.target_place_work_z_m) + dz),
     )
 
 

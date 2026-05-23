@@ -8,7 +8,7 @@ import time
 from collections import deque
 from typing import Deque
 
-from src.conveyor_obs import object_in_pick_zone
+from src.conveyor_obs import object_in_pick_zone, objects_from_frame
 from src.coordinates import (
     object_pick_hover_and_work,
     target_place_hover_and_work,
@@ -27,11 +27,15 @@ from src.planner import (
     plan_pick,
     queued_to_track_slot,
 )
-from src.shape_match import shape_prefix
+from src.shape_match import shape_prefix, slot_shape_prefix
 from src.speaker import BridgeClient
 from src.tracker import Tracker
 
 log = logging.getLogger("src.run")
+
+
+class RestartFromStep1(Exception):
+    """步进后已清空队列并从 step1 重新观测；内层循环应 continue。"""
 
 
 class HeadFSM:
@@ -111,8 +115,12 @@ class HeadFSM:
         """
         s = self.settings
         hover, work = self._work_hover_and_pose(slot, role)
+        extra = ""
+        if role == "target":
+            o = self.settings.target_place_offset_m or [0.0, 0.0, 0.0]
+            extra = f" place_offset=[{o[0]:.3f},{o[1]:.3f},{o[2]:.3f}]"
         log.info(
-            "%s: 预接近 z=%.3f → (%.3f,%.3f,%.3f) 再 pose_seq 下降 z=%.3f (%.3f,%.3f,%.3f) | 夹爪=%s",
+            "%s: 预接近 z=%.3f → (%.3f,%.3f,%.3f) 再 pose_seq 下降 z=%.3f (%.3f,%.3f,%.3f)%s | 夹爪=%s",
             tag,
             hover.z,
             hover.x,
@@ -122,6 +130,7 @@ class HeadFSM:
             work.x,
             work.y,
             work.z,
+            extra,
             "闭合" if grip_closed else "张开",
         )
         self._emit_claw(wrist_deg, f"{tag}_align_wrist", closed=grip_closed)
@@ -392,7 +401,8 @@ class HeadFSM:
         return False
 
     def _conveyor_until_object_ready(self, max_xy_m: float) -> None:
-        """开传送带，直到最近 object 水平距基点 <= max_xy_m，再停带。"""
+        """开传送带，直到最近 object 水平距基点 <= max_xy_m，再额外运行若干秒后停带。"""
+        extra_s = float(self.settings.conveyor_after_in_zone_s)
         self._set_conveyor(1, "obs2_conveyor_start")
         poll_s = max(self.settings.bridge_reached_poll_s, 0.05)
         try:
@@ -400,13 +410,190 @@ class HeadFSM:
                 frame = self._obs2_last_frame()
                 if object_in_pick_zone(frame, max_xy_m):
                     log.info(
-                        "obs2 传送带：物体已进入抓取区（水平距基点 <= %.2f m）",
+                        "obs2 传送带：物体已进入抓取区（水平距基点 <= %.2f m），"
+                        "继续运行 %.1fs 后停带",
                         max_xy_m,
+                        extra_s,
                     )
+                    if extra_s > 0.0:
+                        time.sleep(extra_s)
                     return
                 time.sleep(poll_s)
         finally:
             self._set_conveyor(0, "obs2_conveyor_stop")
+
+    def _conveyor_nudge(self, duration_s: float, label: str) -> None:
+        """传送带短时脉冲（用于 obs2 物体抖动时微调位置）。"""
+        self._set_conveyor(1, f"{label}_conveyor_nudge_on")
+        try:
+            time.sleep(float(duration_s))
+        finally:
+            self._set_conveyor(0, f"{label}_conveyor_nudge_off")
+
+    def _obs2_has_visible_object(self) -> bool:
+        return len(objects_from_frame(self._obs2_last_frame())) > 0
+
+    def _observe_object_at_obs2(self, label: str) -> None:
+        """obs2 稳定观测 object：超时则传送带脉冲或重新送料，直至稳定。"""
+        s = self.settings
+        stable_timeout = float(s.obs2_object_stable_timeout_s)
+        nudge_s = float(s.obs2_conveyor_nudge_s)
+        tag = f"{label}_observe_object"
+
+        while True:
+            ok = self._observe_stable(
+                "object",
+                tag,
+                timeout_s=stable_timeout,
+                raise_on_fail=False,
+            )
+            if ok:
+                return
+
+            if self._obs2_has_visible_object():
+                log.warning(
+                    "%s: object 已见但 %.1fs 内未连续 %d 帧稳定，传送带前进 %.1fs 后重试",
+                    tag,
+                    stable_timeout,
+                    s.observe_stable_frames,
+                    nudge_s,
+                )
+                self._conveyor_nudge(nudge_s, tag)
+                self._invalidate_camera_cache(f"{tag}_after_conveyor_nudge")
+            else:
+                log.info(
+                    "%s: %.1fs 内未见稳定 object，重新探视野/送料",
+                    tag,
+                    stable_timeout,
+                )
+                self._ensure_obs2_object_in_zone()
+                self._invalidate_camera_cache(f"{tag}_after_ensure_in_zone")
+
+    def _plan_pick_failure_is_belt_shape_mismatch(self, pr: PlanResult) -> bool:
+        """传送带抓取区内有 object，但无与 obs1 队列待做项同前缀的 object。"""
+        if pr.ok or self._pending_queue_count() == 0:
+            return False
+        if not str(pr.reason).startswith("no_object_on_belt_for_obs1_queue"):
+            return False
+        max_xy = float(self.settings.conveyor_object_max_xy_m)
+        return object_in_pick_zone(self._obs2_last_frame(), max_xy)
+
+    def _stepper_belt_shape_mismatch(self, label: str) -> None:
+        """形状不匹配：步进电机 N 次整圈（默认 2×360°，单次 POST 不拆 180）。"""
+        s = self.settings
+        count = max(1, int(s.stepper_belt_mismatch_count))
+        deg = float(s.stepper_belt_mismatch_motor_deg)
+        settle = float(s.stepper_settle_s)
+        turntable_deg = count * abs(deg) * (18.0 / 360.0)
+        log.warning(
+            "%s: 带上有物但无所需形状，步进 %d 次 × %.0f° 电机（约转盘 %.1f°）",
+            label,
+            count,
+            deg,
+            turntable_deg,
+        )
+        for i in range(count):
+            self.speaker.send_stepper(
+                deg,
+                context=f"{label}_belt_mismatch_stepper_{i + 1}of{count}",
+            )
+            if settle > 0.0 and i < count - 1:
+                time.sleep(settle)
+        if settle > 0.0:
+            time.sleep(settle)
+
+    def _log_match_status(self, label: str) -> None:
+        """打印队列待做形状 vs 传送带 object 形状，便于匹配等待期观察。"""
+        pending = [q.shape_prefix for q in self.target_queue if not q.placed]
+        snap = self.tracker.get_snapshot()
+        belt = sorted(
+            {slot_shape_prefix(o) for o in (snap.slots_by_role.get("object") or [])}
+        )
+        log.info(
+            "%s: 匹配状态 队列待做=%s | 带上 object=%s",
+            label,
+            pending or "(空)",
+            belt or "(无)",
+        )
+
+    def _wait_plan_match_observe(self, label: str) -> None:
+        """转盘/传送带匹配前：固定等待若干秒并周期性打印 target/object 形状。"""
+        wait_s = float(self.settings.plan_match_observe_wait_s)
+        if wait_s <= 0.0:
+            return
+        poll_s = max(float(self.settings.bridge_reached_poll_s), 0.5)
+        log.info(
+            "%s: 匹配前等待 %.1fs（查看 target 队列与带上 object）…",
+            label,
+            wait_s,
+        )
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            self._log_match_status(label)
+            time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+
+    def _restart_from_step1_after_stepper(self, label: str) -> None:
+        """步进后：清空队列与槽位，从 step1 重做 obs1→step3→step4。"""
+        log.warning("%s: 步进完成 → 清空队列，从 step1 重新观测", label)
+        self.target_queue.clear()
+        self._cycle_shape_prefix = None
+        self._cycle_planned_target = None
+        self._cycle_queued_target = None
+        self._discard_slot("target", f"{label}_restart_discard_target")
+        self._discard_slot("object", f"{label}_restart_discard_object")
+
+        settle = float(self.settings.stepper_settle_s)
+        if settle > 0.0:
+            log.info("%s: 步进后机械 settle %.1fs", label, settle)
+            time.sleep(settle)
+
+        self._wait_plan_match_observe(f"{label}_before_step1")
+
+        self._setup_obs1_coarse_queue()
+        n_refine = min(int(self.settings.max_refine_targets), len(self.target_queue))
+        self._refine_queue_hover(n_refine)
+        self._setup_obs2_for_plan()
+        self._wait_plan_match_observe(f"{label}_after_obs2")
+
+    def _plan_pick_with_belt_realign(self, label: str) -> PlanResult:
+        """plan_pick；形状不匹配时先等 retry_s，仍失败则 stepper → 清空队列 → 回 step1。"""
+        s = self.settings
+        retry_s = float(s.plan_pick_mismatch_retry_s)
+        poll_s = max(float(s.bridge_reached_poll_s), 0.05)
+        stepper_done = False
+
+        while True:
+            snap = self.tracker.get_snapshot()
+            pr = plan_pick(s, snap, self.target_queue)
+            if pr.ok:
+                return pr
+            if not self._plan_pick_failure_is_belt_shape_mismatch(pr):
+                return pr
+
+            if not stepper_done:
+                log.info(
+                    "%s: 带上有物但形状不匹配（%s），%.1fs 内持续重试 plan …",
+                    label,
+                    pr.reason,
+                    retry_s,
+                )
+                self._log_match_status(label)
+                deadline = time.monotonic() + retry_s
+                while time.monotonic() < deadline:
+                    time.sleep(poll_s)
+                    snap = self.tracker.get_snapshot()
+                    pr = plan_pick(s, snap, self.target_queue)
+                    if pr.ok:
+                        return pr
+                    if not self._plan_pick_failure_is_belt_shape_mismatch(pr):
+                        return pr
+
+                self._stepper_belt_shape_mismatch(label)
+                self._restart_from_step1_after_stepper(label)
+                stepper_done = True
+                raise RestartFromStep1(f"{label}: 步进后已从 step1 重新观测")
+
+            return pr
 
     def _ensure_obs2_object_in_zone(self) -> None:
         s = self.settings
@@ -588,7 +775,7 @@ class HeadFSM:
         self._joints_obs(list(s.observe2_axes_rel_deg), "step4_obs2_joints")
         self._invalidate_camera_cache("after_step4_obs2_before_wait_object")
         self._ensure_obs2_object_in_zone()
-        self._observe_stable("object", "step4_observe_object")
+        self._observe_object_at_obs2("step4")
         self._log_all_objects("step4 obs2 object")
 
     def _pick_place_one(self) -> bool:
@@ -600,8 +787,7 @@ class HeadFSM:
         if self._pending_queue_count() == 0:
             return False
 
-        snap = self.tracker.get_snapshot()
-        pr = plan_pick(s, snap, self.target_queue)
+        pr = self._plan_pick_with_belt_realign("step5")
         if not pr.ok or pr.object_slot is None or pr.target_slot is None:
             log.warning("step5 plan_pick 失败: %s", pr.reason)
             return False
@@ -674,11 +860,10 @@ class HeadFSM:
         self._invalidate_camera_cache("step8_after_obs2_before_replan")
 
         self._ensure_obs2_object_in_zone()
-        self._observe_stable("object", "step8_observe_object_replan")
+        self._observe_object_at_obs2("step8")
         self._log_all_objects("step8 obs2 object（plan 前）")
 
-        snap = self.tracker.get_snapshot()
-        pr = plan_pick(s, snap, self.target_queue)
+        pr = self._plan_pick_with_belt_realign("step8")
         if pr.ok and pr.object_slot is not None and pr.target_slot is not None:
             log.info(
                 "step8: 待做 %d / 共 %d，可继续下一轮抓取（%s）",
@@ -696,14 +881,27 @@ class HeadFSM:
         )
         return False
 
-    def _turntable_step(self) -> None:
-        """队列本轮放完后：stepper 增量转动转盘。"""
+    def _stepper_after_group(self) -> None:
+        """一组（内层队列全部放完）后：连续 N 次 stepper，每次转动 stepper_after_group_deg。"""
         s = self.settings
-        deg = float(s.turntable_stepper_deg)
-        self.speaker.send_stepper(deg, context="turntable_step")
+        count = max(1, int(s.stepper_after_group_count))
+        deg = float(s.stepper_after_group_deg)
         settle = float(s.stepper_settle_s)
+        log.info(
+            "一组完成：stepper %d 次 × %.0f°（单次 >180° 自动拆帧）",
+            count,
+            deg,
+        )
+        for i in range(count):
+            self.speaker.send_stepper_rotation(
+                deg,
+                context=f"stepper_after_group_{i + 1}of{count}",
+            )
+            if settle > 0.0 and i < count - 1:
+                log.info("stepper 第 %d/%d 次后等待 %.1fs", i + 1, count, settle)
+                time.sleep(settle)
         if settle > 0.0:
-            log.info("stepper 后等待 %.1fs", settle)
+            log.info("stepper 全部 %d 次完成后等待 %.1fs", count, settle)
             time.sleep(settle)
 
     def run_one_cycle(self) -> None:
@@ -727,12 +925,19 @@ class HeadFSM:
                 self._pending_queue_count(),
                 len(self.target_queue),
             )
-            if not self._pick_place_one():
-                raise RuntimeError("step5–7 pick_place 失败")
-            if not self._obs2_check_more_work():
-                break
+            try:
+                if not self._pick_place_one():
+                    raise RuntimeError("step5–7 pick_place 失败")
+                if not self._obs2_check_more_work():
+                    break
+            except RestartFromStep1 as exc:
+                log.info("%s", exc)
+                if not self.target_queue:
+                    log.warning("step1 重新观测后队列为空，结束内层循环")
+                    break
+                continue
 
-        self._turntable_step()
+        self._stepper_after_group()
         self._clear_target_queue_after_stepper()
 
         self._discard_slot("target", "cycle_end_discard_target")

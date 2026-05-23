@@ -26,7 +26,7 @@
 | 3 | 队列**前 N** 项（`max_refine_targets`）：各目标**正上方**精观测 → 写回队列 |
 | 4 | `joints` obs2 + 传送带送料（如需）+ 稳定观测 `object` |
 | **5–8 内层** | 见下表；队列空或 step8 无法 `plan_pick` 时结束内层 |
-| 末 | `POST /api/stepper` 转盘 `turntable_stepper_deg`（默认 +90°）→ 下轮从 step1 |
+| 末 | `POST /api/stepper` 一组完成后 **3 次 × 360°**（`stepper_after_group_count` / `stepper_after_group_deg`）→ 下轮从 step1 |
 
 **内层循环（每放一个 target 一轮）：**
 
@@ -41,7 +41,7 @@
 
 **固定运动高度（robot_base z，米）**：`target_refine_hover_z_m` 0.5（step3 精观测）· `object_pick_hover_z_m` 0.35 / `object_pick_work_z_m` 0.25（step5）· `target_place_hover_z_m` 0.25 / `target_place_work_z_m` 0.15（step7）。`target_z_offset_m` 仅影响 ingest 槽位显示，**不参与**上述 bridge 笛卡尔 z。
 
-**配置**：`max_refine_targets`、`hover_refine_observe_timeout_s`、`hover_refine_claw_wrist_deg`、`turntable_stepper_deg`、`arm_speed_*`（见 `config.example.yaml`）。
+**配置**：`max_refine_targets`、`hover_refine_observe_timeout_s`、`hover_refine_claw_wrist_deg`、`stepper_after_group_deg`（默认 360°）、`stepper_after_group_count`（默认 3）、`arm_speed_*`（见 `config.example.yaml`）。
 
 **腕角**：step3 精观测前/悬停时夹爪腕角设为 `hover_refine_claw_wrist_deg`（默认 0），相机测得的 `wrist_yaw_deg` 写回队列；step7 放置直接下发该 `wrist_cam`，**不做 J1 补偿**（抓取 object 仍用 obs2 J1 补偿）。
 
@@ -54,7 +54,7 @@
 
 **为何 step2 与 step3 同一时刻、像「直接去 obs2」**：ingestion 持续更新 `_last_frame`，槽位虽在每轮清空，**但** `wait_for_roles` 看的是缓存帧；若仍含上一轮的 `target`，等待会立刻通过。默认 **`require_fresh_detection_after_obs: true`**：obs1 / obs2 **joints 到位后** 会丢弃该缓存，须再收到 **新** `POST /api/detection` 才继续。联调单发一帧时可临时设 `false`。
 
-**为何会在 obs1 / obs2 之间来回动很多下**：若 `camera_wait_timeout_s` 为**有限秒数**，等不到 target/object 会抛错，`run_forever` 捕获后**整轮重跑** `run_one_cycle`（又从周期首清空 → obs1 → …），看起来就像反复在观测位之间运动。联调请用 **`camera_wait_timeout_s: null`**（默认）或省略该项，使在 **obs1 一直等 target**、在 **obs2 一直等 object**，直到 ingestion 发来含对应 role 的帧。
+**为何会在 obs1 / obs2 之间来回动很多下**：若 `camera_wait_timeout_s` 为**有限秒数**，等不到 target/object 会抛错，`run_forever` 捕获后**整轮重跑** `run_one_cycle`（又从周期首清空 → obs1 → …），看起来就像反复在观测位之间运动。联调请用 **`camera_wait_timeout_s: null`**（默认）或省略该项，使 **obs1 一直等 target**。obs2 的 **object 稳定观测**单独使用 `obs2_object_stable_timeout_s`（默认 5s）：已见物体但连续帧未稳定则 **传送带脉冲** `obs2_conveyor_nudge_s`（默认 1s）后重试；完全未见 object 则走探视野/送料逻辑。
 
 可配置项见 `config.example.yaml`（`camera_wait_timeout_s`、`emit_claw_on_every_transition` 等）。
 

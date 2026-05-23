@@ -365,7 +365,7 @@ def run_loop(
                     continue
                 if c.kind == "stepper":
                     state.stepper_deg_cmd = float(
-                        max(-180.0, min(180.0, float(c.payload["stepper_deg"])))
+                        max(-360.0, min(360.0, float(c.payload["stepper_deg"])))
                     )
                     dump_next_udp_frame = True
                     continue
@@ -630,7 +630,7 @@ def run_sim_loop(
                 continue
             if c.kind == "stepper":
                 state.stepper_deg_cmd = float(
-                    max(-180.0, min(180.0, float(c.payload["stepper_deg"])))
+                    max(-360.0, min(360.0, float(c.payload["stepper_deg"])))
                 )
                 dump_next_udp_frame = True
                 continue

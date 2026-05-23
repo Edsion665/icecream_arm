@@ -19,7 +19,7 @@ merge_yaw_eps_deg: 3.0
 target_z_offset_m: 0.42
 object_z_offset_m: 0.23
 
-observe_stable_frames: 3
+observe_stable_frames: 1
 observe_stable_pos_eps_m: 0.01
 observe_stable_yaw_eps_deg: 2.0
 
@@ -28,17 +28,20 @@ claw_settle_after_place_s: 1
 # 运动固定 z（米）：xy 仍来自相机/队列
 target_refine_hover_z_m: 0.5   # step3 精观测
 object_pick_hover_z_m: 0.35     # step5 预接近
-object_pick_work_z_m: 0.20      # step5 夹取
-target_place_hover_z_m: 0.25    # step7 预接近
-target_place_work_z_m: 0.18     # step7 放置
+object_pick_work_z_m: 0.23      # step5 夹取
+target_place_hover_z_m: 0.30    # step7 预接近
+target_place_work_z_m: 0.24     # step7 放置
+# step7 重物补偿 [dx, dy, dz]（米）：在固定放置高度上再叠加；z>0 略抬高
+target_place_offset_m: [0.0, 0.0, 0.00]
 # step3 对粗观测队列前 N 项精观测写回
 max_refine_targets: 3
 # step3 正上方观测超时（秒）：无稳定 target 或 IK 失败则从队列删除
-hover_refine_observe_timeout_s: 3.0
+hover_refine_observe_timeout_s: 10.0
 # step3 精观测悬停/观测期间夹爪腕角（度）；0 便于相机标定 wrist_yaw_deg
 hover_refine_claw_wrist_deg: 0.0
-# 本轮队列放完后转盘步进（deg，增量）
-turntable_stepper_deg: 90.0
+# 一组放完后：stepper 次数 × 每次转角（deg）；360° 会拆成 2×180° 下发
+stepper_after_group_deg: 360.0
+stepper_after_group_count: 3
 stepper_settle_s: 0
 retreat_lift_m: 0.1
 # 抓取/放置：先到工作位上方该高度(m)，再减速竖直下降到位
@@ -55,9 +58,20 @@ observe1_axes_rel_deg: [-90.0, 20.0, -100.0, -90.0]
 observe2_axes_rel_deg: [90.0, 10.0, -70.0, -100.0]
 # obs2：先探视野若干秒；无 object 或物体中心水平距基点 (0,0) > 该值则开传送带
 conveyor_obs2_probe_s: 5.0
-conveyor_object_max_xy_m: 0.5
+conveyor_object_max_xy_m: 0.4
+# 物体进入抓取区后传送带继续运行的秒数，再停带
+conveyor_after_in_zone_s: 3
+# obs2 稳定观测：已见 object 但连续帧未稳定时，最多等该秒数 → 传送带脉冲 → 再观测
+obs2_object_stable_timeout_s: 5.0
+obs2_conveyor_nudge_s: 1.0
+# 带上有物但无队列所需形状：plan 失败持续该秒数 → 步进 2×360°（整圈下发，不拆 180）
+plan_pick_mismatch_retry_s: 5.0
+# 步进后、step1/step4 之后：等待该秒数再匹配（日志打印队列 target 与带上 object）
+plan_match_observe_wait_s: 5.0
+stepper_belt_mismatch_motor_deg: 360.0
+stepper_belt_mismatch_count: 2
 
-state_timeout_s: 10.0
+state_timeout_s: 3.0
 refresh_wait_s: 1.0
 # 无 Pi UDP 反馈时：false 且 bridge fallback_cmd_reached_without_pi=true 可继续联调
 # require_bridge_feedback: true

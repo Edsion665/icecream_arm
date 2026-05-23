@@ -281,8 +281,8 @@ class BridgeClient:
         return self._post("/api/conveyor", {"cmd": "conveyor", "run": run_i})
 
     def send_stepper(self, stepper_deg: float, *, context: str = "") -> BridgeReply:
-        """转盘步进增量（deg）；bridge 立即 ack，不阻塞到位。"""
-        deg = float(max(-180.0, min(180.0, stepper_deg)))
+        """步进电机增量（deg，单帧限幅 ±360）；bridge 立即 ack。电机 360° ≈ 转盘 18°。"""
+        deg = float(max(-360.0, min(360.0, stepper_deg)))
         log.info(
             "bridge POST /api/stepper %s stepper_deg=%.1f",
             f"({context})" if context else "",
@@ -294,6 +294,22 @@ class BridgeClient:
                 f"{context or 'stepper'}: stepper POST failed: {rep.error or rep.body}"
             )
         return rep
+
+    def send_stepper_rotation(self, total_deg: float, *, context: str = "") -> None:
+        """转盘累计转角（deg）；超过 ±180 时自动拆成多帧 stepper 下发。"""
+        remaining = float(total_deg)
+        part = 0
+        label = context or "stepper_rotation"
+        while abs(remaining) > 1e-9:
+            if remaining > 180.0:
+                step = 180.0
+            elif remaining < -180.0:
+                step = -180.0
+            else:
+                step = remaining
+            self.send_stepper(step, context=f"{label}_p{part}")
+            remaining -= step
+            part += 1
 
     def send_speed(self, axes_rad_s: List[float], *, context: str = "") -> BridgeReply:
         """设置四轴 ramp 速度上限（rad/s），通过 bridge UDP omega_rad_s[0:4] 下发至 Pi。

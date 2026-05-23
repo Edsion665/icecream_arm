@@ -32,6 +32,16 @@ def test_target_fixed_place_heights() -> None:
     assert work.z == pytest.approx(0.15)
 
 
+def test_target_place_offset_applied() -> None:
+    s = Settings(target_place_offset_m=[0.01, -0.02, 0.03])
+    slot = Position(0.1, 0.2, 0.0)
+    hover, work = target_place_hover_and_work(slot, s)
+    assert work.x == pytest.approx(0.11)
+    assert work.y == pytest.approx(0.18)
+    assert work.z == pytest.approx(0.15 + 0.03)
+    assert hover.z == pytest.approx(0.25 + 0.03)
+
+
 def test_target_refine_hover_fixed_z() -> None:
     s = Settings()
     pos = Position(0.0, 0.3, -1.0)

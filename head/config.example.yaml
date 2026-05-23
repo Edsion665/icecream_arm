@@ -31,6 +31,11 @@ observe2_axes_rel_deg: [0.0, 5.0, -30.0, -50.0]
 # obs2 传送带：探视野秒数；物体中心水平距 robot_base (0,0) 超过该值（米）则开带直至进入区
 conveyor_obs2_probe_s: 5.0
 conveyor_object_max_xy_m: 0.6
+conveyor_after_in_zone_s: 5.0
+plan_pick_mismatch_retry_s: 5.0
+plan_match_observe_wait_s: 5.0
+stepper_belt_mismatch_motor_deg: 360.0
+stepper_belt_mismatch_count: 2
 
 state_timeout_s: 60.0
 refresh_wait_s: 2.0
@@ -55,11 +60,13 @@ object_pick_hover_z_m: 0.35
 object_pick_work_z_m: 0.25
 target_place_hover_z_m: 0.25
 target_place_work_z_m: 0.15
+target_place_offset_m: [0.0, 0.0, 0.02]
 max_refine_targets: 3
 hover_refine_observe_timeout_s: 10.0
 # step3 精观测：悬停与观测期间夹爪腕角（度）；0 便于相机标定 wrist_yaw_deg
 hover_refine_claw_wrist_deg: 0.0
-turntable_stepper_deg: 90.0
+stepper_after_group_deg: 360.0
+stepper_after_group_count: 3
 stepper_settle_s: 0
 retreat_lift_m: 0.1
 approach_hover_m: 0.1
